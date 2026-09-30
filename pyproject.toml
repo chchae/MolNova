@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "molnova"
+version = "0.1.0"
+description = "Iterative molecular lead-optimization pipeline using REINVENT4, Schrödinger, SQLite, MM-GBSA and FEP staging"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "rdkit",
+]
+
+[project.scripts]
+molnova = "molnova.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
