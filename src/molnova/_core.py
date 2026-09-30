@@ -196,6 +196,7 @@ def create_sqlite_schema(conn):
             docking_score REAL,
             gbsa_score REAL,
             fep_score REAL,
+            sa_score REAL,
             synthetic_feasibility INTEGER
                 CHECK (synthetic_feasibility IN (0, 1)),
             state TEXT NOT NULL DEFAULT 'generated',
@@ -236,6 +237,7 @@ def ensure_schema_columns(conn):
     additions = {
         "gbsa_score": "REAL",
         "fep_score": "REAL",
+        "sa_score": "REAL",
         "synthetic_feasibility": "INTEGER CHECK (synthetic_feasibility IN (0, 1))",
         "state": "TEXT NOT NULL DEFAULT 'generated'",
         "failed_stage": "TEXT",

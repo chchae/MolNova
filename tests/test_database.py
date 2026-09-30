@@ -16,6 +16,7 @@ def test_schema_contains_scores_and_state(tmp_path):
         "docking_score",
         "gbsa_score",
         "fep_score",
+        "sa_score",
         "synthetic_feasibility",
         "state",
     } <= cols
@@ -103,6 +104,7 @@ def test_legacy_state_is_inferred_once(tmp_path):
         )
         _core.ensure_schema_columns(conn)
         states = dict(conn.execute("SELECT name, state FROM compound"))
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(compound)")}
 
     assert states == {
         "REF": "reference",
@@ -110,6 +112,7 @@ def test_legacy_state_is_inferred_once(tmp_path):
         "RUNNING": "glide_running",
         "LIGPREPPED": "ligprepped",
     }
+    assert "sa_score" in columns
 
 
 def test_claim_compounds_only_transitions_eligible_ids(tmp_path):
