@@ -3,16 +3,13 @@ import argparse
 from pathlib import Path
 import sqlite3
 from molnova import _core as c
+from molnova import database
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description="Independent LigPrep stage")
-    p.add_argument("project_toml", type=Path)
-    p.add_argument("--iteration", type=int)
-    p.add_argument("--schrodinger", type=Path)
-    ns = p.parse_args(argv)
-    args = c.configure_project(ns.project_toml, ns.schrodinger)
-    iteration = ns.iteration or c.find_iteration_for_state("ligprep")
+def _run_stage(args, requested_iteration):
+    iteration = requested_iteration or c.find_iteration_for_state(
+        "ligprep", args.db_path
+    )
     if iteration is None:
         print("No iteration requires LigPrep.")
         return
@@ -21,12 +18,27 @@ def main(argv=None):
         rows = conn.execute(
             """
             SELECT id,name,smiles FROM compound
-            WHERE iteration=? AND state IN ('generated','ligprep_running')
+                        WHERE iteration=? AND state IN ('generated','ligprep_running')
+                            AND (?=0 OR synthetic_feasibility IS NOT NULL)
             ORDER BY id
-            """, (iteration,)
+                        """,
+                        (iteration, int(args.synthetic_feasibility_enabled)),
         ).fetchall()
     if not rows:
         print(f"Iteration {iteration}: no LigPrep-pending compounds.")
+        return
+
+    claimed_ids = set(
+        database.claim_compounds(
+            args.db_path,
+            [row[0] for row in rows],
+            expected_state=("generated", "ligprep_running"),
+            claimed_state="ligprep_running",
+        )
+    )
+    rows = [row for row in rows if row[0] in claimed_ids]
+    if not rows:
+        print(f"Iteration {iteration}: compounds were claimed by another worker.")
         return
 
     outdir = args.output / f"iter{iteration}" / "ligprep"
@@ -37,7 +49,6 @@ def main(argv=None):
             f.write(f"{smiles}\tCMPID_{cid}\n")
 
     ids = [r[0] for r in rows]
-    c.set_compound_state(ids, "ligprep_running")
     try:
         output_file = c.run_ligprep_once(
             schrodinger=args.schrodinger,
@@ -51,12 +62,29 @@ def main(argv=None):
             ring_confs=args.ligprep_ring_confs,
         )
     except Exception:
-        c.set_compound_state(ids, "generated", failed_stage="ligprep", failure_message="LigPrep command failed; retryable")
+        c.set_compound_state(
+            ids,
+            "generated",
+            failed_stage="ligprep",
+            failure_message="LigPrep command failed; retryable",
+            db_path=args.db_path,
+        )
         raise
 
-    c.set_compound_state(ids, "ligprepped")
+    c.set_compound_state(ids, "ligprepped", db_path=args.db_path)
     print(f"Iteration {iteration}: LigPrep done for {len(ids)} compounds.")
     print(f"Output: {output_file}")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Independent LigPrep stage")
+    p.add_argument("project_toml", type=Path)
+    p.add_argument("--iteration", type=int)
+    p.add_argument("--schrodinger", type=Path)
+    ns = p.parse_args(argv)
+    args = c.configure_project(ns.project_toml, ns.schrodinger)
+    with database.stage_lock(args.db_path, "ligprep"):
+        _run_stage(args, ns.iteration)
 
 
 if __name__ == "__main__":

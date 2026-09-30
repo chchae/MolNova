@@ -19,6 +19,16 @@ BASE_STAGES = [
 ]
 
 
+def build_stages(synthetic_feasibility_enabled, fep_enabled):
+    stages = [BASE_STAGES[0]]
+    if synthetic_feasibility_enabled:
+        stages.append(("synthetic", "molnova.stages.synthetic_feasibility"))
+    stages.extend(BASE_STAGES[1:])
+    if fep_enabled:
+        stages.append(("fep", "molnova.stages.fep"))
+    return stages
+
+
 def stream_process(stage, cmd, cwd, stop_event):
     """Run one stage subprocess and prefix its merged stdout/stderr."""
     proc = subprocess.Popen(
@@ -58,6 +68,13 @@ def worker_loop(stage, module, project_toml, work_dir, poll_interval, stop_event
             return
 
         if rc != 0:
+            if once:
+                print(
+                    f"[driver  ] {stage} exited with status {rc}; "
+                    "stopping because --once was specified.",
+                    flush=True,
+                )
+                return
             print(
                 f"[driver  ] {stage} exited with status {rc}; "
                 f"retrying after {poll_interval}s.",
@@ -117,9 +134,10 @@ def main(argv=None):
     print(f"SQLite DB      : {args.db_path}")
     print(f"Output         : {args.output}")
     print(f"Worker poll    : {ns.poll_interval} s")
-    stages = list(BASE_STAGES)
-    if args.fep_enabled:
-        stages.append(("fep", "molnova.stages.fep"))
+    stages = build_stages(
+        args.synthetic_feasibility_enabled,
+        args.fep_enabled,
+    )
 
     print("Stages         : " + ", ".join(stage for stage, _ in stages))
     print("Stop           : Ctrl-C")

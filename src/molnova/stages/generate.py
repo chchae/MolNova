@@ -3,34 +3,49 @@ import argparse
 from pathlib import Path
 import sqlite3
 from molnova import _core as c
+from molnova import database
 
 
 def choose_iteration(args, requested):
     if requested is not None:
+        if requested < 1 or requested > args.max_iteration:
+            raise ValueError(
+                f"Iteration must be between 1 and {args.max_iteration}."
+            )
         return requested
     with c.open_sqlite(args.db_path) as conn:
         max_iter = conn.execute(
             "SELECT COALESCE(MAX(iteration),0) FROM compound"
         ).fetchone()[0]
-    return 1 if max_iter == 0 else max_iter + 1
+        if max_iter == 0:
+            return 1 if args.max_iteration >= 1 else None
+        current_count = conn.execute(
+            "SELECT COUNT(*) FROM compound WHERE iteration=?",
+            (max_iter,),
+        ).fetchone()[0]
+
+    if current_count < args.target_count:
+        return max_iter
+    next_iteration = max_iter + 1
+    return next_iteration if next_iteration <= args.max_iteration else None
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description="REINVENT4/LibInvent generation stage")
-    p.add_argument("project_toml", type=Path)
-    p.add_argument("--iteration", type=int)
-    p.add_argument("--schrodinger", type=Path)
-    ns = p.parse_args(argv)
-
-    args = c.configure_project(ns.project_toml, ns.schrodinger)
-    iteration = choose_iteration(args, ns.iteration)
+def _run_stage(args, requested_iteration):
+    iteration = choose_iteration(args, requested_iteration)
+    if iteration is None:
+        print(f"Maximum iteration ({args.max_iteration}) reached.")
+        return
 
     with c.open_sqlite(args.db_path) as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM compound WHERE iteration=?", (iteration,)
         ).fetchone()[0]
-    if n:
-        print(f"Iteration {iteration} already has {n} compounds; generation skipped.")
+    remaining = max(0, args.target_count - n)
+    if remaining == 0:
+        print(
+            f"Iteration {iteration} already has the target "
+            f"{args.target_count} compounds; generation skipped."
+        )
         return
 
     run_dir = args.output / f"iter{iteration}" / "reinvent"
@@ -61,6 +76,7 @@ def main(argv=None):
         elites = c.select_global_elites(
             target_iteration=iteration,
             best_count=args.gbsa_elite_count,
+            db_path=args.db_path,
         )
         if len(elites) < args.gbsa_elite_count:
             raise RuntimeError(
@@ -88,9 +104,27 @@ def main(argv=None):
     inserted = c.insert_generated(
         csv_file=generated,
         iteration=iteration,
-        target_count=args.target_count,
+        target_count=remaining,
+        db_path=args.db_path,
     )
+    if inserted == 0:
+        raise RuntimeError(
+            f"Iteration {iteration} remains below target-count "
+            f"({n}/{args.target_count}) and no novel compounds were inserted."
+        )
     print(f"Iteration {iteration}: inserted {inserted} novel compounds.")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="REINVENT4/LibInvent generation stage")
+    p.add_argument("project_toml", type=Path)
+    p.add_argument("--iteration", type=int)
+    p.add_argument("--schrodinger", type=Path)
+    ns = p.parse_args(argv)
+
+    args = c.configure_project(ns.project_toml, ns.schrodinger)
+    with database.stage_lock(args.db_path, "generate"):
+        _run_stage(args, ns.iteration)
 
 
 if __name__ == "__main__":

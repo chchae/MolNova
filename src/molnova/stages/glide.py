@@ -4,11 +4,12 @@ from pathlib import Path
 import sqlite3
 import time
 from molnova import _core as c
+from molnova import database
 
 
-def query_groups(iteration):
+def query_groups(iteration, db_path):
     groups = {}
-    with c.open_sqlite(c.DB_PATH) as conn:
+    with c.open_sqlite(db_path) as conn:
         rows = conn.execute(
             """
             SELECT id,name,smiles,similar_to,similarity
@@ -24,12 +25,13 @@ def query_groups(iteration):
     return groups
 
 
-def mark_group(iteration, compounds, state, failed_stage=None, message=None):
+def mark_group(db_path, compounds, state, failed_stage=None, message=None):
     c.set_compound_state(
         [x[0] for x in compounds],
         state,
         failed_stage=failed_stage,
         failure_message=message,
+        db_path=db_path,
     )
 
 
@@ -46,7 +48,7 @@ def process_completed_job(iteration, args, job, extractor, merger, glide_root):
     score_file, best_file = c.extract_scores_and_best_poses(
         args.schrodinger, extractor, job["output_file"], job["group_dir"]
     )
-    updated = c.update_scores(score_file)
+    updated = c.update_scores(score_file, args.db_path)
     with c.open_sqlite(args.db_path) as conn:
         scored = {r[0] for r in conn.execute(
             "SELECT id FROM compound WHERE iteration=? AND docking_score IS NOT NULL",
@@ -55,34 +57,47 @@ def process_completed_job(iteration, args, job, extractor, merger, glide_root):
     ids = [x[0] for x in job["compounds"]]
     failed = [cid for cid in ids if cid not in scored]
     if failed:
-        c.set_compound_state(failed, "failed", failed_stage="glide", failure_message="No Glide pose")
+        c.set_compound_state(
+            failed,
+            "failed",
+            failed_stage="glide",
+            failure_message="No Glide pose",
+            db_path=args.db_path,
+        )
     merge_current_best(args, glide_root, merger)
     print(f"Reference {job['reference_id']} completed: DB updated={updated}, no-pose={len(failed)}")
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description="Independent asynchronous Glide stage")
-    p.add_argument("project_toml", type=Path)
-    p.add_argument("--iteration", type=int)
-    p.add_argument("--poll-interval", type=int, default=30)
-    p.add_argument("--completion-fraction", type=float, default=0.95)
-    p.add_argument("--tail-timeout", type=int)
-    p.add_argument("--schrodinger", type=Path)
-    ns = p.parse_args(argv)
-    args = c.configure_project(ns.project_toml, ns.schrodinger)
+def _run_stage(args, ns):
     args.poll_interval = ns.poll_interval
     args.completion_fraction = ns.completion_fraction
     if ns.tail_timeout is not None:
         args.tail_timeout = ns.tail_timeout
 
-    iteration = ns.iteration or c.find_iteration_for_state("glide")
+    iteration = ns.iteration or c.find_iteration_for_state("glide", args.db_path)
     if iteration is None:
         print("No iteration requires Glide.")
         return
 
     # Assign nearest reference for any still-undocked compounds.
     c.assign_reference_compounds(iteration, args)
-    groups = query_groups(iteration)
+    groups = query_groups(iteration, args.db_path)
+
+    claimed_groups = {}
+    for reference_id, compounds in groups.items():
+        claimed_ids = set(
+            database.claim_compounds(
+                args.db_path,
+                [compound[0] for compound in compounds],
+                expected_state=("ligprepped", "glide_running"),
+                claimed_state="glide_running",
+            )
+        )
+        if claimed_ids:
+            claimed_groups[reference_id] = [
+                compound for compound in compounds if compound[0] in claimed_ids
+            ]
+    groups = claimed_groups
     if not groups:
         print(f"Iteration {iteration}: no Glide-pending compounds.")
         return
@@ -105,9 +120,9 @@ def main(argv=None):
     for refid, compounds in sorted(groups.items()):
         ligand_file = group_ligand_files.get(refid)
         if ligand_file is None:
-            mark_group(iteration, compounds, "failed", failed_stage="glide", message="No LigPrep structures for reference group")
+            mark_group(args.db_path, compounds, "failed", failed_stage="glide", message="No LigPrep structures for reference group")
             continue
-        refname = c.get_reference_name(refid)
+        refname = c.get_reference_name(refid, args.db_path)
         gdir = glide_root / f"ref_{refid}"
         gdir.mkdir(parents=True, exist_ok=True)
         ref_file = gdir / "_reference.maegz"
@@ -126,7 +141,7 @@ def main(argv=None):
 
         # Existing non-failed log without output: assume the JobServer/SLURM job is still running.
         if log_file.exists() and not c.glide_log_failed(log_file):
-            mark_group(iteration, compounds, "glide_running")
+            mark_group(args.db_path, compounds, "glide_running")
             jobs.append(job)
             continue
 
@@ -145,7 +160,7 @@ def main(argv=None):
         )
         submitted = c.submit_glide(args.schrodinger, inp, gdir, args.host)
         job.update(submitted)
-        mark_group(iteration, compounds, "glide_running")
+        mark_group(args.db_path, compounds, "glide_running")
         jobs.append(job)
 
     if not jobs:
@@ -166,7 +181,7 @@ def main(argv=None):
                 terminal += 1
                 continue
             if c.glide_log_failed(job["log_file"]):
-                mark_group(iteration, job["compounds"], "failed", failed_stage="glide", message="Glide job failed")
+                mark_group(args.db_path, job["compounds"], "failed", failed_stage="glide", message="Glide job failed")
                 terminal += 1
                 print(f"Reference {job['reference_id']} failed.")
                 continue
@@ -187,6 +202,20 @@ def main(argv=None):
         time.sleep(args.poll_interval)
 
     merge_current_best(args, glide_root, merger)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Independent asynchronous Glide stage")
+    p.add_argument("project_toml", type=Path)
+    p.add_argument("--iteration", type=int)
+    p.add_argument("--poll-interval", type=int, default=30)
+    p.add_argument("--completion-fraction", type=float, default=0.95)
+    p.add_argument("--tail-timeout", type=int)
+    p.add_argument("--schrodinger", type=Path)
+    ns = p.parse_args(argv)
+    args = c.configure_project(ns.project_toml, ns.schrodinger)
+    with database.stage_lock(args.db_path, "glide"):
+        _run_stage(args, ns)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from enum import StrEnum
 class CompoundState(StrEnum):
     REFERENCE = "reference"
     GENERATED = "generated"
+    SYNTHETIC_RUNNING = "synthetic_running"
     LIGPREP_RUNNING = "ligprep_running"
     LIGPREPPED = "ligprepped"
     GLIDE_RUNNING = "glide_running"

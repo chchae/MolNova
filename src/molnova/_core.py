@@ -20,9 +20,6 @@ from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator, rdFMCS
 
 
-DB_PATH = None
-
-
 def open_sqlite(path):
     """Open SQLite for concurrent stage workers."""
     conn = sqlite3.connect(path, timeout=30)
@@ -92,10 +89,10 @@ class SQLiteConnection:
         return SQLiteCursor(self._conn.cursor())
 
 
-def db_connect():
-    if DB_PATH is None:
-        raise RuntimeError("SQLite database path has not been initialized.")
-    return SQLiteConnection(DB_PATH)
+def db_connect(path):
+    if path is None:
+        raise ValueError("A SQLite database path is required.")
+    return SQLiteConnection(path)
 
 
 def load_project_toml(filename):
@@ -134,6 +131,20 @@ def load_project_toml(filename):
     if not project:
         raise RuntimeError("TOML 'project' must not be empty.")
 
+    synthetic_enabled = bool(config.get("synthetic-feasibility-enabled", False))
+    aizynth_config = (
+        resolve_path(config["aizynth-config"])
+        if config.get("aizynth-config")
+        else None
+    )
+    aizynth_cli = str(config.get("aizynth-cli", "aizynthcli")).strip()
+    if synthetic_enabled and aizynth_config is None:
+        raise RuntimeError(
+            "'aizynth-config' is required when synthetic-feasibility-enabled is true."
+        )
+    if not aizynth_cli:
+        raise RuntimeError("'aizynth-cli' must not be empty.")
+
     return {
         "toml_file": filename,
         "project": project,
@@ -157,6 +168,9 @@ def load_project_toml(filename):
         "gbsa_elite_count": int(config.get("gbsa-elite-count", 10)),
         "fep_enabled": bool(config.get("fep-enabled", False)),
         "fep_input_count": int(config.get("fep-input-count", 10)),
+        "synthetic_feasibility_enabled": synthetic_enabled,
+        "aizynth_config": aizynth_config,
+        "aizynth_cli": aizynth_cli,
         "mmgbsa_receptor": (
             resolve_path(config["mmgbsa-receptor"])
             if config.get("mmgbsa-receptor")
@@ -182,6 +196,8 @@ def create_sqlite_schema(conn):
             docking_score REAL,
             gbsa_score REAL,
             fep_score REAL,
+            synthetic_feasibility INTEGER
+                CHECK (synthetic_feasibility IN (0, 1)),
             state TEXT NOT NULL DEFAULT 'generated',
             failed_stage TEXT,
             failure_message TEXT,
@@ -215,10 +231,12 @@ def ensure_schema_columns(conn):
         row[1]
         for row in conn.execute("PRAGMA table_info(compound)")
     }
+    state_added = "state" not in cols
 
     additions = {
         "gbsa_score": "REAL",
         "fep_score": "REAL",
+        "synthetic_feasibility": "INTEGER CHECK (synthetic_feasibility IN (0, 1))",
         "state": "TEXT NOT NULL DEFAULT 'generated'",
         "failed_stage": "TEXT",
         "failure_message": "TEXT",
@@ -237,40 +255,47 @@ def ensure_schema_columns(conn):
         for row in conn.execute("PRAGMA table_info(compound)")
     }
 
-    conn.execute("UPDATE compound SET state='reference' WHERE iteration=0")
-    conn.execute(
-        "UPDATE compound SET state='fep_done' "
-        "WHERE iteration>0 AND fep_score IS NOT NULL"
-    )
-    conn.execute(
-        "UPDATE compound SET state='gbsa_done' "
-        "WHERE iteration>0 AND fep_score IS NULL AND gbsa_score IS NOT NULL"
-    )
-    conn.execute(
-        "UPDATE compound SET state='docked' "
-        "WHERE iteration>0 AND gbsa_score IS NULL AND docking_score IS NOT NULL"
-    )
+    # Infer states only while adding the single-state column. Re-running
+    # project setup must not overwrite active or terminal worker states.
+    if state_added:
+        conn.execute(
+            "UPDATE compound SET state='reference' WHERE iteration=0"
+        )
+        conn.execute(
+            "UPDATE compound SET state='fep_done' "
+            "WHERE iteration>0 AND fep_score IS NOT NULL"
+        )
+        conn.execute(
+            "UPDATE compound SET state='gbsa_done' "
+            "WHERE iteration>0 AND fep_score IS NULL "
+            "AND gbsa_score IS NOT NULL"
+        )
+        conn.execute(
+            "UPDATE compound SET state='docked' "
+            "WHERE iteration>0 AND gbsa_score IS NULL "
+            "AND docking_score IS NOT NULL"
+        )
 
-    # One-time best-effort migration from the old multi-status model.
-    if "docking_status" in cols:
-        conn.execute(
-            "UPDATE compound SET state='glide_running' "
-            "WHERE iteration>0 AND docking_score IS NULL "
-            "AND docking_status='running'"
-        )
-    if "ligprep_status" in cols:
-        conn.execute(
-            "UPDATE compound SET state='ligprepped' "
-            "WHERE iteration>0 AND docking_score IS NULL "
-            "AND ligprep_status='done' "
-            "AND state NOT IN ('glide_running','failed')"
-        )
-        conn.execute(
-            "UPDATE compound SET state='ligprep_running' "
-            "WHERE iteration>0 AND docking_score IS NULL "
-            "AND ligprep_status='running' "
-            "AND state NOT IN ('ligprepped','glide_running','failed')"
-        )
+        # One-time best-effort migration from the old multi-status model.
+        if "docking_status" in cols:
+            conn.execute(
+                "UPDATE compound SET state='glide_running' "
+                "WHERE iteration>0 AND docking_score IS NULL "
+                "AND docking_status='running'"
+            )
+        if "ligprep_status" in cols:
+            conn.execute(
+                "UPDATE compound SET state='ligprepped' "
+                "WHERE iteration>0 AND docking_score IS NULL "
+                "AND ligprep_status='done' "
+                "AND state NOT IN ('glide_running','failed')"
+            )
+            conn.execute(
+                "UPDATE compound SET state='ligprep_running' "
+                "WHERE iteration>0 AND docking_score IS NULL "
+                "AND ligprep_status='running' "
+                "AND state NOT IN ('ligprepped','glide_running','failed')"
+            )
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_compound_state ON compound(state)"
@@ -278,13 +303,21 @@ def ensure_schema_columns(conn):
     conn.commit()
 
 
-def set_compound_state(ids, state, failed_stage=None, failure_message=None):
+def set_compound_state(
+    ids,
+    state,
+    failed_stage=None,
+    failure_message=None,
+    db_path=None,
+):
     """Set the single pipeline state for a list of compound IDs."""
     ids = list(ids)
     if not ids:
         return
+    if db_path is None:
+        raise ValueError("db_path is required to update compound states")
     marks = ",".join("?" for _ in ids)
-    with open_sqlite(DB_PATH) as conn:
+    with open_sqlite(db_path) as conn:
         conn.execute(
             f"""
             UPDATE compound
@@ -297,16 +330,17 @@ def set_compound_state(ids, state, failed_stage=None, failure_message=None):
         conn.commit()
 
 
-def find_iteration_for_state(stage):
+def find_iteration_for_state(stage, db_path):
     conditions = {
         "ligprep": "iteration>0 AND state IN ('generated','ligprep_running')",
         "glide": "iteration>0 AND state IN ('ligprepped','glide_running') AND docking_score IS NULL",
         "gbsa": "iteration>0 AND docking_score IS NOT NULL AND gbsa_score IS NULL AND state IN ('docked','gbsa_running')",
         "fep": "iteration>0 AND gbsa_score IS NOT NULL AND fep_score IS NULL AND state IN ('gbsa_done','fep_running')",
+        "synthetic_feasibility": "iteration>0 AND synthetic_feasibility IS NULL AND state IN ('generated','synthetic_running')",
     }
     if stage not in conditions:
         raise ValueError(stage)
-    with open_sqlite(DB_PATH) as conn:
+    with open_sqlite(db_path) as conn:
         row = conn.execute(
             f"SELECT MIN(iteration) FROM compound WHERE {conditions[stage]}"
         ).fetchone()
@@ -426,9 +460,10 @@ def import_reference_poses_to_sqlite(
                 smiles,
                 iteration,
                 dG_exp,
-                docking_score
+                docking_score,
+                state
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'reference')
             """,
             references,
         )
@@ -436,10 +471,6 @@ def import_reference_poses_to_sqlite(
     except Exception:
         conn.rollback()
         conn.close()
-        try:
-            db_path.unlink()
-        except FileNotFoundError:
-            pass
         raise
     else:
         conn.close()
@@ -457,16 +488,15 @@ def initialize_project_database(
     reference_poses,
     schrodinger,
 ):
-    global DB_PATH
-    DB_PATH = Path(db_path).resolve()
+    db_path = Path(db_path).resolve()
 
     # --------------------------------------------------------
     # Existing SQLite file: validate schema before using it.
     # A previous interrupted initialization may have left an
     # empty SQLite file without the compound table.
     # --------------------------------------------------------
-    if DB_PATH.exists():
-        conn = open_sqlite(DB_PATH)
+    if db_path.exists():
+        conn = open_sqlite(db_path)
         try:
             conn.execute("PRAGMA foreign_keys = ON")
 
@@ -484,19 +514,23 @@ def initialize_project_database(
                     "SELECT COUNT(*) FROM compound WHERE iteration = 0"
                 ).fetchone()
                 reference_count = row[0] if row is not None else 0
+                total_count = conn.execute(
+                    "SELECT COUNT(*) FROM compound"
+                ).fetchone()[0]
             else:
                 reference_count = 0
+                total_count = 0
         finally:
             conn.close()
 
         if table_exists and reference_count > 0:
-            with open_sqlite(DB_PATH) as conn:
+            with open_sqlite(db_path) as conn:
                 ensure_schema_columns(conn)
 
             print()
             print("Using existing SQLite project database")
             print("-" * 70)
-            print(f"Database            : {DB_PATH}")
+            print(f"Database            : {db_path}")
             print(f"Reference compounds : {reference_count}")
             return
 
@@ -504,27 +538,19 @@ def initialize_project_database(
             print()
             print("Existing SQLite file has no compound table")
             print("-" * 70)
-            print(f"Database            : {DB_PATH}")
+            print(f"Database            : {db_path}")
             print("Initializing schema and reference compounds...")
         else:
+            if total_count:
+                raise RuntimeError(
+                    "Existing SQLite database contains compounds but no "
+                    "iteration=0 references; refusing to discard existing data."
+                )
             print()
             print("Existing SQLite database has no iteration=0 references")
             print("-" * 70)
-            print(f"Database            : {DB_PATH}")
+            print(f"Database            : {db_path}")
             print("Importing reference compounds...")
-
-        # If the compound table exists but contains no references,
-        # remove only that empty/incomplete table set before the normal
-        # initialization path.  Existing populated databases are never
-        # deleted or overwritten.
-        if table_exists:
-            conn = open_sqlite(DB_PATH)
-            try:
-                conn.execute("PRAGMA foreign_keys = OFF")
-                conn.execute("DROP TABLE IF EXISTS compound")
-                conn.commit()
-            finally:
-                conn.close()
 
     # --------------------------------------------------------
     # New DB, empty SQLite file, or incomplete DB.
@@ -532,7 +558,7 @@ def initialize_project_database(
     # inserts iteration=0 reference ligands.
     # --------------------------------------------------------
     import_reference_poses_to_sqlite(
-        DB_PATH,
+        db_path,
         reference_poses,
         schrodinger,
     )
@@ -562,8 +588,8 @@ def canonicalize_smiles(smiles):
     )
 
 
-def get_max_iteration():
-    with db_connect() as conn:
+def get_max_iteration(db_path):
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT COALESCE(MAX(iteration), 0) FROM compound"
@@ -571,8 +597,8 @@ def get_max_iteration():
             return cur.fetchone()[0]
 
 
-def get_iteration_counts(iteration):
-    with db_connect() as conn:
+def get_iteration_counts(iteration, db_path):
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 '''
@@ -585,13 +611,13 @@ def get_iteration_counts(iteration):
             return cur.fetchone()
 
 
-def determine_start_iteration():
-    max_iter = get_max_iteration()
+def determine_start_iteration(db_path):
+    max_iter = get_max_iteration(db_path)
 
     if max_iter == 0:
         return 1
 
-    total, docked = get_iteration_counts(max_iter)
+    total, docked = get_iteration_counts(max_iter, db_path)
 
     if total > 0 and docked < total:
         return max_iter
@@ -599,10 +625,10 @@ def determine_start_iteration():
     return max_iter + 1
 
 
-def get_reference_compounds():
+def get_reference_compounds(db_path):
     references = []
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -718,7 +744,7 @@ def assign_reference_compounds(iteration, args):
         similarity -> Tanimoto similarity to that reference
     """
 
-    references = get_reference_compounds()
+    references = get_reference_compounds(args.db_path)
 
     # --------------------------------------------------------
     # Restrict reference-pose candidates to structures that can
@@ -781,7 +807,7 @@ def assign_reference_compounds(iteration, args):
     invalid = 0
     similarity_values = []
 
-    with db_connect() as conn:
+    with db_connect(args.db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1436,6 +1462,7 @@ def run_libinvent_sampling(
 def select_global_elites(
     target_iteration,
     best_count,
+    db_path,
     diverse_count=0,
     candidate_pool=0,
 ):
@@ -1450,7 +1477,7 @@ def select_global_elites(
         id, name, smiles, iteration, docking_score, gbsa_score
     """
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -2030,10 +2057,11 @@ def run_libinvent_elite_transfer_learning(
 def select_training_compounds(
     target_iteration,
     top_fraction,
+    db_path,
 ):
     selected = []
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 '''
@@ -2428,6 +2456,7 @@ def insert_generated(
     csv_file,
     iteration,
     target_count,
+    db_path,
 ):
     generated = read_generated_smiles(
         csv_file
@@ -2436,8 +2465,9 @@ def insert_generated(
     inserted = 0
     duplicate_db = 0
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
+            cur.execute("BEGIN IMMEDIATE")
             existing = get_existing_canonical_smiles(
                 cur
             )
@@ -2514,10 +2544,10 @@ def insert_generated(
     return inserted
 
 
-def get_reference_groups(iteration):
+def get_reference_groups(iteration, db_path):
     groups = {}
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 '''
@@ -2559,8 +2589,8 @@ def get_reference_groups(iteration):
     return groups
 
 
-def get_reference_name(reference_id):
-    with db_connect() as conn:
+def get_reference_name(reference_id, db_path):
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 '''
@@ -3358,7 +3388,7 @@ def merge_best_pose_files(
     return output_file
 
 
-def update_scores(score_file):
+def update_scores(score_file, db_path):
     scores = []
 
     with score_file.open(
@@ -3389,7 +3419,7 @@ def update_scores(score_file):
 
     updated = 0
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             for score, compound_id in scores:
                 cur.execute(
@@ -3425,7 +3455,7 @@ def run_reference_guided_docking(iteration, args, glide_root):
     # 1. Assign nearest iteration=0 reference to every undocked compound.
     assign_reference_compounds(iteration, args)
 
-    groups = get_reference_groups(iteration)
+    groups = get_reference_groups(iteration, args.db_path)
 
     print()
     print(f"Reference groups : {len(groups)}")
@@ -3494,7 +3524,7 @@ def run_reference_guided_docking(iteration, args, glide_root):
             print(f"Skipping reference {reference_id}: no prepared ligands.")
             continue
 
-        reference_name = get_reference_name(reference_id)
+        reference_name = get_reference_name(reference_id, args.db_path)
         group_dir = glide_root / f"ref_{reference_id}"
         group_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3615,7 +3645,7 @@ def run_reference_guided_docking(iteration, args, glide_root):
                 group_best_pose_file
             )
 
-            updated = update_scores(score_file)
+            updated = update_scores(score_file, args.db_path)
             total_updated += updated
 
             print(
@@ -3672,8 +3702,9 @@ def run_reference_guided_docking(iteration, args, glide_root):
 def select_iteration_docking_top(
     iteration,
     limit_count,
+    db_path,
 ):
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -4024,6 +4055,7 @@ print(
 
 def update_gbsa_scores(
     score_file,
+    db_path,
 ):
     rows = []
 
@@ -4052,7 +4084,7 @@ def update_gbsa_scores(
     if not rows:
         return 0
 
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.executemany(
                 """
@@ -4076,16 +4108,22 @@ def run_iteration_mmgbsa(
     args,
     iteration_dir,
     glide_dir,
+    compound_ids=None,
 ):
     top_rows = select_iteration_docking_top(
         iteration=iteration,
         limit_count=args.gbsa_input_count,
+        db_path=args.db_path,
     )
+
+    if compound_ids is not None:
+        claimed_ids = set(compound_ids)
+        top_rows = [row for row in top_rows if row[0] in claimed_ids]
 
     if top_rows:
         top_ids = [row[0] for row in top_rows]
         placeholders = ",".join("?" for _ in top_ids)
-        with open_sqlite(DB_PATH) as _conn:
+        with open_sqlite(args.db_path) as _conn:
             done_ids = {
                 row[0]
                 for row in _conn.execute(
@@ -4290,11 +4328,9 @@ def run_iteration_mmgbsa(
         cwd=mmgbsa_dir,
     )
 
-    updated = update_gbsa_scores(
-        score_file
-    )
+    updated = update_gbsa_scores(score_file, args.db_path)
 
-    with db_connect() as conn:
+    with db_connect(args.db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -4362,8 +4398,9 @@ def run_iteration_mmgbsa(
 
 def print_iteration_statistics(
     iteration,
+    db_path,
 ):
-    with db_connect() as conn:
+    with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -4482,9 +4519,7 @@ def run_iteration(
         exist_ok=True,
     )
 
-    total, docked = get_iteration_counts(
-        iteration
-    )
+    total, docked = get_iteration_counts(iteration, args.db_path)
 
     if total == 0:
         print()
@@ -4500,6 +4535,7 @@ def run_iteration(
             elites = select_global_elites(
                 target_iteration=iteration,
                 best_count=args.gbsa_elite_count,
+                db_path=args.db_path,
             )
 
             print()
@@ -4567,6 +4603,7 @@ def run_iteration(
             csv_file=generated_file,
             iteration=iteration,
             target_count=args.target_count,
+            db_path=args.db_path,
         )
 
         if inserted == 0:
@@ -4608,9 +4645,7 @@ def run_iteration(
         f"{gbsa_updated}"
     )
 
-    print_iteration_statistics(
-        iteration
-    )
+    print_iteration_statistics(iteration, args.db_path)
 
 
 
@@ -4653,7 +4688,7 @@ def configure_project(project_toml, schrodinger=None):
 
     args.output.mkdir(parents=True, exist_ok=True)
 
-    references = get_reference_compounds()
+    references = get_reference_compounds(args.db_path)
     info = prepare_libinvent_scaffold(
         references=references,
         user_mcs_smarts=args.mcs_smarts,
@@ -4667,8 +4702,8 @@ def configure_project(project_toml, schrodinger=None):
     return args
 
 
-def state_counts(iteration):
-    with open_sqlite(DB_PATH) as conn:
+def state_counts(iteration, db_path):
+    with open_sqlite(db_path) as conn:
         return conn.execute(
             """
             SELECT state, COUNT(*)
@@ -4682,8 +4717,8 @@ def state_counts(iteration):
 
 
 
-def list_iteration_compounds(iteration, where="1=1"):
-    with open_sqlite(DB_PATH) as conn:
+def list_iteration_compounds(iteration, db_path, where="1=1"):
+    with open_sqlite(db_path) as conn:
         return conn.execute(
             f"SELECT id,name,smiles,similar_to,similarity FROM compound WHERE iteration=? AND {where} ORDER BY id",
             (iteration,),

@@ -2,6 +2,7 @@
 import argparse
 from pathlib import Path
 from molnova import _core as c
+from molnova import database
 
 
 def eligible_iteration(args):
@@ -18,27 +19,22 @@ def eligible_iteration(args):
                 SELECT id,state,gbsa_score
                 FROM compound
                 WHERE iteration=? AND docking_score IS NOT NULL
-                ORDER BY docking_score ASC,id ASC
+                                    AND state IN ('docked','gbsa_running')
+                                ORDER BY docking_score ASC,id ASC
                 LIMIT ?
                 """,
                 (iteration, args.gbsa_input_count),
             ).fetchall()
             if any(
-                gbsa_score is None and state in ("docked", "gbsa_running")
+                gbsa_score is None and state == "docked"
                 for _, state, gbsa_score in top
             ):
                 return iteration
     return None
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description="Independent Prime MM-GBSA stage")
-    p.add_argument("project_toml", type=Path)
-    p.add_argument("--iteration", type=int)
-    p.add_argument("--schrodinger", type=Path)
-    ns = p.parse_args(argv)
-    args = c.configure_project(ns.project_toml, ns.schrodinger)
-    iteration = ns.iteration or eligible_iteration(args)
+def _run_stage(args, requested_iteration):
+    iteration = requested_iteration or eligible_iteration(args)
     if iteration is None:
         print("No current docking top-N compounds require MM-GBSA.")
         return
@@ -48,7 +44,8 @@ def main(argv=None):
             """
             SELECT id,state
             FROM compound
-            WHERE iteration=? AND docking_score IS NOT NULL
+                        WHERE iteration=? AND docking_score IS NOT NULL
+                            AND state IN ('docked','gbsa_running')
             ORDER BY docking_score ASC,id ASC
             LIMIT ?
             """,
@@ -66,13 +63,22 @@ def main(argv=None):
         print(f"Iteration {iteration}: current docking top-{args.gbsa_input_count} already has MM-GBSA.")
         return
 
-    c.set_compound_state(pending, "gbsa_running")
+    pending = database.claim_compounds(
+        args.db_path,
+        pending,
+        expected_state=("docked", "gbsa_running"),
+        claimed_state="gbsa_running",
+    )
+    if not pending:
+        print(f"Iteration {iteration}: top-N compounds were claimed by another worker.")
+        return
     try:
         updated = c.run_iteration_mmgbsa(
             iteration=iteration,
             args=args,
             iteration_dir=args.output / f"iter{iteration}",
             glide_dir=args.output / f"iter{iteration}" / "glide",
+            compound_ids=pending,
         )
     except Exception as exc:
         c.set_compound_state(
@@ -80,6 +86,7 @@ def main(argv=None):
             "docked",
             failed_stage="gbsa",
             failure_message=str(exc),
+            db_path=args.db_path,
         )
         raise
 
@@ -98,8 +105,20 @@ def main(argv=None):
             "docked",
             failed_stage="gbsa",
             failure_message="No MM-GBSA score returned; retryable",
+            db_path=args.db_path,
         )
     print(f"Iteration {iteration}: MM-GBSA DB scores updated={updated}")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Independent Prime MM-GBSA stage")
+    p.add_argument("project_toml", type=Path)
+    p.add_argument("--iteration", type=int)
+    p.add_argument("--schrodinger", type=Path)
+    ns = p.parse_args(argv)
+    args = c.configure_project(ns.project_toml, ns.schrodinger)
+    with database.stage_lock(args.db_path, "mmgbsa"):
+        _run_stage(args, ns.iteration)
 
 
 if __name__ == "__main__":

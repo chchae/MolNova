@@ -24,3 +24,8 @@ ligprep-max-stereo = 1
 
 fep-enabled = false
 fep-input-count = 10
+
+# AiZynthFinder is optional and requires policy-model and stock files.
+synthetic-feasibility-enabled = false
+# aizynth-config = "../input/aizynth-config.yml"
+# aizynth-cli = "aizynthcli"

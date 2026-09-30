@@ -26,6 +26,7 @@ molnova ligprep egfr.toml --iteration 5
 molnova glide egfr.toml --iteration 5
 molnova mmgbsa egfr.toml --iteration 5
 molnova fep egfr.toml --iteration 5
+molnova synthetic-feasibility egfr.toml --iteration 5
 ```
 
 Inspect SQLite workflow state:
@@ -61,3 +62,23 @@ Relative paths in each TOML are resolved relative to that TOML file.
 The driver supervises independent subprocess workers. SQLite is the source of truth, so completed Glide groups can be written immediately and consumed by MM-GBSA without waiting for straggler Glide jobs.
 
 See `examples/egfr.toml` and `docs/architecture.md`.
+
+## Synthetic feasibility
+
+AiZynthFinder is an optional external runtime. Configure a valid AiZynthFinder
+YAML file containing expansion policy and stock definitions, then enable it in
+the project TOML:
+
+```toml
+synthetic-feasibility-enabled = true
+aizynth-config = "../input/aizynth-config.yml"
+aizynth-cli = "aizynthcli"
+```
+
+The driver runs this stage after generation and before LigPrep. Install
+AiZynthFinder and its model dependencies in the runtime environment, and make
+`aizynthcli` available on `PATH` or set its executable path explicitly.
+`synthetic_feasibility` is nullable: `NULL` means not evaluated, `1` means at
+least one solved route was found, and `0` means none were found within the
+configured search limits and stock. A value of `0` is not proof that a compound
+is impossible to synthesize.
