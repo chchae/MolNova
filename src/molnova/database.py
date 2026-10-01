@@ -1,20 +1,25 @@
 """SQLite workflow-state API."""
+import sqlite3
 from contextlib import contextmanager
+from collections.abc import Iterable, Iterator
 import fcntl
 from pathlib import Path
+from types import SimpleNamespace
 from molnova import _core
 
 
-def connect(path: str | Path):
+def connect(path: str | Path) -> sqlite3.Connection:
     return _core.open_sqlite(Path(path))
 
 
-def initialize(project_toml: str | Path, schrodinger: str | Path | None = None):
+def initialize(
+    project_toml: str | Path, schrodinger: str | Path | None = None
+) -> SimpleNamespace:
     return _core.configure_project(project_toml, Path(schrodinger) if schrodinger else None)
 
 
 @contextmanager
-def stage_lock(path: str | Path, stage: str):
+def stage_lock(path: str | Path, stage: str) -> Iterator[None]:
     """Prevent overlapping local invocations of one project stage."""
     lock_path = Path(f"{Path(path)}.{stage}.driver.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,11 +38,11 @@ def stage_lock(path: str | Path, stage: str):
 
 def set_state(
     path: str | Path,
-    ids,
+    ids: Iterable[int],
     state: str,
-    failed_stage=None,
-    failure_message=None,
-):
+    failed_stage: str | None = None,
+    failure_message: str | None = None,
+) -> None:
     return _core.set_compound_state(
         ids,
         state,
@@ -49,10 +54,10 @@ def set_state(
 
 def claim_compounds(
     path: str | Path,
-    ids,
+    ids: Iterable[int],
     expected_state: str | tuple[str, ...],
     claimed_state: str,
-):
+) -> list[int]:
     """Atomically transition eligible compounds and return claimed IDs."""
     ids = list(dict.fromkeys(ids))
     if not ids:
@@ -104,5 +109,5 @@ def claim_compounds(
         conn.close()
 
 
-def find_iteration(stage: str, path: str | Path):
+def find_iteration(stage: str, path: str | Path) -> int | None:
     return _core.find_iteration_for_state(stage, path)
