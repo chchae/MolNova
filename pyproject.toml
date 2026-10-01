@@ -21,3 +21,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+pythonVersion = "3.11"
+

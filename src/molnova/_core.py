@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -184,7 +185,7 @@ def load_project_toml(filename):
     }
 
 
-def create_sqlite_schema(conn):
+def create_sqlite_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS compound (
@@ -221,7 +222,7 @@ def create_sqlite_schema(conn):
 
 
 
-def ensure_schema_columns(conn):
+def ensure_schema_columns(conn: sqlite3.Connection) -> None:
     """Upgrade an existing project DB in place to the single-state model.
 
     New code uses only ``state`` plus optional ``failed_stage`` / ``failure_message``.
@@ -306,12 +307,12 @@ def ensure_schema_columns(conn):
 
 
 def set_compound_state(
-    ids,
-    state,
-    failed_stage=None,
-    failure_message=None,
-    db_path=None,
-):
+    ids: Iterable[int],
+    state: str,
+    failed_stage: str | None = None,
+    failure_message: str | None = None,
+    db_path: str | Path | None = None,
+) -> None:
     """Set the single pipeline state for a list of compound IDs."""
     ids = list(ids)
     if not ids:
@@ -332,7 +333,7 @@ def set_compound_state(
         conn.commit()
 
 
-def find_iteration_for_state(stage, db_path):
+def find_iteration_for_state(stage: str, db_path: str | Path) -> int | None:
     conditions = {
         "ligprep": "iteration>0 AND state IN ('generated','ligprep_running')",
         "glide": "iteration>0 AND state IN ('ligprepped','glide_running') AND docking_score IS NULL",
@@ -571,7 +572,9 @@ FP_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(
 )
 
 
-def run_command(cmd, cwd=None):
+def run_command(
+    cmd: Iterable[object], cwd: str | Path | None = None
+) -> None:
     cmd = [str(x) for x in cmd]
     print()
     print("$", " ".join(cmd))
@@ -579,7 +582,7 @@ def run_command(cmd, cwd=None):
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
-def canonicalize_smiles(smiles):
+def canonicalize_smiles(smiles: str) -> str | None:
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
@@ -590,7 +593,7 @@ def canonicalize_smiles(smiles):
     )
 
 
-def get_max_iteration(db_path):
+def get_max_iteration(db_path: str | Path) -> int:
     with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -599,7 +602,9 @@ def get_max_iteration(db_path):
             return cur.fetchone()[0]
 
 
-def get_iteration_counts(iteration, db_path):
+def get_iteration_counts(
+    iteration: int, db_path: str | Path
+) -> tuple[int, int]:
     with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -613,7 +618,7 @@ def get_iteration_counts(iteration, db_path):
             return cur.fetchone()
 
 
-def determine_start_iteration(db_path):
+def determine_start_iteration(db_path: str | Path) -> int:
     max_iter = get_max_iteration(db_path)
 
     if max_iter == 0:
