@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 
 from molnova import _core
@@ -71,9 +72,13 @@ def _status(project_toml):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and not argv[0].startswith("-") and Path(argv[0]).suffix.lower() == ".toml":
+        argv.insert(0, "run")
     parser = argparse.ArgumentParser(
         prog="molnova",
         description="Iterative molecular lead-optimization pipeline",
+        epilog="A TOML path alone runs the supervisor: molnova input/egfr.toml",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -98,6 +103,7 @@ def main(argv=None):
     )
     synthetic.add_argument("project_toml", type=Path)
     synthetic.add_argument("--iteration", type=int)
+    synthetic.add_argument("--import-results", type=Path)
 
     fep_parser = sub.add_parser(
         "fep", help="Export FEP candidates or import FEP scores"
@@ -143,7 +149,10 @@ def main(argv=None):
         return mmgbsa.main(_project_args(ns))
 
     if ns.command == "synthetic-feasibility":
-        return synthetic_feasibility.main(_project_args(ns))
+        args = _project_args(ns)
+        if ns.import_results is not None:
+            args += ["--import-results", str(ns.import_results)]
+        return synthetic_feasibility.main(args)
 
     if ns.command == "fep":
         args = _project_args(ns)

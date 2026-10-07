@@ -5,6 +5,8 @@ import sqlite3
 import time
 from molnova import _core as c
 from molnova import database
+from molnova.stages._logging import work_started
+from molnova.states import CompoundState as State
 
 
 def query_groups(iteration, db_path):
@@ -38,16 +40,20 @@ def mark_group(db_path, compounds, state, failed_stage=None, message=None):
 def merge_current_best(args, glide_root, merger):
     files = sorted(glide_root.glob("ref_*/best_poses.maegz"))
     if files:
+        pending_file = glide_root / "best_poses.pending.maegz"
         c.merge_best_pose_files(
             args.schrodinger, merger, files,
-            glide_root / "best_poses.maegz", glide_root
+            pending_file, glide_root
         )
+        pending_file.replace(glide_root / "best_poses.maegz")
 
 
 def process_completed_job(iteration, args, job, extractor, merger, glide_root):
     score_file, best_file = c.extract_scores_and_best_poses(
         args.schrodinger, extractor, job["output_file"], job["group_dir"]
     )
+    # Publish complete poses before making the group's scores eligible for GBSA.
+    merge_current_best(args, glide_root, merger)
     updated = c.update_scores(score_file, args.db_path)
     with c.open_sqlite(args.db_path) as conn:
         scored = {r[0] for r in conn.execute(
@@ -64,7 +70,6 @@ def process_completed_job(iteration, args, job, extractor, merger, glide_root):
             failure_message="No Glide pose",
             db_path=args.db_path,
         )
-    merge_current_best(args, glide_root, merger)
     print(f"Reference {job['reference_id']} completed: DB updated={updated}, no-pose={len(failed)}")
 
 
@@ -102,6 +107,7 @@ def _run_stage(args, ns):
         print(f"Iteration {iteration}: no Glide-pending compounds.")
         return
 
+    work_started(f"Iteration {iteration}: processing Glide for {len(groups)} reference groups.")
     ligprep_file = args.output / f"iter{iteration}" / "ligprep" / "ligprep_all.maegz"
     if not ligprep_file.exists():
         raise FileNotFoundError(f"LigPrep output not found: {ligprep_file}")
@@ -137,6 +143,10 @@ def _run_stage(args, ns):
         # A previously submitted job may have completed while this driver was not running.
         if output_file.exists() and output_file.stat().st_size > 0:
             process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
+            continue
+
+        if c.glide_log_no_poses(log_file):
+            mark_group(args.db_path, compounds, State.FAILED, failed_stage="glide", message="Completed Glide job produced no poses")
             continue
 
         # Existing non-failed log without output: assume the JobServer/SLURM job is still running.
@@ -179,6 +189,11 @@ def _run_stage(args, ns):
             if job["output_file"].exists() and job["output_file"].stat().st_size > 0:
                 process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
                 terminal += 1
+                continue
+            if c.glide_log_no_poses(job["log_file"]):
+                mark_group(args.db_path, job["compounds"], State.FAILED, failed_stage="glide", message="Completed Glide job produced no poses")
+                terminal += 1
+                print(f"Reference {job['reference_id']} completed without poses.")
                 continue
             if c.glide_log_failed(job["log_file"]):
                 mark_group(args.db_path, job["compounds"], "failed", failed_stage="glide", message="Glide job failed")

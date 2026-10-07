@@ -77,13 +77,16 @@ Each molecular target has a separate working directory:
 projects/
 ├── egfr/
 │   ├── egfr.toml
-│   ├── egfr.sqlite
 │   ├── input/
 │   └── output/
+│       └── egfr.sqlite
 ├── cdk2/
 └── ask1/
 
 Relative paths in TOML are resolved relative to the TOML file.
+The project name defaults to the TOML filename stem. SQLite is stored as
+`<out-dir>/<project>.sqlite`. When this output database is absent, the old database
+beside the TOML is copied using SQLite backup; the original is retained.
 
 ## 5. Workflow Architecture
 

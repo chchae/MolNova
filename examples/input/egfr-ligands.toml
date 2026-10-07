@@ -1,0 +1,20 @@
+run_type = "transfer_learning"
+device = "cuda:0"
+tb_logdir = "output/egfr/tb_egfr"
+json_out_config = "output/egfr/json_egfr_tl.json"
+
+[parameters]
+input_model_file = "/home/chchae/work/ML/REINVENT/REINVENT4/priors/mol2mol_medium_similarity.prior"
+smiles_file = "input/egfr-ligands.smi"
+output_model_file = "output/egfr/TL_EGFR_Mol2Mol.model"
+num_epochs = 5
+save_every_n_epochs = 5
+batch_size = 16
+num_refs = 24
+sample_batch_size = 100
+tb_isim = false
+pairs.type = "tanimoto"
+pairs.lower_threshold = 0.7
+pairs.upper_threshold = 0.99
+pairs.min_cardinality = 1
+pairs.max_cardinality = 23

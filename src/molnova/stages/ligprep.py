@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 from molnova import _core as c
 from molnova import database
+from molnova.stages._logging import work_started
 
 
 def _run_stage(args, requested_iteration):
@@ -41,6 +42,7 @@ def _run_stage(args, requested_iteration):
         print(f"Iteration {iteration}: compounds were claimed by another worker.")
         return
 
+    work_started(f"Iteration {iteration}: starting LigPrep for {len(rows)} compounds.")
     outdir = args.output / f"iter{iteration}" / "ligprep"
     outdir.mkdir(parents=True, exist_ok=True)
     input_file = outdir / "input_all.smi"

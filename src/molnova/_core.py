@@ -103,7 +103,6 @@ def load_project_toml(filename):
         config = tomllib.load(f)
 
     required = [
-        "project",
         "libinvent-prior",
         "dock-grid",
         "reference-pose",
@@ -121,6 +120,9 @@ def load_project_toml(filename):
         )
 
     base = filename.parent
+    from molnova.config import remote_reinvent_settings, remote_aizynth_settings
+    remote_reinvent = remote_reinvent_settings(config)
+    remote_aizynth = remote_aizynth_settings(config)
 
     def resolve_path(value):
         path = Path(value).expanduser()
@@ -128,13 +130,14 @@ def load_project_toml(filename):
             path = base / path
         return path.resolve()
 
-    project = str(config["project"]).strip()
+    project = str(config.get("project", filename.stem)).strip()
     if not project:
         raise RuntimeError("TOML 'project' must not be empty.")
 
-    synthetic_enabled = bool(config.get("synthetic-feasibility-enabled", False))
+    synthetic_enabled = bool(config.get("synthetic-feasibility-enabled", True))
     aizynth_config = (
-        resolve_path(config["aizynth-config"])
+        (Path(config["aizynth-config"]) if remote_aizynth
+         else resolve_path(config["aizynth-config"]))
         if config.get("aizynth-config")
         else None
     )
@@ -146,15 +149,18 @@ def load_project_toml(filename):
     if not aizynth_cli:
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
+    output = resolve_path(config["out-dir"])
     return {
         "toml_file": filename,
         "project": project,
-        "db_path": (base / f"{project}.sqlite").resolve(),
-        "libinvent_prior": resolve_path(config["libinvent-prior"]),
+        "db_path": output / f"{project}.sqlite",
+        "libinvent_prior": (Path(config["libinvent-prior"]) if remote_reinvent
+                            else resolve_path(config["libinvent-prior"])),
+        "remote_reinvent": remote_reinvent,
         "grid": resolve_path(config["dock-grid"]),
         "reference_poses": resolve_path(config["reference-pose"]),
         "mcs_smarts": config.get("reference-mcs"),
-        "output": resolve_path(config["out-dir"]),
+        "output": output,
         "sample_size": int(config["sample-size"]),
         "target_count": int(config["target-count"]),
         "max_iteration": int(config["max-iteration"]),
@@ -172,6 +178,7 @@ def load_project_toml(filename):
         "synthetic_feasibility_enabled": synthetic_enabled,
         "aizynth_config": aizynth_config,
         "aizynth_cli": aizynth_cli,
+        "remote_aizynth": remote_aizynth,
         "mmgbsa_receptor": (
             resolve_path(config["mmgbsa-receptor"])
             if config.get("mmgbsa-receptor")
@@ -1429,6 +1436,8 @@ def run_libinvent_sampling(
     libinvent_prior,
     scaffold_file,
     sample_size,
+    remote=None,
+    remote_model=False,
 ):
     config_file, output_file = write_libinvent_sampling_toml(
         run_dir,
@@ -1436,6 +1445,10 @@ def run_libinvent_sampling(
         scaffold_file,
         sample_size,
     )
+
+    if remote:
+        from molnova.reinvent_remote import run_remote
+        return run_remote(config_file, output_file, remote, remote_model=remote_model)
 
     reinvent = shutil.which("reinvent")
 
@@ -2032,6 +2045,7 @@ def run_libinvent_elite_transfer_learning(
     train_file,
     valid_file,
     epochs,
+    remote=None,
 ):
     config_file, model_file = write_libinvent_elite_tl_toml(
         run_dir,
@@ -2040,6 +2054,10 @@ def run_libinvent_elite_transfer_learning(
         valid_file,
         epochs,
     )
+
+    if remote:
+        from molnova.reinvent_remote import run_remote
+        return run_remote(config_file, model_file, remote, remote_model=True)
 
     reinvent = shutil.which("reinvent")
     if reinvent is None:
@@ -3046,6 +3064,20 @@ def glide_log_failed(log_file):
             "ExitStatus: died",
             "Job failed",
         )
+    )
+
+
+def glide_log_no_poses(log_file):
+    """Recognize a finished Glide job that intentionally wrote no pose file."""
+    if not log_file.exists():
+        return False
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return (
+        "Docking job produced no poses; not writing" in text
+        and "Finished at:" in text
     )
 
 
@@ -4063,6 +4095,7 @@ print(
 def update_gbsa_scores(
     score_file,
     db_path,
+    allowed_ids=None,
 ):
     rows = []
 
@@ -4091,6 +4124,13 @@ def update_gbsa_scores(
     if not rows:
         return 0
 
+    if allowed_ids is not None:
+        unexpected = {compound_id for _, compound_id in rows} - set(allowed_ids)
+        if unexpected:
+            raise ValueError(f"MM-GBSA returned unsubmitted compound IDs: {sorted(unexpected)}")
+    if any(not math.isfinite(score) for score, _ in rows):
+        raise ValueError("MM-GBSA returned a non-finite score")
+
     with db_connect(db_path) as conn:
         with conn.cursor() as cur:
             cur.executemany(
@@ -4102,12 +4142,13 @@ def update_gbsa_scores(
                     failed_stage = NULL,
                     failure_message = NULL,
                     modified_at = CURRENT_TIMESTAMP
-                WHERE id = %s
+                WHERE id = %s AND iteration > 0 AND gbsa_score IS NULL
                 """,
                 rows,
             )
+            updated = cur.rowcount
 
-    return len(rows)
+    return updated
 
 
 def run_iteration_mmgbsa(
@@ -4335,7 +4376,9 @@ def run_iteration_mmgbsa(
         cwd=mmgbsa_dir,
     )
 
-    updated = update_gbsa_scores(score_file, args.db_path)
+    updated = update_gbsa_scores(
+        score_file, args.db_path, allowed_ids=[row[0] for row in top_rows]
+    )
 
     with db_connect(args.db_path) as conn:
         with conn.cursor() as cur:
@@ -4684,6 +4727,10 @@ def configure_project(project_toml, schrodinger=None):
     args.mcs_energy_field = "auto"
     args.top_fraction = 0.10
 
+    from molnova.database import migrate_project_database
+    migrate_project_database(
+        args.toml_file.parent / f"{args.project}.sqlite", args.db_path
+    )
     initialize_project_database(
         db_path=args.db_path,
         reference_poses=args.reference_poses,

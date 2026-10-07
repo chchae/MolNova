@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 from molnova import _core as c
 from molnova import database
+from molnova.stages._logging import work_started
 
 
 def choose_iteration(args, requested):
@@ -52,6 +53,7 @@ def _run_stage(args, requested_iteration):
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if iteration == 1:
+        work_started("Iteration 1: starting LibInvent sampling.")
         model = args.libinvent_prior
         print("Iteration 1: sampling original LibInvent prior.")
     else:
@@ -73,6 +75,7 @@ def _run_stage(args, requested_iteration):
             )
             return
 
+        work_started(f"Iteration {iteration}: starting elite transfer learning and sampling.")
         elites = c.select_global_elites(
             target_iteration=iteration,
             best_count=args.gbsa_elite_count,
@@ -93,6 +96,7 @@ def _run_stage(args, requested_iteration):
             train_file=train_file,
             valid_file=valid_file,
             epochs=args.elite_tl_epochs,
+            remote=getattr(args, "remote_reinvent", None),
         )
 
     generated = c.run_libinvent_sampling(
@@ -100,6 +104,8 @@ def _run_stage(args, requested_iteration):
         libinvent_prior=model,
         scaffold_file=args.libinvent_scaffold_file,
         sample_size=args.sample_size,
+        remote=getattr(args, "remote_reinvent", None),
+        remote_model=iteration == 1,
     )
     inserted = c.insert_generated(
         csv_file=generated,

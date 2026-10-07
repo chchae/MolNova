@@ -3,6 +3,8 @@ import argparse
 from pathlib import Path
 from molnova import _core as c
 from molnova import database
+from molnova.stages._logging import work_started
+from molnova.states import CompoundState as State
 
 
 def eligible_iteration(args):
@@ -13,23 +15,9 @@ def eligible_iteration(args):
                 "WHERE iteration>0 AND docking_score IS NOT NULL ORDER BY iteration"
             )
         ]
-        for iteration in iterations:
-            top = conn.execute(
-                """
-                SELECT id,state,gbsa_score
-                FROM compound
-                WHERE iteration=? AND docking_score IS NOT NULL
-                                    AND state IN ('docked','gbsa_running')
-                                ORDER BY docking_score ASC,id ASC
-                LIMIT ?
-                """,
-                (iteration, args.gbsa_input_count),
-            ).fetchall()
-            if any(
-                gbsa_score is None and state == "docked"
-                for _, state, gbsa_score in top
-            ):
-                return iteration
+    for iteration in iterations:
+        if database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count):
+            return iteration
     return None
 
 
@@ -39,25 +27,7 @@ def _run_stage(args, requested_iteration):
         print("No current docking top-N compounds require MM-GBSA.")
         return
 
-    with c.open_sqlite(args.db_path) as conn:
-        top = conn.execute(
-            """
-            SELECT id,state
-            FROM compound
-                        WHERE iteration=? AND docking_score IS NOT NULL
-                            AND state IN ('docked','gbsa_running')
-            ORDER BY docking_score ASC,id ASC
-            LIMIT ?
-            """,
-            (iteration, args.gbsa_input_count),
-        ).fetchall()
-        pending = [
-            cid for cid, state in top
-            if state in ("docked", "gbsa_running")
-            and conn.execute(
-                "SELECT gbsa_score FROM compound WHERE id=?", (cid,)
-            ).fetchone()[0] is None
-        ]
+    pending = database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count)
 
     if not pending:
         print(f"Iteration {iteration}: current docking top-{args.gbsa_input_count} already has MM-GBSA.")
@@ -66,12 +36,13 @@ def _run_stage(args, requested_iteration):
     pending = database.claim_compounds(
         args.db_path,
         pending,
-        expected_state=("docked", "gbsa_running"),
-        claimed_state="gbsa_running",
+        expected_state=(State.DOCKED, State.GBSA_RUNNING),
+        claimed_state=State.GBSA_RUNNING,
     )
     if not pending:
         print(f"Iteration {iteration}: top-N compounds were claimed by another worker.")
         return
+    work_started(f"Iteration {iteration}: starting MM-GBSA for {len(pending)} compounds.")
     try:
         updated = c.run_iteration_mmgbsa(
             iteration=iteration,
@@ -83,7 +54,7 @@ def _run_stage(args, requested_iteration):
     except Exception as exc:
         c.set_compound_state(
             pending,
-            "docked",
+            State.DOCKED,
             failed_stage="gbsa",
             failure_message=str(exc),
             db_path=args.db_path,
@@ -102,7 +73,7 @@ def _run_stage(args, requested_iteration):
     if missing:
         c.set_compound_state(
             missing,
-            "docked",
+            State.DOCKED,
             failed_stage="gbsa",
             failure_message="No MM-GBSA score returned; retryable",
             db_path=args.db_path,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate generated compounds with the AiZynthFinder batch CLI."""
+"""Evaluate compounds with RDKit SA scores and the AiZynthFinder batch CLI."""
 
 import argparse
 import gzip
@@ -10,6 +10,9 @@ from pathlib import Path
 
 from molnova import _core as c
 from molnova import database
+from molnova.stages._logging import work_started
+from molnova.chemistry.sa_score import calculate_sa_score
+from molnova.states import CompoundState as State
 
 
 def choose_iteration(args, requested):
@@ -21,9 +24,11 @@ def choose_iteration(args, requested):
             SELECT MIN(iteration)
             FROM compound
             WHERE iteration>0
-              AND synthetic_feasibility IS NULL
-              AND state IN ('generated','synthetic_running')
-            """
+              AND (sa_score IS NULL OR (
+                  synthetic_feasibility IS NULL AND state IN (?, ?)
+              ))
+            """,
+            (State.GENERATED, State.SYNTHETIC_RUNNING),
         ).fetchone()
     return row[0] if row else None
 
@@ -62,13 +67,13 @@ def process_iteration(args, iteration):
         raise RuntimeError(
             "Enable synthetic-feasibility-enabled in the project TOML to run this stage."
         )
-    if args.aizynth_config is None or not args.aizynth_config.is_file():
-        raise FileNotFoundError(f"AiZynthFinder config not found: {args.aizynth_config}")
-    executable = shutil.which(args.aizynth_cli)
-    if executable is None:
-        raise FileNotFoundError(
-            f"AiZynthFinder CLI not found: {args.aizynth_cli}; configure 'aizynth-cli' or PATH."
-        )
+    missing_scores = database.missing_sa_scores(args.db_path, iteration)
+    if missing_scores:
+        work_started(f"Iteration {iteration}: calculating RDKit SA scores for {len(missing_scores)} compounds.")
+    scores = [(cid, calculate_sa_score(smiles)) for cid, smiles in missing_scores]
+    updated = database.store_sa_scores(args.db_path, scores)
+    if updated:
+        print(f"Iteration {iteration}: RDKit SA scores stored for {updated} compounds.")
 
     with c.open_sqlite(args.db_path) as conn:
         compounds = conn.execute(
@@ -76,27 +81,37 @@ def process_iteration(args, iteration):
             SELECT id, smiles
             FROM compound
             WHERE iteration=? AND synthetic_feasibility IS NULL
-              AND state IN ('generated','synthetic_running')
+              AND state IN (?, ?)
             ORDER BY id
             """,
-            (iteration,),
+            (iteration, State.GENERATED, State.SYNTHETIC_RUNNING),
         ).fetchall()
     if not compounds:
         return 0
+
+    remote = getattr(args, "remote_aizynth", None)
+    if not remote and (args.aizynth_config is None or not args.aizynth_config.is_file()):
+        raise FileNotFoundError(f"AiZynthFinder config not found: {args.aizynth_config}")
+    executable = shutil.which(args.aizynth_cli) if not remote else None
+    if not remote and executable is None:
+        raise FileNotFoundError(
+            f"AiZynthFinder CLI not found: {args.aizynth_cli}; configure 'aizynth-cli' or PATH."
+        )
 
     ids = [row[0] for row in compounds]
     claimed_ids = set(
         database.claim_compounds(
             args.db_path,
             ids,
-            expected_state=("generated", "synthetic_running"),
-            claimed_state="synthetic_running",
+            expected_state=(State.GENERATED, State.SYNTHETIC_RUNNING),
+            claimed_state=State.SYNTHETIC_RUNNING,
         )
     )
     compounds = [row for row in compounds if row[0] in claimed_ids]
     if not compounds:
         return 0
 
+    work_started(f"Iteration {iteration}: starting AiZynthFinder for {len(compounds)} compounds.")
     output_dir = args.output / f"iter{iteration}" / "synthetic_feasibility"
     output_dir.mkdir(parents=True, exist_ok=True)
     smiles_file = output_dir / "targets.smi"
@@ -107,19 +122,23 @@ def process_iteration(args, iteration):
     )
 
     try:
-        subprocess.run(
-            [
-                executable,
-                "--config",
-                str(args.aizynth_config),
-                "--smiles",
-                str(smiles_file),
-                "--output",
-                str(result_file),
-            ],
-            cwd=output_dir,
-            check=True,
-        )
+        if remote:
+            from molnova.aizynth_remote import run_remote
+            run_remote(smiles_file, result_file, remote)
+        else:
+            subprocess.run(
+                [
+                    executable,
+                    "--config",
+                    str(args.aizynth_config),
+                    "--smiles",
+                    str(smiles_file),
+                    "--output",
+                    str(result_file),
+                ],
+                cwd=output_dir,
+                check=True,
+            )
         results = _read_results(result_file)
         by_smiles = {
             c.canonicalize_smiles(smiles): compound_id
@@ -138,13 +157,13 @@ def process_iteration(args, iteration):
                 cursor = conn.execute(
                     """
                     UPDATE compound
-                    SET synthetic_feasibility=?, state='generated',
+                    SET synthetic_feasibility=?, state=?,
                         failed_stage=NULL, failure_message=NULL,
                         modified_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND state='synthetic_running'
+                    WHERE id=? AND state=?
                       AND synthetic_feasibility IS NULL
                     """,
-                    (feasible, by_smiles[smiles]),
+                    (feasible, State.GENERATED, by_smiles[smiles], State.SYNTHETIC_RUNNING),
                 )
                 if cursor.rowcount != 1:
                     raise RuntimeError(
@@ -160,7 +179,7 @@ def process_iteration(args, iteration):
     except Exception as exc:
         c.set_compound_state(
             [row[0] for row in compounds],
-            "generated",
+            State.GENERATED,
             failed_stage="synthetic_feasibility",
             failure_message=str(exc),
             db_path=args.db_path,
@@ -168,24 +187,61 @@ def process_iteration(args, iteration):
         raise
 
 
-def _run_stage(args, requested_iteration):
+def import_results(args, iteration, result_file):
+    if iteration is None or iteration <= 0:
+        raise RuntimeError("--import-results requires --iteration greater than zero.")
+    results = _read_results(Path(result_file))
+    with c.open_sqlite(args.db_path) as conn:
+        compounds = conn.execute(
+            "SELECT id, smiles FROM compound WHERE iteration=? ORDER BY id",
+            (iteration,),
+        ).fetchall()
+    by_smiles = {}
+    for compound_id, smiles in compounds:
+        canonical = c.canonicalize_smiles(smiles)
+        by_smiles.setdefault(canonical, []).append(compound_id)
+    unknown = set(results) - set(by_smiles)
+    if unknown:
+        raise RuntimeError(f"AiZynthFinder results contain {len(unknown)} unknown iteration targets.")
+    values = [
+        (compound_id, feasible)
+        for smiles, feasible in results.items()
+        for compound_id in by_smiles[smiles]
+    ]
+    scores = [
+        (compound_id, calculate_sa_score(smiles))
+        for compound_id, smiles in database.missing_sa_scores(args.db_path, iteration)
+    ]
+    updated = database.import_synthetic_results(args.db_path, iteration, values, scores)
+    print(
+        f"Iteration {iteration}: imported {updated} new synthetic results; "
+        f"validated {len(results)} targets, {sum(results.values())} solved."
+    )
+    return updated
+
+
+def _run_stage(args, requested_iteration, result_file=None):
+    if result_file is not None:
+        return import_results(args, requested_iteration, result_file)
     iteration = choose_iteration(args, requested_iteration)
     if iteration is None:
-        print("No generated compounds require synthetic feasibility evaluation.")
+        print("No compounds require SA scoring or synthetic feasibility evaluation.")
         return
     process_iteration(args, iteration)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Evaluate generated compounds with AiZynthFinder"
+        description="Evaluate compounds with RDKit SA scores and AiZynthFinder"
     )
     parser.add_argument("project_toml", type=Path)
     parser.add_argument("--iteration", type=int)
+    parser.add_argument("--import-results", type=Path,
+                        help="Import AiZynthFinder JSON/JSON.gz results without repeating searches")
     ns = parser.parse_args(argv)
     args = c.configure_project(ns.project_toml)
     with database.stage_lock(args.db_path, "synthetic_feasibility"):
-        _run_stage(args, ns.iteration)
+        _run_stage(args, ns.iteration, ns.import_results)
 
 
 if __name__ == "__main__":

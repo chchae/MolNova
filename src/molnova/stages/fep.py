@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 from molnova import _core as c
 from molnova import database
+from molnova.stages._logging import work_started
 
 
 def choose_iteration(args, requested):
@@ -130,6 +131,7 @@ def import_scores(args, score_file, iteration=None):
 
 def _run_stage(args, ns):
     if ns.import_scores is not None:
+        work_started("Importing FEP scores.")
         import_scores(
             args,
             ns.import_scores.expanduser().resolve(),
@@ -141,6 +143,7 @@ def _run_stage(args, ns):
     if iteration is None:
         print("No GBSA-ranked compounds currently require FEP staging.")
         return
+    work_started(f"Iteration {iteration}: exporting FEP candidates.")
     export_candidates(args, iteration)
     print("FEP+ execution is intentionally not automated yet; configure the FEP protocol first.")
 

@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 
 from molnova import _core as c
+from molnova import database
+from molnova.stages._logging import WORK_STARTED
 
 BASE_STAGES = [
     ("generate", "molnova.stages.generate"),
@@ -30,7 +32,10 @@ def build_stages(synthetic_feasibility_enabled, fep_enabled):
 
 
 def stream_process(stage, cmd, cwd, stop_event):
-    """Run one stage subprocess and prefix its merged stdout/stderr."""
+    """Stream actual work; suppress successful idle polls and retain failures."""
+    env = os.environ.copy()
+    env["MOLNOVA_SUPERVISED"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -38,12 +43,21 @@ def stream_process(stage, cmd, cwd, stop_event):
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=env,
     )
 
+    pending = []
+    active = False
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
-            print(f"[{stage:<8}] {line}", end="", flush=True)
+            if line.strip() == WORK_STARTED:
+                active = True
+                pending.clear()
+            elif active:
+                print(f"[{stage:<8}] {line}", end="", flush=True)
+            else:
+                pending.append(line)
             if stop_event.is_set():
                 break
     finally:
@@ -56,14 +70,31 @@ def stream_process(stage, cmd, cwd, stop_event):
         else:
             proc.wait()
 
+    if proc.returncode != 0:
+        for line in pending:
+            print(f"[{stage:<8}] {line}", end="", flush=True)
     return proc.returncode
 
 
-def worker_loop(stage, module, project_toml, work_dir, poll_interval, stop_event, once):
+def worker_loop(
+    stage, module, project_toml, work_dir, poll_interval, stop_event, once,
+    wake_event=None, after_run_event=None,
+):
     cmd = [sys.executable, "-m", module, str(project_toml)]
 
+    # In one-shot mode, evaluate the compounds persisted by this generation
+    # attempt. The supervisor schedules subprocesses; workers still use SQLite.
+    if once and wake_event is not None:
+        wake_event.wait()
+
     while not stop_event.is_set():
-        rc = stream_process(stage, cmd, work_dir, stop_event)
+        if wake_event is not None:
+            wake_event.clear()
+        try:
+            rc = stream_process(stage, cmd, work_dir, stop_event)
+        finally:
+            if after_run_event is not None:
+                after_run_event.set()
         if stop_event.is_set():
             return
 
@@ -83,7 +114,10 @@ def worker_loop(stage, module, project_toml, work_dir, poll_interval, stop_event
         elif once:
             return
 
-        stop_event.wait(poll_interval)
+        if wake_event is None:
+            stop_event.wait(poll_interval)
+        else:
+            wake_event.wait(poll_interval)
 
 
 def main(argv=None):
@@ -114,15 +148,18 @@ def main(argv=None):
     args = c.configure_project(project_toml)
 
     # One driver per project DB. Prevent accidental duplicate supervisors.
-    lock_path = args.db_path.with_suffix(args.db_path.suffix + ".driver.lock")
-    lock_file = lock_path.open("w")
+    lock_path = database.lock_path(args.db_path, "driver")
+    lock_file = lock_path.open("a")
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        lock_file.close()
         raise SystemExit(
             f"Another driver appears to be running for {args.project}: {lock_path}"
         )
 
+    lock_file.seek(0)
+    lock_file.truncate()
     lock_file.write(str(os.getpid()))
     lock_file.flush()
 
@@ -144,11 +181,13 @@ def main(argv=None):
     print()
 
     stop_event = threading.Event()
+    synthetic_wake = threading.Event()
 
     def request_stop(signum=None, frame=None):
         if not stop_event.is_set():
             print("\n[driver  ] stopping workers...", flush=True)
             stop_event.set()
+            synthetic_wake.set()
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
@@ -165,6 +204,8 @@ def main(argv=None):
                 ns.poll_interval,
                 stop_event,
                 ns.once,
+                synthetic_wake if stage == "synthetic" else None,
+                synthetic_wake if stage == "generate" else None,
             ),
             name=stage,
             daemon=False,

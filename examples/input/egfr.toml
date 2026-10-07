@@ -1,0 +1,34 @@
+libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
+reinvent-ssh-host = "tensor"
+reinvent-remote-env = "/home1/astrazeneca/REINVENT/env"
+reinvent-remote-work-dir = "/home1/astrazeneca/REINVENT/molnova-runs"
+reference-pose = "./egfr-ligands-docked.maegz"
+reference-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
+dock-grid = "./egfr-grid.zip"
+out-dir = "../output"
+
+sample-size = 3000
+target-count = 1000
+max-iteration = 1
+host = "t41-cpu:128"
+
+tail-timeout = 300
+
+elite-tl-epochs = 3
+gbsa-input-count = 100
+gbsa-elite-count = 20
+
+ligprep-ph = 7.4
+ligprep-pht = 1.0
+ligprep-max-states = 2
+ligprep-max-stereo = 1
+
+fep-enabled = false
+fep-input-count = 10
+
+# Enabled by default; policy-model and stock files are required.
+synthetic-feasibility-enabled = true
+aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
+aizynth-ssh-host = "tensor"
+aizynth-remote-env = "/home1/astrazeneca/AiZynthFinder/env"
+aizynth-remote-work-dir = "/home1/astrazeneca/AiZynthFinder/molnova-runs"

@@ -6,6 +6,50 @@ from molnova import _core
 from molnova import database
 
 
+def test_database_location_migration_preserves_wal_results_and_original(tmp_path):
+    legacy = tmp_path / "egfr.sqlite"
+    target = tmp_path / "output" / "egfr.sqlite"
+    conn = _core.open_sqlite(legacy)
+    try:
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        _core.create_sqlite_schema(conn)
+        _core.ensure_schema_columns(conn)
+        conn.execute(
+            "INSERT INTO compound(name,smiles,iteration,state,docking_score,gbsa_score,"
+            "sa_score,synthetic_feasibility,failed_stage,failure_message) "
+            "VALUES ('CMP','CC',1,'gbsa_done',-8,-40,2.5,1,NULL,NULL)"
+        )
+        conn.commit()
+        assert legacy.with_name(legacy.name + "-wal").stat().st_size > 0
+        assert database.migrate_project_database(legacy, target) is True
+        assert (target.parent / "egfr.sqlite.migration.lock").is_file()
+        assert not (legacy.parent / "egfr.sqlite.migration.lock").exists()
+        expected = conn.execute("SELECT * FROM compound").fetchall()
+        with sqlite3.connect(target) as copied:
+            assert copied.execute("SELECT * FROM compound").fetchall() == expected
+            assert copied.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert legacy.is_file()
+        assert database.migrate_project_database(legacy, target) is False
+    finally:
+        conn.close()
+
+
+def test_database_location_migration_never_overwrites_output_database(tmp_path):
+    legacy, target = tmp_path / "old.sqlite", tmp_path / "output" / "egfr.sqlite"
+    target.parent.mkdir()
+    legacy.write_bytes(b"unused legacy")
+    target.write_bytes(b"existing output")
+    assert database.migrate_project_database(legacy, target) is False
+    assert target.read_bytes() == b"existing output"
+
+
+def test_database_location_migration_prepares_new_output_directory(tmp_path):
+    target = tmp_path / "output" / "egfr.sqlite"
+    assert database.migrate_project_database(tmp_path / "missing.sqlite", target) is False
+    assert target.parent.is_dir()
+    assert not target.exists()
+
+
 def test_schema_contains_scores_and_state(tmp_path):
     db = tmp_path / "test.sqlite"
     with sqlite3.connect(db) as conn:
