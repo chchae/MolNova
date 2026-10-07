@@ -8,7 +8,7 @@ import uuid
 from molnova.reinvent_remote import _ssh
 
 
-def run_remote(smiles_file, result_file, settings):
+def run_remote(smiles_file, result_file, settings, *, nproc=8):
     smiles_file, result_file = Path(smiles_file), Path(result_file)
     remote_dir = PurePosixPath(settings["work_dir"]) / uuid.uuid4().hex
     remote_input = remote_dir / "targets.smi"
@@ -26,7 +26,8 @@ def run_remote(smiles_file, result_file, settings):
         f"export PATH={quote(env_bin)}:\"$PATH\" && "
         f"export MPLCONFIGDIR={quote(str(remote_dir / 'mplconfig'))} && "
         f"{quote(env_bin + '/aizynthcli')} --config {quote(settings['config'])} "
-        f"--smiles {quote(str(remote_input))} --output {quote(str(remote_output))}"
+        f"--smiles {quote(str(remote_input))} --output {quote(str(remote_output))} "
+        f"--nproc {int(nproc)}"
     )
     (result_file.parent / "aizynthfinder.remote-command.txt").write_text(
         command + "\n", encoding="utf-8"

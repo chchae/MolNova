@@ -72,22 +72,23 @@ molnova run input/egfr.toml
 Passing a TOML path alone starts the same supervisor as `molnova run` and accepts
 the same options, such as `--once` and `--poll-interval`.
 
-For the 10-iteration EGFR example (`max-iteration = 10`, 1000 compounds per
-iteration, docking top-50 MM-GBSA, 10 GBSA elites):
+For a 10-iteration EGFR run, set `max-iteration = 10` in `examples/egfr.toml`.
+The example currently uses 1000 compounds per iteration, docking top-100 MM-GBSA,
+and 20 GBSA elites:
 
 ```bash
 conda activate reinvent4
 export SCHRODINGER=/home1/schrodinger/2026-3
 cd /home/chchae/work/MolNova/examples
 mkdir -p output
-molnova input/egfr.toml --poll-interval 30 > output/egfr-run.log 2>&1
+molnova egfr.toml --poll-interval 30 > output/egfr-run.log 2>&1
 ```
 
 Inspect progress from another terminal in the same environment and directory:
 
 ```bash
 tail -f output/egfr-run.log
-molnova status input/egfr.toml
+molnova status egfr.toml
 ```
 
 The database and locks are in `examples/output/`. Omit `--once` for repeated
@@ -166,7 +167,7 @@ including initialization failures and tracebacks, remain visible. The driver
 prints its configuration once at startup; standalone stage commands retain their
 diagnostic output. Polling and calculation eligibility are unchanged.
 
-See `examples/input/egfr.toml` and `docs/architecture.md`.
+See `examples/egfr.toml` and `docs/architecture.md`.
 
 Glide uses reference-guided constrained SP docking. MCS-compatible iteration-0
 references are ranked by Morgan radius-2/2048-bit Tanimoto similarity. Prepared
@@ -192,6 +193,20 @@ lower values first for elite selection.
 
 ## Synthetic feasibility
 
+Prime MM-GBSA license shortages are retried after a delay:
+
+```toml
+gbsa-license-retry-seconds = 300
+gbsa-license-retries = 3
+```
+
+These defaults permit one initial attempt plus three retries. The worker keeps
+its stage lock and `gbsa_running` claims during the wait and prints each license
+wait. Non-license failures are reported immediately. When retries are exhausted,
+the existing failure handling restores `docked` state and records the error;
+the supervisor can subsequently retry. Saved GBSA scores are retained. Wait
+messages are also recorded in `iterN/mmgbsa/prime_license_retry.log`.
+
 Synthetic feasibility is enabled by default, including when its flag is omitted.
 Configure a valid AiZynthFinder YAML file containing expansion policy and stock
 definitions in the project TOML:
@@ -200,6 +215,7 @@ definitions in the project TOML:
 synthetic-feasibility-enabled = true
 aizynth-config = "../input/aizynth-config.yml"
 aizynth-cli = "aizynthcli"
+aizynth-nproc = 8
 ```
 
 Set `synthetic-feasibility-enabled = false` to disable this stage explicitly.
@@ -209,8 +225,13 @@ The EGFR example runs AiZynthFinder on tensor via SSH, using:
 aizynth-ssh-host = "tensor"
 aizynth-remote-env = "/home1/astrazeneca/AiZynthFinder/env"
 aizynth-remote-work-dir = "/home1/astrazeneca/AiZynthFinder/molnova-runs"
+aizynth-nproc = 8
 aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 ```
+
+`aizynth-nproc` defaults to 8 and must be a positive integer. Both local and SSH
+execution pass it to AiZynthFinder as `--nproc`, splitting targets across worker
+processes. Set it to 1 for serial execution.
 
 In SSH mode, `aizynth-config` and both remote directories are absolute paths on
 tensor. Models and stock referenced by the YAML must also be accessible there.

@@ -6,7 +6,7 @@ import pytest
 from molnova import _core
 from molnova import cli
 from molnova import database, driver
-from molnova.config import remote_aizynth_settings
+from molnova.config import remote_aizynth_settings, aizynth_process_count
 
 
 PROJECT_TOML = '''
@@ -30,6 +30,7 @@ def test_project_name_inferred_from_filename_and_remote_paths_preserved(tmp_path
     project.write_text(PROJECT_TOML)
     settings = _core.load_project_toml(project)
     assert settings["project"] == "egfr"
+    assert settings["aizynth_nproc"] == 8
     assert settings["db_path"] == tmp_path / "output" / "egfr.sqlite"
     assert settings["remote_aizynth"]["host"] == "tensor"
     assert settings["aizynth_config"] == Path("/home1/astrazeneca/AiZynthFinder/policy_data/config.yml")
@@ -121,3 +122,14 @@ def test_driver_lock_is_created_in_output(tmp_path, monkeypatch):
     driver.main([str(project), "--once"])
     assert (tmp_path / "output" / "egfr.sqlite.driver.lock").read_text().isdigit()
     assert not list(project.parent.glob("*.lock"))
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "8"])
+def test_aizynth_nproc_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        aizynth_process_count({"aizynth-nproc": value})
+
+
+@pytest.mark.parametrize("value", [1, 4, 8])
+def test_aizynth_nproc_configurable(value):
+    assert aizynth_process_count({"aizynth-nproc": value}) == value

@@ -120,7 +120,7 @@ def load_project_toml(filename):
         )
 
     base = filename.parent
-    from molnova.config import remote_reinvent_settings, remote_aizynth_settings
+    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count
     remote_reinvent = remote_reinvent_settings(config)
     remote_aizynth = remote_aizynth_settings(config)
 
@@ -150,7 +150,9 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
+    from molnova.config import gbsa_license_retry_settings
     return {
+        **gbsa_license_retry_settings(config),
         "toml_file": filename,
         "project": project,
         "db_path": output / f"{project}.sqlite",
@@ -178,6 +180,7 @@ def load_project_toml(filename):
         "synthetic_feasibility_enabled": synthetic_enabled,
         "aizynth_config": aizynth_config,
         "aizynth_cli": aizynth_cli,
+        "aizynth_nproc": aizynth_process_count(config),
         "remote_aizynth": remote_aizynth,
         "mmgbsa_receptor": (
             resolve_path(config["mmgbsa-receptor"])
@@ -4333,10 +4336,10 @@ def run_iteration_mmgbsa(
         "-WAIT",
     ]
 
-    run_command(
-        cmd,
-        cwd=mmgbsa_dir,
-    )
+    from molnova.schrodinger_retry import run_prime
+    run_prime(cmd, mmgbsa_dir,
+              wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
+              retries=getattr(args, "gbsa_license_retries", 3))
 
     output_candidates = sorted(
         mmgbsa_dir.glob(

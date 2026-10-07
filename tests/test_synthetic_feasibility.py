@@ -32,6 +32,7 @@ def _project(tmp_path):
         synthetic_feasibility_enabled=True,
         aizynth_config=config,
         aizynth_cli="aizynthcli",
+        aizynth_nproc=8,
     )
 
 
@@ -40,6 +41,7 @@ def test_worker_persists_solved_route_feasibility(monkeypatch, tmp_path):
     monkeypatch.setattr(synthetic_feasibility.shutil, "which", lambda _: "/bin/aizynthcli")
 
     def run(command, **kwargs):
+        assert command[command.index("--nproc") + 1] == "8"
         result_file = command[command.index("--output") + 1]
         rows = [
             {"target": "C", "number_of_solved_routes": 2},
@@ -341,6 +343,7 @@ def test_remote_aizynth_roundtrip_persists_local_sqlite(tmp_path, monkeypatch):
     executable.write_text(
         f"#!{sys.executable}\n"
         "import sys, gzip, json, pathlib\n"
+        "assert sys.argv[sys.argv.index('--nproc')+1] == '8'\n"
         "smiles=pathlib.Path(sys.argv[sys.argv.index('--smiles')+1]).read_text().splitlines()\n"
         "output=sys.argv[sys.argv.index('--output')+1]\n"
         "with gzip.open(output, 'wt') as stream:\n"

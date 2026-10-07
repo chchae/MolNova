@@ -38,6 +38,20 @@ def test_late_docking_result_enters_mmgbsa_top_n(tmp_path):
     assert database.mmgbsa_candidates(args.db_path, 1, 2) == [ids["OUTSIDE"]]
 
 
+def test_license_retry_exhaustion_restores_only_pending_compounds(monkeypatch, tmp_path):
+    args, ids = _project(tmp_path)
+
+    def exhausted(**kwargs):
+        raise RuntimeError("Prime license unavailable after 4 attempts")
+
+    monkeypatch.setattr(_core, "run_iteration_mmgbsa", exhausted)
+    with pytest.raises(RuntimeError, match="license unavailable"):
+        mmgbsa._run_stage(args, 1)
+    with sqlite3.connect(args.db_path) as conn:
+        assert conn.execute("SELECT state,gbsa_score FROM compound WHERE id=?", (ids["DONE"],)).fetchone() == ("gbsa_done", -40)
+        assert conn.execute("SELECT state,gbsa_score,failed_stage FROM compound WHERE id=?", (ids["PENDING"],)).fetchone() == ("docked", None, "gbsa")
+
+
 def test_mmgbsa_recovers_running_candidates_and_skips_completed_results(monkeypatch, tmp_path):
     args, ids = _project(tmp_path)
     with sqlite3.connect(args.db_path) as conn:
@@ -177,6 +191,8 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path):
             pytest.fail(f"Unexpected command: {command}")
 
     monkeypatch.setattr(_core, "run_command", run)
+    from molnova import schrodinger_retry
+    monkeypatch.setattr(schrodinger_retry, "run_prime", lambda command, cwd, **kwargs: run(command, cwd))
     assert _core.run_iteration_mmgbsa(
         1, args, iteration_dir, glide_dir, compound_ids=[ids["PENDING"]]
     ) == 1

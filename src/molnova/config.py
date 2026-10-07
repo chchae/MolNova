@@ -6,6 +6,24 @@ from typing import Any
 from molnova import _core
 
 
+def aizynth_process_count(config: dict[str, Any]) -> int:
+    value = config.get("aizynth-nproc", 8)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("aizynth-nproc must be a positive integer")
+    return value
+
+
+def gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
+    settings = {}
+    for key, default, minimum in (("gbsa-license-retry-seconds", 300, 1),
+                                  ("gbsa-license-retries", 3, 0)):
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{key} must be an integer >= {minimum}")
+        settings[key.replace("-", "_")] = value
+    return settings
+
+
 def remote_reinvent_settings(config: dict[str, Any]) -> dict[str, str] | None:
     """Remote paths belong to the SSH host, never to the local TOML directory."""
     host = str(config.get("reinvent-ssh-host", "")).strip()

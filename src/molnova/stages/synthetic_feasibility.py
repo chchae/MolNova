@@ -124,7 +124,7 @@ def process_iteration(args, iteration):
     try:
         if remote:
             from molnova.aizynth_remote import run_remote
-            run_remote(smiles_file, result_file, remote)
+            run_remote(smiles_file, result_file, remote, nproc=getattr(args, "aizynth_nproc", 8))
         else:
             subprocess.run(
                 [
@@ -135,6 +135,8 @@ def process_iteration(args, iteration):
                     str(smiles_file),
                     "--output",
                     str(result_file),
+                    "--nproc",
+                    str(getattr(args, "aizynth_nproc", 8)),
                 ],
                 cwd=output_dir,
                 check=True,
