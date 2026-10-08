@@ -231,3 +231,18 @@ def mark_gbsa_atomtyping_failures(path, compound_ids, message):
             [State.FAILED, message, *ids, State.DOCKED, State.GBSA_RUNNING],
         )
         return cursor.rowcount
+
+
+def mmgbsa_submission_rows(path, compound_ids):
+    """Inspect saved submission identity against the current project database."""
+    ids = sorted(set(compound_ids))
+    rows = {}
+    with connect(path) as conn:
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            marks = ",".join("?" for _ in batch)
+            for cid, iteration, state, score in conn.execute(
+                f"SELECT id,iteration,state,gbsa_score FROM compound WHERE id IN ({marks})", batch
+            ):
+                rows[cid] = (iteration, state, score)
+    return rows

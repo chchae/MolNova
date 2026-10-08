@@ -32,7 +32,7 @@ def build_stages(synthetic_feasibility_enabled, fep_enabled):
 
 
 def stream_process(stage, cmd, cwd, stop_event):
-    """Stream actual work; suppress successful idle polls and retain failures."""
+    """Stream actual work and failures; summarize each successful idle poll."""
     env = os.environ.copy()
     env["MOLNOVA_SUPERVISED"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
@@ -73,6 +73,10 @@ def stream_process(stage, cmd, cwd, stop_event):
     if proc.returncode != 0:
         for line in pending:
             print(f"[{stage:<8}] {line}", end="", flush=True)
+    elif not active and not stop_event.is_set():
+        reason = next((line.strip() for line in reversed(pending) if line.strip()),
+                      "No eligible work.")
+        print(f"[{stage:<8}] skip: {reason}", flush=True)
     return proc.returncode
 
 

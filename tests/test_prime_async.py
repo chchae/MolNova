@@ -307,3 +307,90 @@ def test_permanent_failure_recording_preserves_existing_scores(tmp_path):
     assert database.mark_gbsa_atomtyping_failures(db,[1],'error')==0
     with sqlite3.connect(db) as conn:
         assert conn.execute('SELECT state,gbsa_score,fep_score FROM compound').fetchone()==('fep_done',-40,-5)
+
+
+def _reconcile_project(tmp_path, ids=(99,), job_id='old-job', launching=False):
+    db=tmp_path/'project.sqlite'
+    with sqlite3.connect(db) as conn:
+        _core.create_sqlite_schema(conn)
+        conn.execute("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
+                     "VALUES ('current','C',13,-9,'docked')")
+    directory=tmp_path/'iter13/mmgbsa';directory.mkdir(parents=True)
+    prime._save(directory,{'command':['/suite/prime_mmgbsa'], 'compound_ids':list(ids),
+                          'job_id':job_id, 'launching':launching})
+    (directory/'mmgbsa_input-out.maegz').write_text('old output')
+    (directory/'mmgbsa_input.log').write_text('old log')
+    return db,directory
+
+
+@pytest.mark.parametrize('status',['DONE','FAILED','CANCELED','STOPPED'])
+def test_orphaned_terminal_job_is_archived_before_claiming_current_compounds(tmp_path,monkeypatch,status):
+    db,directory=_reconcile_project(tmp_path)
+    def query(cmd,**kw):
+        assert cmd==['/suite/jsc','info','--json','old-job']
+        # Include a completed child to verify that the parent status is used.
+        return SimpleNamespace(stdout=json.dumps({'jobId':'child','status':'DONE'})+'\n'+
+                               json.dumps({'jobId':'old-job','status':status}))
+    monkeypatch.setattr(prime.subprocess,'run',query)
+    calls=[]
+    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw: calls.append(kw['compound_ids']) or None)
+    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=100)
+    mmgbsa._run_stage(args,None)
+    assert calls==[[1]]
+    assert prime.load_job(directory) is None
+    assert not (directory/'mmgbsa_input-out.maegz').exists()
+    archives=list(directory.parent.glob('mmgbsa.stale-*'))
+    assert len(archives)==1
+    assert (archives[0]/'mmgbsa_input-out.maegz').read_text()=='old output'
+    assert prime.load_job(archives[0])['compound_ids']==[99]
+    with sqlite3.connect(db) as conn:
+        assert conn.execute('SELECT state,docking_score FROM compound').fetchone()==('gbsa_running',-9)
+
+
+@pytest.mark.parametrize('status',['RUNNING','WAITING'])
+def test_orphaned_live_job_is_preserved_without_new_submission(tmp_path,monkeypatch,status,capsys):
+    db,directory=_reconcile_project(tmp_path)
+    monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw:
+                        SimpleNamespace(stdout=json.dumps({'jobId':'old-job','status':status})))
+    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw: pytest.fail('duplicate submission'))
+    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=100)
+    mmgbsa._run_stage(args,13)
+    assert status in capsys.readouterr().out
+    assert prime.load_job(directory)['job_id']=='old-job'
+    assert (directory/'mmgbsa_input-out.maegz').read_text()=='old output'
+    with sqlite3.connect(db) as conn:
+        assert conn.execute('SELECT state FROM compound').fetchone()==('docked',)
+
+
+def test_current_saved_job_is_kept_without_cleanup_or_status_query(tmp_path,monkeypatch):
+    db,directory=_reconcile_project(tmp_path,ids=(1,))
+    monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw: pytest.fail('unneeded query'))
+    assert prime.reconcile_saved_job(directory,db,13)['compound_ids']==[1]
+    assert (directory/'mmgbsa_input-out.maegz').read_text()=='old output'
+
+
+@pytest.mark.parametrize('ids,launching,job_id',[( (1,99),False,'old-job'),((99,),True,None)])
+def test_mixed_or_uncertain_submission_is_not_discarded(tmp_path,monkeypatch,ids,launching,job_id):
+    db,directory=_reconcile_project(tmp_path,ids,job_id,launching)
+    monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw: pytest.fail('unsafe lookup'))
+    with pytest.raises(prime.PrimeReconciliationPending):
+        prime.reconcile_saved_job(directory,db,13)
+    assert prime.load_job(directory) is not None
+
+
+def test_orphaned_unsubmitted_job_is_archived_without_status_query(tmp_path,monkeypatch):
+    db,directory=_reconcile_project(tmp_path,job_id=None)
+    monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw: pytest.fail('no JobId'))
+    assert prime.reconcile_saved_job(directory,db,13) is None
+    assert list(directory.parent.glob('mmgbsa.stale-*'))
+
+
+def test_status_lookup_failure_prevents_cleanup(tmp_path,monkeypatch):
+    db,directory=_reconcile_project(tmp_path)
+    def offline(*a,**kw):
+        raise subprocess.CalledProcessError(1,'jsc')
+    monkeypatch.setattr(prime.subprocess,'run',offline)
+    with pytest.raises(subprocess.CalledProcessError):
+        prime.reconcile_saved_job(directory,db,13)
+    assert prime.load_job(directory)['compound_ids']==[99]
+    assert not list(directory.parent.glob('mmgbsa.stale-*'))

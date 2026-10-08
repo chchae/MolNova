@@ -105,6 +105,53 @@ def _save(directory, record):
     temporary.replace(path)
 
 
+class PrimeReconciliationPending(RuntimeError):
+    """A mismatched saved job cannot yet be safely removed."""
+
+
+def _job_status(record, directory):
+    jsc = Path(record["command"][0]).parent / "jsc"
+    result = subprocess.run([str(jsc), "info", "--json", record["job_id"]],
+                            cwd=directory, check=True, capture_output=True, text=True)
+    jobs = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    return next(job["status"] for job in jobs if job["jobId"] == record["job_id"])
+
+
+def reconcile_saved_job(directory, db_path, iteration):
+    """Retire orphaned job files while preserving current results and live jobs."""
+    from molnova import database
+    from molnova.stages._logging import work_started
+    record = load_job(directory)
+    if record is None:
+        return None
+    ids = set(record["compound_ids"])
+    rows = database.mmgbsa_submission_rows(db_path, ids)
+    current = {cid for cid, row in rows.items() if row[0] == iteration}
+    if ids and current == ids:
+        return record
+    if current:
+        raise PrimeReconciliationPending(
+            f"Iteration {iteration}: saved Prime job mixes current and obsolete compound IDs; "
+            "files retained for reconciliation.")
+    if record.get("job_id"):
+        status = _job_status(record, directory)
+        if status not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
+            raise PrimeReconciliationPending(
+                f"Iteration {iteration}: obsolete Prime job {record['job_id']} is {status}; "
+                "waiting for it to end before cleaning files.")
+    elif record.get("launching"):
+        raise PrimeReconciliationPending(
+            f"Iteration {iteration}: obsolete Prime submission has no saved JobId; "
+            "files retained because launch status is unknown.")
+    directory = Path(directory)
+    archived = directory.with_name(f"{directory.name}.stale-{time.time_ns()}")
+    directory.rename(archived)
+    directory.mkdir()
+    work_started(f"Iteration {iteration}: archived obsolete MM-GBSA files to {archived.name}; "
+                 "using current database compounds.")
+    return None
+
+
 def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retries=3):
     """Return True only after a terminal job's outputs have been downloaded."""
     directory = Path(directory)
@@ -116,19 +163,16 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
     command = record["command"]
     jsc = Path(command[0]).parent / "jsc"
     if record["job_id"]:
-        result = subprocess.run([str(jsc), "info", "--json", record["job_id"]],
-                                cwd=directory, check=True, capture_output=True, text=True)
-        jobs = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-        job = next(j for j in jobs if j["jobId"] == record["job_id"])
-        if job["status"] not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
-            print(f"Prime job {record['job_id']}: {job['status']}; checking on next worker run.")
+        status = _job_status(record, directory)
+        if status not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
+            print(f"Prime job {record['job_id']}: {status}; checking on next worker run.")
             return False
         subprocess.run([str(jsc), "download", "--cwd", record["job_id"]],
                        cwd=directory, check=True, capture_output=True, text=True)
         diagnostics = _current_diagnostics(directory, record)
         failed = atomtyping_failed_ids(diagnostics, record["compound_ids"])
         all_failed = "all entries failed" in diagnostics.lower()
-        if (job["status"] == "DONE" and any(directory.glob("*-out.maegz"))
+        if (status == "DONE" and any(directory.glob("*-out.maegz"))
                 and not all_failed and set(failed) != set(record["compound_ids"])):
             record["atomtyping_failed_ids"] = failed
             _save(directory, record)
@@ -138,7 +182,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
             raise PrimeAtomTypingError(failed)
         if not license_unavailable(diagnostics):
             job_file(directory).unlink()
-            raise RuntimeError(f"Prime job {record['job_id']} ended with {job['status']}: {diagnostics[-4000:]}")
+            raise RuntimeError(f"Prime job {record['job_id']} ended with {status}: {diagnostics[-4000:]}")
         record["job_id"] = None
         record["retry_at"] = time.time() + wait_seconds
         record["launching"] = False

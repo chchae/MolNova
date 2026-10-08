@@ -159,10 +159,11 @@ the lock when its file handle closes.
 
 The driver supervises independent subprocess workers. SQLite is the source of truth, so completed Glide groups can be written immediately and consumed by MM-GBSA without waiting for straggler Glide jobs.
 
-During supervised runs, successful idle polls produce no worker log messages.
-Repeated DB/MCS setup, "No iteration requires …", and generation readiness or
-iteration-limit messages are hidden. Logs begin when a worker starts actual
-calculation or result processing and then stream immediately. Worker failures,
+During supervised runs, each successful idle poll prints one line such as
+`[ligprep ] skip: No iteration requires LigPrep.` Generate, synthetic feasibility,
+LigPrep, Glide, MM-GBSA and optional FEP report their idle reason; silent workers
+use `skip: No eligible work.` Repeated DB/MCS setup messages remain hidden.
+Actual calculation and result-processing logs stream immediately. Worker failures,
 including initialization failures and tracebacks, remain visible. The driver
 prints its configuration once at startup; standalone stage commands retain their
 diagnostic output. Polling and calculation eligibility are unchanged.
@@ -242,6 +243,12 @@ Prime also prepares the free receptor before processing ligands. MM-GBSA runs
 with up to eight ligand subjobs, limited by the input ligand count;
 active/submitted jobs may still be waiting for resources.
 Previously submitted MM-GBSA jobs retain their recorded resource requests.
+Before claiming work, the worker checks saved submission IDs against the current
+SQLite iteration. If none belong to it and the external job has ended, the old
+`mmgbsa` directory is moved to `mmgbsa.stale-<timestamp>` and a clean directory is
+created automatically. Current compounds are then selected without a restart.
+Running jobs, uncertain submissions and records mixing current/obsolete IDs are
+retained with an explicit reason. Database scores are never reset by this cleanup.
 Explicit atomtyping failures identified in per-compound Prime log sections are
 marked `failed` with `failed_stage = "gbsa"`, including failures in multi-ligand
 batches. Successful batch scores and existing scientific results are preserved.

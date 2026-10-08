@@ -5,7 +5,8 @@ from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started
 from molnova.states import CompoundState as State
-from molnova.prime_async import PrimeAtomTypingError, load_job
+from molnova.prime_async import (PrimeAtomTypingError, PrimeReconciliationPending,
+                                load_job, reconcile_saved_job)
 
 
 def eligible_iteration(args):
@@ -29,10 +30,14 @@ def _run_stage(args, requested_iteration):
                 "SELECT DISTINCT iteration FROM compound WHERE iteration>0 "
                 "AND docking_score IS NOT NULL ORDER BY iteration"
             )]
+        processed = False
         for iteration in iterations:
             if (load_job(args.output / f"iter{iteration}" / "mmgbsa") is not None
                     or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count)):
+                processed = True
                 _run_stage(args, iteration)
+        if not processed:
+            print("No current docking top-N compounds require MM-GBSA.")
         return
     iteration = requested_iteration or eligible_iteration(args)
     if iteration is None:
@@ -40,7 +45,11 @@ def _run_stage(args, requested_iteration):
         return
 
     directory = args.output / f"iter{iteration}" / "mmgbsa"
-    active = load_job(directory)
+    try:
+        active = reconcile_saved_job(directory, args.db_path, iteration)
+    except PrimeReconciliationPending as exc:
+        print(str(exc))
+        return
     pending = (active["compound_ids"] if active is not None else
                database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count))
 
@@ -55,7 +64,8 @@ def _run_stage(args, requested_iteration):
         claimed_state=State.GBSA_RUNNING,
     )
     if not pending:
-        print(f"Iteration {iteration}: top-N compounds were claimed by another worker.")
+        print(f"Iteration {iteration}: selected compounds are no longer in a claimable "
+              "docked/gbsa_running state; checking on the next poll.")
         return
     work_started(f"Iteration {iteration}: starting MM-GBSA for {len(pending)} compounds.")
     try:
