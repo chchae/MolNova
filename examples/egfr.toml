@@ -12,9 +12,9 @@ target-count = 1000
 max-iteration = 30
 host = "t41-cpu:128"
 # Optional per-stage slot overrides (otherwise inherit host :128).
-# ligprep-cpus = 32
-# glide-cpus = 32
-# mmgbsa-cpus = 16
+ligprep-cpus = 64
+glide-cpus = 64
+mmgbsa-cpus = 16
 
 tail-timeout = 300
 
