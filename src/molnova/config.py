@@ -6,6 +6,40 @@ from typing import Any
 from molnova import _core
 
 
+def schrodinger_cpu_settings(config: dict[str, Any]) -> dict[str, int | None]:
+    settings = {}
+    for stage in ("ligprep", "glide", "mmgbsa"):
+        key = f"{stage}-cpus"
+        value = config.get(key)
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{key} must be a positive integer")
+            if len(str(config["host"]).split()) != 1:
+                raise ValueError(f"{key} requires a single compute host")
+        settings[key.replace("-", "_")] = value
+    return settings
+
+
+def schrodinger_job_options(host: str, cpus: int | None = None,
+                            *, split_jobs: bool = False) -> list[str]:
+    """Use host slots for concurrency; LigPrep/Prime also need job splitting.
+
+    Glide 2026-3's new driver uses HOST slots and deprecates explicit NJOBS.
+    Bare host entries retain the vendor's configured concurrency defaults.
+    """
+    if cpus is not None:
+        if isinstance(cpus, bool) or not isinstance(cpus, int) or cpus < 1:
+            raise ValueError("Schrodinger cpus must be a positive integer")
+        if len(host.split()) != 1:
+            raise ValueError("CPU override requires a single compute host")
+        host = f"{host.split(':', 1)[0]}:{cpus}"
+    options = ["-HOST", host]
+    slots = [entry.rpartition(":")[2] for entry in host.split()]
+    if split_jobs and slots and all(s.isdigit() and int(s) > 0 for s in slots):
+        options += ["-NJOBS", str(sum(int(s) for s in slots))]
+    return options
+
+
 def aizynth_process_count(config: dict[str, Any]) -> int:
     value = config.get("aizynth-nproc", 8)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:

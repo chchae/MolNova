@@ -186,10 +186,39 @@ rank; later docking results can enter the top set.
 Prime MM-GBSA receives a receptor-first structure file containing the selected
 best ligand poses. The receptor comes from `mmgbsa-receptor` when specified, or
 is extracted from the Glide grid archive. It runs with
-`prime_mmgbsa <input.maegz> -OVERWRITE -HOST <host> -WAIT`. Result extraction
+`prime_mmgbsa <input.maegz> -OVERWRITE -HOST <host> [-NJOBS N] -WAIT`. Result extraction
 prefers `r_psp_MMGBSA_dG_Bind`, with the existing property-name fallbacks. Scores
 are stored only for submitted IDs, preserve existing GBSA results, and rank
 lower values first for elite selection.
+
+## CPU parallelism
+
+Schrödinger parallelizes these batches across ligand subjobs/workers. The shared
+`host = "t41-cpu:128"` requests up to 128 concurrent subjobs per submitted job.
+LigPrep and Prime MM-GBSA also receive explicit `-NJOBS 128` to split the batch.
+Glide 2026-3 uses `-HOST` to set worker concurrency; adding `-NJOBS` would force
+its legacy driver, so MolNova does not add it to Glide.
+
+Override the shared host slot count separately for each stage:
+
+```toml
+host = "t41-cpu:128"
+ligprep-cpus = 32
+glide-cpus = 32
+mmgbsa-cpus = 16
+```
+
+Each override must be a positive integer and requires a single host entry.
+For example, MM-GBSA above runs with `-HOST t41-cpu:16 -NJOBS 16`.
+Without overrides, existing host settings are preserved. A bare host name
+retains Schrödinger defaults (localhost normally uses one slot); add a `:N`
+suffix or stage CPU overrides to request multiple CPUs. Explicit slot counts
+on multiple host entries are summed for LigPrep/Prime job splitting.
+
+These counts apply per Glide reference group, not to the whole pipeline.
+Groups and stages can overlap, and the scheduler, available licenses, batch
+size and host configuration determine actual concurrent CPU use. Existing
+submitted Glide jobs retain their original resource requests.
 
 ## Synthetic feasibility
 

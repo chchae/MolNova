@@ -162,10 +162,12 @@ def test_constrained_glide_settings_match_reference_method(tmp_path):
         _core.write_constrained_glide_input(tmp_path, "grid", "ligands", "reference", "c1ccccc1")
 
 
-def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path):
+@pytest.mark.parametrize("cpus,host,njobs", [(None, "compute:4", "4"), (2, "compute:2", "2")])
+def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, cpus, host, njobs):
     args, ids = _project(tmp_path)
     args.schrodinger = Path("/schrodinger")
     args.host = "compute:4"
+    args.mmgbsa_cpus = cpus
     args.gbsa_elite_count = 1
     args.mmgbsa_receptor = tmp_path / "provided_receptor.maegz"
     args.mmgbsa_receptor.write_text("receptor")
@@ -178,7 +180,7 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path):
     def run(command, cwd):
         commands.append([str(item) for item in command])
         if Path(command[0]).name == "prime_mmgbsa":
-            assert command[2:] == ["-OVERWRITE", "-HOST", args.host, "-WAIT"]
+            assert command[2:] == ["-OVERWRITE", "-HOST", host, "-NJOBS", njobs, "-WAIT"]
             assert Path(command[1]).read_text() == "receptor plus selected poses"
             (cwd / "mmgbsa_input-out.maegz").write_text("results")
         elif Path(command[1]).name == "_build_mmgbsa_pv.py":

@@ -168,7 +168,10 @@ def _run_stage(args, ns):
             gdir, args.grid, ligand_file, ref_file,
             args.mcs_smarts, core_atoms
         )
-        submitted = c.submit_glide(args.schrodinger, inp, gdir, args.host)
+        submitted = c.submit_glide(
+            args.schrodinger, inp, gdir, args.host,
+            cpus=getattr(args, "glide_cpus", None),
+        )
         job.update(submitted)
         mark_group(args.db_path, compounds, "glide_running")
         jobs.append(job)

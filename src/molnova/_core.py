@@ -150,9 +150,10 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings
     return {
         **gbsa_license_retry_settings(config),
+        **schrodinger_cpu_settings(config),
         "toml_file": filename,
         "project": project,
         "db_path": output / f"{project}.sqlite",
@@ -2751,8 +2752,10 @@ def run_ligprep_once(
     max_states=2,
     max_stereo=1,
     ring_confs=1,
+    cpus=None,
 ):
     """Run LigPrep once while limiting state expansion for docking."""
+    from molnova.config import schrodinger_job_options
     output_file = glide_root / "ligprep_all.maegz"
 
     if output_file.exists():
@@ -2784,7 +2787,7 @@ def run_ligprep_once(
             "-epik",
             epik_options,
             "-s", str(max_stereo),
-            "-HOST", host,
+            *schrodinger_job_options(host, cpus, split_jobs=True),
             "-WAIT",
         ],
         cwd=glide_root,
@@ -3014,15 +3017,16 @@ REF_LIGAND_FILE {reference_file}
     return glide_input
 
 
-def submit_glide(schrodinger, glide_input, group_dir, host):
+def submit_glide(schrodinger, glide_input, group_dir, host, cpus=None):
     """Submit a Glide job and return immediately; intentionally no -WAIT."""
+    from molnova.config import schrodinger_job_options
     for old_file in group_dir.glob("*_lib.maegz"):
         old_file.unlink()
 
     cmd = [
         schrodinger / "glide",
         glide_input,
-        "-HOST", host,
+        *schrodinger_job_options(host, cpus),
         "-OVERWRITE",
     ]
 
@@ -3533,6 +3537,7 @@ def run_reference_guided_docking(iteration, args, glide_root):
         max_states=args.ligprep_max_states,
         max_stereo=args.ligprep_max_stereo,
         ring_confs=args.ligprep_ring_confs,
+        cpus=getattr(args, "ligprep_cpus", None),
     )
 
     # 3. Split prepared states by their pre-assigned reference id.
@@ -3628,6 +3633,7 @@ def run_reference_guided_docking(iteration, args, glide_root):
             glide_input=glide_input,
             group_dir=group_dir,
             host=args.host,
+            cpus=getattr(args, "glide_cpus", None),
         )
 
         job.update(
@@ -4327,12 +4333,14 @@ def run_iteration_mmgbsa(
         f"Docking top input   : {len(top_rows)}"
     )
 
+    from molnova.config import schrodinger_job_options
     cmd = [
         args.schrodinger / "prime_mmgbsa",
         pv_file,
         "-OVERWRITE",
-        "-HOST",
-        args.host,
+        *schrodinger_job_options(
+            args.host, getattr(args, "mmgbsa_cpus", None), split_jobs=True
+        ),
         "-WAIT",
     ]
 

@@ -62,6 +62,7 @@ def _run_stage(args, requested_iteration):
             max_states=args.ligprep_max_states,
             max_stereo=args.ligprep_max_stereo,
             ring_confs=args.ligprep_ring_confs,
+            cpus=getattr(args, "ligprep_cpus", None),
         )
     except Exception:
         c.set_compound_state(
