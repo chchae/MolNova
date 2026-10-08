@@ -4167,7 +4167,7 @@ def run_iteration_mmgbsa(
     glide_dir,
     compound_ids=None,
 ):
-    from molnova.prime_async import load_job, submit_or_poll, job_file
+    from molnova.prime_async import load_job, submit_or_poll, job_file, persist_atomtyping_failures
     mmgbsa_dir = iteration_dir / "mmgbsa"
     active = load_job(mmgbsa_dir)
     if active is not None:
@@ -4176,6 +4176,7 @@ def run_iteration_mmgbsa(
                               retries=getattr(args, "gbsa_license_retries", 3)):
             return None
         updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, active["compound_ids"])
+        persist_atomtyping_failures(mmgbsa_dir, args.db_path)
         job_file(mmgbsa_dir).unlink()
         return updated
 
@@ -4359,6 +4360,7 @@ def run_iteration_mmgbsa(
                           retries=getattr(args, "gbsa_license_retries", 3)):
         return None
     updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, [row[0] for row in top_rows])
+    persist_atomtyping_failures(mmgbsa_dir, args.db_path)
     job_file(mmgbsa_dir).unlink(missing_ok=True)
     return updated
 

@@ -242,10 +242,12 @@ Prime also prepares the free receptor before processing ligands. MM-GBSA runs
 with up to eight ligand subjobs, limited by the input ligand count;
 active/submitted jobs may still be waiting for resources.
 Previously submitted MM-GBSA jobs retain their recorded resource requests.
-A single-compound submission with an explicit Prime atomtyping error is marked
-`failed` with `failed_stage = "gbsa"` and excluded from further MM-GBSA retries.
-Its docking score is preserved. Generic failures and ambiguous batch failures
-remain retryable; JobServer status/download errors retain the active job record.
+Explicit atomtyping failures identified in per-compound Prime log sections are
+marked `failed` with `failed_stage = "gbsa"`, including failures in multi-ligand
+batches. Successful batch scores and existing scientific results are preserved.
+Submission log snapshots prevent old component logs from classifying new jobs.
+Generic or ambiguous failures remain retryable; JobServer status/download errors
+retain the active job record.
 
 These counts apply per Glide reference group, not to the whole pipeline.
 Groups and stages can overlap, and the scheduler, available licenses, batch

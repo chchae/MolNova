@@ -70,15 +70,18 @@ def _run_stage(args, requested_iteration):
         # A status/download failure does not prove that the external job failed.
         if load_job(directory) is not None:
             raise
-        if isinstance(exc, PrimeAtomTypingError) and pending == [exc.compound_id]:
-            c.set_compound_state(
-                pending,
-                State.FAILED,
-                failed_stage="gbsa",
-                failure_message=str(exc),
-                db_path=args.db_path,
-            )
-            print(f"Iteration {iteration}: {exc}; marked failed and excluded from retries.")
+        if isinstance(exc, PrimeAtomTypingError):
+            failed = sorted(set(pending) & set(exc.compound_ids))
+            database.mark_gbsa_atomtyping_failures(args.db_path, failed, str(exc))
+            retryable = sorted(set(pending) - set(failed))
+            if retryable:
+                c.set_compound_state(
+                    retryable, State.DOCKED, failed_stage="gbsa",
+                    failure_message="Prime batch failed; no confirmed atomtyping error for this compound",
+                    db_path=args.db_path,
+                )
+            print(f"Iteration {iteration}: {exc}; {len(failed)} marked failed, "
+                  f"{len(retryable)} remain retryable.")
             return
         c.set_compound_state(
             pending,
@@ -98,8 +101,8 @@ def _run_stage(args, requested_iteration):
         missing = [
             row[0] for row in conn.execute(
                 f"SELECT id FROM compound WHERE id IN ({','.join('?' for _ in pending)}) "
-                "AND gbsa_score IS NULL",
-                pending,
+                "AND gbsa_score IS NULL AND state=?",
+                [*pending, State.GBSA_RUNNING],
             )
         ] if pending else []
     if missing:

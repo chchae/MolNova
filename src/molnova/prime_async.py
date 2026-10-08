@@ -1,5 +1,6 @@
 """Persist Prime submissions so stage workers can exit while jobs run."""
 import json
+import hashlib
 import re
 import subprocess
 import time
@@ -11,9 +12,12 @@ from molnova.schrodinger_retry import _run_attempt, license_unavailable
 class PrimeAtomTypingError(RuntimeError):
     """A submitted compound could not be assigned Prime force-field types."""
 
-    def __init__(self, compound_id):
-        self.compound_id = compound_id
-        super().__init__(f"CMPID_{compound_id}: Prime atom typing failed; "
+    def __init__(self, compound_ids):
+        self.compound_ids = ([compound_ids] if isinstance(compound_ids, int)
+                             else sorted(set(compound_ids)))
+        self.compound_id = self.compound_ids[0] if len(self.compound_ids) == 1 else None
+        titles = ", ".join(f"CMPID_{cid}" for cid in self.compound_ids)
+        super().__init__(f"{titles}: Prime atom typing failed; "
                          "see mmgbsa_input.Prime.log and mmgbsa_input.err.log")
 
 
@@ -31,6 +35,58 @@ def _check_single_compound_atomtyping(text, compound_ids):
         "failure running atom typer",
     )):
         raise PrimeAtomTypingError(compound_id)
+
+
+def atomtyping_failed_ids(text, compound_ids):
+    """Associate explicit atomtyping errors with per-entry Prime log sections."""
+    allowed = set(compound_ids)
+    failed = set()
+    for section in re.split(r"(?=^\s*Prime-MMGBSA:)|(?=^Entry:\s*\d+)", text,
+                            flags=re.MULTILINE):
+        if not re.match(r"\s*(Prime-MMGBSA:|Entry:)", section):
+            continue
+        ids = {int(cid) for cid in re.findall(r"\bCMPID_(\d+)\b", section)}
+        if len(ids) == 1 and ids <= allowed and any(marker in section.lower() for marker in (
+            "cannot atom type structure", "problem in atomtyping structure",
+            "failure running atom typer",
+        )):
+            failed.update(ids)
+    if not failed:
+        try:
+            _check_single_compound_atomtyping(text, compound_ids)
+        except PrimeAtomTypingError as exc:
+            failed.update(exc.compound_ids)
+    return sorted(failed)
+
+
+def _log_signature(path):
+    return [path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest()]
+
+
+def _current_diagnostics(directory, record):
+    baseline = record.get("log_snapshot", {})
+    logs = []
+    for path in directory.glob("*.log"):
+        if path.name == "prime_license_retry.log":
+            continue
+        text = path.read_text(errors="replace")
+        named_job = re.search(r"^JobId\s*:\s*(\S+)", text, re.MULTILINE)
+        if named_job and named_job.group(1) != record.get("job_id"):
+            continue
+        if (record.get("job_id") and record["job_id"] in text
+                or "log_snapshot" in record and baseline.get(path.name) != _log_signature(path)):
+            logs.append(text)
+    return "\nPrime-MMGBSA: LOG_BOUNDARY\n".join(logs)
+
+
+def persist_atomtyping_failures(directory, db_path):
+    """Record only unscored failures, after successful batch scores are imported."""
+    from molnova import database
+    record = load_job(directory) or {}
+    failed = record.get("atomtyping_failed_ids", [])
+    if failed:
+        database.mark_gbsa_atomtyping_failures(db_path, failed,
+                                              str(PrimeAtomTypingError(failed)))
 
 
 def job_file(directory):
@@ -69,21 +125,17 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
             return False
         subprocess.run([str(jsc), "download", "--cwd", record["job_id"]],
                        cwd=directory, check=True, capture_output=True, text=True)
-        diagnostics = "\n".join(p.read_text(errors="replace") for p in directory.glob("*.log"))
-        if not license_unavailable(diagnostics):
-            try:
-                # Use only logs naming this job, so old logs cannot classify a
-                # later submission as a permanent structure failure.
-                current = "\n".join(
-                    text for path in directory.glob("*.log")
-                    if record["job_id"] in (text := path.read_text(errors="replace"))
-                )
-                _check_single_compound_atomtyping(current, record["compound_ids"])
-            except PrimeAtomTypingError:
-                job_file(directory).unlink()
-                raise
-        if job["status"] == "DONE" and any(directory.glob("*-out.maegz")):
+        diagnostics = _current_diagnostics(directory, record)
+        failed = atomtyping_failed_ids(diagnostics, record["compound_ids"])
+        all_failed = "all entries failed" in diagnostics.lower()
+        if (job["status"] == "DONE" and any(directory.glob("*-out.maegz"))
+                and not all_failed and set(failed) != set(record["compound_ids"])):
+            record["atomtyping_failed_ids"] = failed
+            _save(directory, record)
             return True
+        if failed:
+            job_file(directory).unlink()
+            raise PrimeAtomTypingError(failed)
         if not license_unavailable(diagnostics):
             job_file(directory).unlink()
             raise RuntimeError(f"Prime job {record['job_id']} ended with {job['status']}: {diagnostics[-4000:]}")
@@ -99,6 +151,8 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
     if record["attempt"] > retries:
         job_file(directory).unlink(missing_ok=True)
         raise RuntimeError(f"Prime license unavailable after {retries + 1} attempts; compounds remain retryable.")
+    record["log_snapshot"] = {path.name: _log_signature(path)
+                              for path in directory.glob("*.log")}
     record["launching"] = True
     record["attempt"] += 1
     _save(directory, record)
@@ -115,6 +169,9 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
         return False
     if code:
         job_file(directory).unlink()
-        _check_single_compound_atomtyping(output, record["compound_ids"])
+        diagnostics = output + "\n" + _current_diagnostics(directory, record)
+        failed = atomtyping_failed_ids(diagnostics, record["compound_ids"])
+        if failed:
+            raise PrimeAtomTypingError(failed)
         raise subprocess.CalledProcessError(code, command, output=output)
     raise RuntimeError("Prime submission returned no JobId; reconcile prime_job.json before resubmitting.")

@@ -215,3 +215,19 @@ def import_synthetic_results(path, iteration, results, sa_scores):
                 (score, compound_id, iteration),
             )
         return updated
+
+
+def mark_gbsa_atomtyping_failures(path, compound_ids, message):
+    """Preserve scores and later states when recording permanent Prime failures."""
+    ids = sorted(set(compound_ids))
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    with connect(path) as conn:
+        cursor = conn.execute(
+            f"UPDATE compound SET state=?, failed_stage='gbsa', failure_message=?, "
+            f"modified_at=CURRENT_TIMESTAMP WHERE id IN ({marks}) "
+            "AND gbsa_score IS NULL AND state IN (?, ?)",
+            [State.FAILED, message, *ids, State.DOCKED, State.GBSA_RUNNING],
+        )
+        return cursor.rowcount

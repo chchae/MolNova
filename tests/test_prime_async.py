@@ -79,7 +79,7 @@ def test_recovery_uses_submitted_ids_even_after_top_n_changes(tmp_path, monkeypa
     directory = tmp_path / "iter1/mmgbsa"
     directory.mkdir(parents=True)
     prime._save(directory, {"command": ["/suite/prime_mmgbsa"], "compound_ids": [5]})
-    args = SimpleNamespace()
+    args = SimpleNamespace(db_path=tmp_path / "project.sqlite")
     monkeypatch.setattr(prime, "submit_or_poll", lambda *a, **kw: True)
     calls = []
     monkeypatch.setattr(_core, "finish_iteration_mmgbsa",
@@ -201,3 +201,109 @@ def test_old_atomtyping_log_does_not_classify_new_job(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError) as error:
         prime.submit_or_poll(command, tmp_path, [11379])
     assert not isinstance(error.value, prime.PrimeAtomTypingError)
+
+
+def _component_log(cid, fail=True):
+    return (f"  Prime-MMGBSA: mmgbsa_input.00001-FreeLigand-CMPID_{cid}\n"
+            + ("Cannot atom type structure\n" if fail else "Post-processing complete.\n"))
+
+
+def test_batch_parser_identifies_only_explicit_per_entry_failures():
+    text = _component_log(20470) + _component_log(20705) + _component_log(30000, False)
+    assert prime.atomtyping_failed_ids(text, [20470, 20705, 30000]) == [20470, 20705]
+    assert prime.atomtyping_failed_ids(text, [20470]) == [20470]
+    assert prime.atomtyping_failed_ids(
+        'CMPID_20470 CMPID_20705 Problem in atomtyping structure', [20470,20705]) == []
+
+
+@pytest.mark.parametrize('status,all_failed', [('FAILED',True),('DONE',True),('DONE',False)])
+def test_terminal_batch_atomtyping_failures_and_partial_success(tmp_path,monkeypatch,status,all_failed):
+    ids=[20470,20705] if all_failed else [20470,30000]
+    command=['/suite/prime_mmgbsa','input.maegz']
+    # Old logs with a currently submitted ID must not supply failure evidence.
+    (tmp_path/'old.Prime.log').write_text(_component_log(30000))
+    monkeypatch.setattr(prime,'_run_attempt',lambda *a:(0,'JobId: current-job'))
+    prime.submit_or_poll(command,tmp_path,ids)
+    def query(cmd,**kw):
+        if cmd[1]=='download':
+            (tmp_path/'input.log').write_text('JobId: current-job\n'+
+                                             ('MMGBSA Error: All Entries Failed' if all_failed else 'finished'))
+            (tmp_path/'input.Prime.log').write_text(
+                _component_log(20470)+_component_log(ids[1],all_failed))
+            (tmp_path/'input-out.maegz').write_text('result')
+            return SimpleNamespace(stdout='')
+        return SimpleNamespace(stdout=json.dumps({'jobId':'current-job','status':status}))
+    monkeypatch.setattr(prime.subprocess,'run',query)
+    if all_failed:
+        with pytest.raises(prime.PrimeAtomTypingError) as error:
+            prime.submit_or_poll(command,tmp_path,ids)
+        assert error.value.compound_ids==ids
+        assert prime.load_job(tmp_path) is None
+    else:
+        assert prime.submit_or_poll(command,tmp_path,ids) is True
+        assert prime.load_job(tmp_path)['atomtyping_failed_ids']==[20470]
+
+
+def test_inline_batch_failure_uses_new_component_logs(tmp_path,monkeypatch):
+    (tmp_path/'old.Prime.log').write_text(_component_log(30000))
+    def launch(*a):
+        (tmp_path/'input.Prime.log').write_text(_component_log(20470)+_component_log(20705))
+        return 1,'MMGBSA Error: All Entries Failed'
+    monkeypatch.setattr(prime,'_run_attempt',launch)
+    with pytest.raises(prime.PrimeAtomTypingError) as error:
+        prime.submit_or_poll(['/suite/prime_mmgbsa'],tmp_path,[20470,20705,30000])
+    assert error.value.compound_ids==[20470,20705]
+
+
+def test_batch_worker_failure_excludes_bad_compounds_preserving_other_results(tmp_path,monkeypatch):
+    from molnova import database
+    db=tmp_path/'project.sqlite'
+    with sqlite3.connect(db) as conn:
+        _core.create_sqlite_schema(conn)
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,gbsa_score,state) "
+                         "VALUES (?,'C',1,-9,?,?)",[
+                             ('bad1',None,'docked'),('bad2',None,'docked'),
+                             ('unknown',None,'docked'),('done',-40,'gbsa_done')])
+    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=4)
+    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw: (_ for _ in ()).throw(
+        prime.PrimeAtomTypingError([1,2])))
+    mmgbsa._run_stage(args,1)
+    assert database.mmgbsa_candidates(db,1,4)==[3]
+    with sqlite3.connect(db) as conn:
+        rows=conn.execute('SELECT state,docking_score,gbsa_score,failed_stage FROM compound ORDER BY id').fetchall()
+    assert rows==[('failed',-9,None,'gbsa'),('failed',-9,None,'gbsa'),
+                  ('docked',-9,None,'gbsa'),('gbsa_done',-9,-40,None)]
+
+
+def test_partial_batch_scores_import_before_permanent_failures(tmp_path,monkeypatch):
+    db=tmp_path/'project.sqlite'
+    with sqlite3.connect(db) as conn:
+        _core.create_sqlite_schema(conn)
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
+                         "VALUES (?,'C',1,-9,'gbsa_running')", [('good',),('bad',)])
+    directory=tmp_path/'iter1/mmgbsa';directory.mkdir(parents=True)
+    prime._save(directory,{'command':['/suite/prime_mmgbsa'],'compound_ids':[1,2],
+                           'atomtyping_failed_ids':[2]})
+    monkeypatch.setattr(prime,'submit_or_poll',lambda *a,**kw:True)
+    def finish(iteration,args,directory,ids):
+        scores=directory/'scores.tsv';scores.write_text('id\tgbsa_score\n1\t-40\n')
+        return _core.update_gbsa_scores(scores,args.db_path,allowed_ids=ids)
+    monkeypatch.setattr(_core,'finish_iteration_mmgbsa',finish)
+    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=2)
+    mmgbsa._run_stage(args,1)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute('SELECT state,gbsa_score FROM compound ORDER BY id').fetchall()==[
+            ('gbsa_done',-40),('failed',None)]
+    assert prime.load_job(directory) is None
+
+
+def test_permanent_failure_recording_preserves_existing_scores(tmp_path):
+    from molnova import database
+    db=tmp_path/'project.sqlite'
+    with sqlite3.connect(db) as conn:
+        _core.create_sqlite_schema(conn)
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,gbsa_score,fep_score) "
+                     "VALUES ('done','C',1,'fep_done',-40,-5)")
+    assert database.mark_gbsa_atomtyping_failures(db,[1],'error')==0
+    with sqlite3.connect(db) as conn:
+        assert conn.execute('SELECT state,gbsa_score,fep_score FROM compound').fetchone()==('fep_done',-40,-5)
