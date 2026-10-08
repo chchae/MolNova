@@ -22,9 +22,12 @@ def schrodinger_cpu_settings(config: dict[str, Any]) -> dict[str, int | None]:
 
 def schrodinger_job_options(host: str, cpus: int | None = None,
                             *, split_jobs: bool = False) -> list[str]:
-    """Use host slots for concurrency; LigPrep/Prime also need job splitting.
+    """Use host slots for concurrency and explicit splitting when requested.
 
-    Glide 2026-3's new driver uses HOST slots and deprecates explicit NJOBS.
+    Glide's JobDJ driver can otherwise combine small reference groups into
+    very few jobs despite a large HOST slot count. Explicit NJOBS selects
+    that driver's batch splitting (and disables automatic MQ driver selection
+    in 2026-3); it does not change the docking backend or scientific input.
     Bare host entries retain the vendor's configured concurrency defaults.
     """
     if cpus is not None:
@@ -38,6 +41,12 @@ def schrodinger_job_options(host: str, cpus: int | None = None,
     if split_jobs and slots and all(s.isdigit() and int(s) > 0 for s in slots):
         options += ["-NJOBS", str(sum(int(s) for s in slots))]
     return options
+
+
+def mmgbsa_job_options(host: str) -> list[str]:
+    """Use eight host slots and one Prime MM-GBSA job for every batch."""
+    hosts = " ".join(f"{entry.split(':', 1)[0]}:8" for entry in host.split())
+    return ["-HOST", hosts, "-NJOBS", "1"]
 
 
 def aizynth_process_count(config: dict[str, Any]) -> int:

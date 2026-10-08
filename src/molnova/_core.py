@@ -3026,7 +3026,7 @@ def submit_glide(schrodinger, glide_input, group_dir, host, cpus=None):
     cmd = [
         schrodinger / "glide",
         glide_input,
-        *schrodinger_job_options(host, cpus),
+        *schrodinger_job_options(host, cpus, split_jobs=True),
         "-OVERWRITE",
     ]
 
@@ -4167,6 +4167,18 @@ def run_iteration_mmgbsa(
     glide_dir,
     compound_ids=None,
 ):
+    from molnova.prime_async import load_job, submit_or_poll, job_file
+    mmgbsa_dir = iteration_dir / "mmgbsa"
+    active = load_job(mmgbsa_dir)
+    if active is not None:
+        if not submit_or_poll(active["command"], mmgbsa_dir, active["compound_ids"],
+                              wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
+                              retries=getattr(args, "gbsa_license_retries", 3)):
+            return None
+        updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, active["compound_ids"])
+        job_file(mmgbsa_dir).unlink()
+        return updated
+
     top_rows = select_iteration_docking_top(
         iteration=iteration,
         limit_count=args.gbsa_input_count,
@@ -4333,22 +4345,25 @@ def run_iteration_mmgbsa(
         f"Docking top input   : {len(top_rows)}"
     )
 
-    from molnova.config import schrodinger_job_options
+    from molnova.config import mmgbsa_job_options
     cmd = [
         args.schrodinger / "prime_mmgbsa",
         pv_file,
         "-OVERWRITE",
-        *schrodinger_job_options(
-            args.host, getattr(args, "mmgbsa_cpus", None), split_jobs=True
-        ),
-        "-WAIT",
+        *mmgbsa_job_options(args.host),
     ]
 
-    from molnova.schrodinger_retry import run_prime
-    run_prime(cmd, mmgbsa_dir,
-              wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
-              retries=getattr(args, "gbsa_license_retries", 3))
+    print(f"MM-GBSA resources  : {' '.join(cmd[3:])}")
+    if not submit_or_poll(cmd, mmgbsa_dir, [row[0] for row in top_rows],
+                          wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
+                          retries=getattr(args, "gbsa_license_retries", 3)):
+        return None
+    updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, [row[0] for row in top_rows])
+    job_file(mmgbsa_dir).unlink(missing_ok=True)
+    return updated
 
+
+def finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, compound_ids):
     output_candidates = sorted(
         mmgbsa_dir.glob(
             "*-out.maegz"
@@ -4388,7 +4403,7 @@ def run_iteration_mmgbsa(
     )
 
     updated = update_gbsa_scores(
-        score_file, args.db_path, allowed_ids=[row[0] for row in top_rows]
+        score_file, args.db_path, allowed_ids=compound_ids
     )
 
     with db_connect(args.db_path) as conn:

@@ -162,9 +162,13 @@ def test_constrained_glide_settings_match_reference_method(tmp_path):
         _core.write_constrained_glide_input(tmp_path, "grid", "ligands", "reference", "c1ccccc1")
 
 
-@pytest.mark.parametrize("cpus,host,njobs", [(None, "compute:4", "4"), (2, "compute:2", "2")])
-def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, cpus, host, njobs):
+@pytest.mark.parametrize("cpus,host,njobs", [(None, "compute:8", "1"), (16, "compute:8", "1")])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, cpus, host, njobs, batch_size):
     args, ids = _project(tmp_path)
+    if batch_size == 2:
+        args.gbsa_input_count = 3
+    pending = [ids["PENDING"]] + ([ids["OUTSIDE"]] if batch_size == 2 else [])
     args.schrodinger = Path("/schrodinger")
     args.host = "compute:4"
     args.mmgbsa_cpus = cpus
@@ -180,26 +184,31 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, cpus, hos
     def run(command, cwd):
         commands.append([str(item) for item in command])
         if Path(command[0]).name == "prime_mmgbsa":
-            assert command[2:] == ["-OVERWRITE", "-HOST", host, "-NJOBS", njobs, "-WAIT"]
+            assert command[2:] == ["-OVERWRITE", "-HOST", host, "-NJOBS", njobs]
             assert Path(command[1]).read_text() == "receptor plus selected poses"
             (cwd / "mmgbsa_input-out.maegz").write_text("results")
         elif Path(command[1]).name == "_build_mmgbsa_pv.py":
             assert Path(command[2]).read_text() == "receptor"
-            assert Path(command[4]).read_text() == f"{ids['PENDING']}\n"
+            assert Path(command[4]).read_text() == "".join(f"{cid}\n" for cid in pending)
             Path(command[5]).write_text("receptor plus selected poses")
         elif Path(command[1]).name == "_extract_mmgbsa_scores.py":
-            Path(command[3]).write_text(f"id\tgbsa_score\n{ids['PENDING']}\t-35\n")
+            Path(command[3]).write_text("id\tgbsa_score\n" + "".join(f"{cid}\t-35\n" for cid in pending))
         else:
             pytest.fail(f"Unexpected command: {command}")
 
     monkeypatch.setattr(_core, "run_command", run)
-    from molnova import schrodinger_retry
-    monkeypatch.setattr(schrodinger_retry, "run_prime", lambda command, cwd, **kwargs: run(command, cwd))
+    from molnova import prime_async
+    def submit(command, cwd, compound_ids, **kwargs):
+        run(command, cwd)
+        return True
+    monkeypatch.setattr(prime_async, "submit_or_poll", submit)
     assert _core.run_iteration_mmgbsa(
-        1, args, iteration_dir, glide_dir, compound_ids=[ids["PENDING"]]
-    ) == 1
+        1, args, iteration_dir, glide_dir, compound_ids=pending
+    ) == batch_size
     assert len(commands) == 3
     assert (iteration_dir / "mmgbsa/gbsa_top.tsv").is_file()
+    output = capsys.readouterr().out
+    assert f"MM-GBSA resources  : -HOST {host} -NJOBS {njobs}" in output
 
 
 @pytest.mark.parametrize("text,expected", [

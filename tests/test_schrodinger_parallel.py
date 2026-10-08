@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from molnova import _core
-from molnova.config import schrodinger_cpu_settings, schrodinger_job_options
+from molnova.config import mmgbsa_job_options, schrodinger_cpu_settings, schrodinger_job_options
 
 
 @pytest.mark.parametrize("stage", ["ligprep", "glide", "mmgbsa"])
@@ -23,6 +23,16 @@ def test_config_loads_cpu_overrides(tmp_path):
     assert schrodinger_cpu_settings({"host": "localhost"}) == {
         "ligprep_cpus": None, "glide_cpus": None, "mmgbsa_cpus": None,
     }
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("t41-cpu:16", "t41-cpu:8"),
+    ("t41-cpu:128", "t41-cpu:8"),
+    ("localhost", "localhost:8"),
+    ("a:4 b:8", "a:8 b:8"),
+])
+def test_mmgbsa_uses_fixed_resources(host, expected):
+    assert mmgbsa_job_options(host) == ["-HOST", expected, "-NJOBS", "1"]
 
 
 def test_host_defaults_and_multiple_hosts():
@@ -52,8 +62,13 @@ def test_ligprep_splits_jobs_preserving_scientific_options(monkeypatch, tmp_path
     assert "-r" not in command
 
 
-@pytest.mark.parametrize("cpus,host", [(None, "compute:128"), (8, "compute:8")])
-def test_glide_uses_host_workers_and_remains_asynchronous(monkeypatch, tmp_path, cpus, host):
+@pytest.mark.parametrize("source_host,cpus,host,njobs", [
+    ("compute:128", None, "compute:128", "128"),
+    ("compute:128", 8, "compute:8", "8"),
+    ("a:4 b:8", None, "a:4 b:8", "12"),
+    ("localhost", None, "localhost", None),
+])
+def test_glide_splits_reference_groups_and_remains_asynchronous(monkeypatch, tmp_path, source_host, cpus, host, njobs):
     calls = []
 
     def run(command, **kwargs):
@@ -62,7 +77,10 @@ def test_glide_uses_host_workers_and_remains_asynchronous(monkeypatch, tmp_path,
 
     monkeypatch.setattr(_core.subprocess, "run", run)
     _core.submit_glide(Path("/suite"), tmp_path / "dock.in", tmp_path,
-                       "compute:128", cpus=cpus)
-    assert calls[0][-3:] == ["-HOST", host, "-OVERWRITE"]
+                       source_host, cpus=cpus)
+    if njobs:
+        assert calls[0][-5:] == ["-HOST", host, "-NJOBS", njobs, "-OVERWRITE"]
+    else:
+        assert calls[0][-3:] == ["-HOST", host, "-OVERWRITE"]
+        assert "-NJOBS" not in calls[0]
     assert "-WAIT" not in calls[0]
-    assert "-NJOBS" not in calls[0]

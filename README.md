@@ -186,7 +186,7 @@ rank; later docking results can enter the top set.
 Prime MM-GBSA receives a receptor-first structure file containing the selected
 best ligand poses. The receptor comes from `mmgbsa-receptor` when specified, or
 is extracted from the Glide grid archive. It runs with
-`prime_mmgbsa <input.maegz> -OVERWRITE -HOST <host> [-NJOBS N] -WAIT`. Result extraction
+`prime_mmgbsa <input.maegz> -OVERWRITE -HOST <host> [-NJOBS N]`. Result extraction
 prefers `r_psp_MMGBSA_dG_Bind`, with the existing property-name fallbacks. Scores
 are stored only for submitted IDs, preserve existing GBSA results, and rank
 lower values first for elite selection.
@@ -195,25 +195,47 @@ lower values first for elite selection.
 
 Schrödinger parallelizes these batches across ligand subjobs/workers. The shared
 `host = "t41-cpu:128"` requests up to 128 concurrent subjobs per submitted job.
-LigPrep and Prime MM-GBSA also receive explicit `-NJOBS 128` to split the batch.
-Glide 2026-3 uses `-HOST` to set worker concurrency; adding `-NJOBS` would force
-its legacy driver, so MolNova does not add it to Glide.
+LigPrep and Glide also receive explicit `-NJOBS 128` to split
+the batch. Glide's automatic JobDJ splitting can otherwise leave small reference
+groups in a single subjob. In 2026-3, explicit `-NJOBS` selects the JobDJ driver
+instead of automatic MQ driver selection; the docking backend and constraints
+remain unchanged. Glide submission remains asynchronous, with results published
+as each reference group finishes.
 
-Override the shared host slot count separately for each stage:
+Override the shared host slot count separately for LigPrep and Glide:
 
 ```toml
 host = "t41-cpu:128"
 ligprep-cpus = 32
 glide-cpus = 32
-mmgbsa-cpus = 16
 ```
 
 Each override must be a positive integer and requires a single host entry.
-For example, MM-GBSA above runs with `-HOST t41-cpu:16 -NJOBS 16`.
-Without overrides, existing host settings are preserved. A bare host name
-retains Schrödinger defaults (localhost normally uses one slot); add a `:N`
-suffix or stage CPU overrides to request multiple CPUs. Explicit slot counts
-on multiple host entries are summed for LigPrep/Prime job splitting.
+Without overrides, LigPrep and Glide preserve existing host settings. A bare
+host name retains Schrödinger defaults (localhost normally uses one slot); add
+a `:N` suffix or stage CPU overrides to request multiple CPUs. Explicit slot
+counts on multiple host entries are summed for LigPrep and Glide job splitting.
+
+MM-GBSA always uses eight slots per configured host and `-NJOBS 1`, regardless of
+batch size or shared slot count: `host = "t41-cpu:128"` produces
+`-HOST t41-cpu:8 -NJOBS 1`. The legacy `mmgbsa-cpus` setting is still accepted
+and validated for compatibility, but does not change MM-GBSA resources.
+
+MM-GBSA submits only current top-N compounds without an existing GBSA score.
+Prime is submitted without `-WAIT`. The worker records JobId and submitted
+compound IDs in `iterN/mmgbsa/prime_job.json`, then exits. Subsequent worker
+runs check JobServer, download completed outputs, and persist scores. Other
+iterations can be submitted while earlier jobs run; a running batch is never
+overwritten. Use `molnova run` for repeated polling, or invoke the MM-GBSA stage
+again to collect results after a manual submission. License retries are deferred
+to later worker runs. `--once` submits jobs but does not wait to collect scores.
+Prime also prepares the free receptor before processing ligands. MM-GBSA runs
+with one subjob; active/submitted jobs may still be waiting for resources.
+Previously submitted MM-GBSA jobs retain their recorded resource requests.
+A single-compound submission with an explicit Prime atomtyping error is marked
+`failed` with `failed_stage = "gbsa"` and excluded from further MM-GBSA retries.
+Its docking score is preserved. Generic failures and ambiguous batch failures
+remain retryable; JobServer status/download errors retain the active job record.
 
 These counts apply per Glide reference group, not to the whole pipeline.
 Groups and stages can overlap, and the scheduler, available licenses, batch

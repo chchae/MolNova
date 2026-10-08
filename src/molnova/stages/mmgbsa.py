@@ -5,6 +5,7 @@ from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started
 from molnova.states import CompoundState as State
+from molnova.prime_async import PrimeAtomTypingError, load_job
 
 
 def eligible_iteration(args):
@@ -22,12 +23,26 @@ def eligible_iteration(args):
 
 
 def _run_stage(args, requested_iteration):
+    if requested_iteration is None:
+        with c.open_sqlite(args.db_path) as conn:
+            iterations = [row[0] for row in conn.execute(
+                "SELECT DISTINCT iteration FROM compound WHERE iteration>0 "
+                "AND docking_score IS NOT NULL ORDER BY iteration"
+            )]
+        for iteration in iterations:
+            if (load_job(args.output / f"iter{iteration}" / "mmgbsa") is not None
+                    or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count)):
+                _run_stage(args, iteration)
+        return
     iteration = requested_iteration or eligible_iteration(args)
     if iteration is None:
         print("No current docking top-N compounds require MM-GBSA.")
         return
 
-    pending = database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count)
+    directory = args.output / f"iter{iteration}" / "mmgbsa"
+    active = load_job(directory)
+    pending = (active["compound_ids"] if active is not None else
+               database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count))
 
     if not pending:
         print(f"Iteration {iteration}: current docking top-{args.gbsa_input_count} already has MM-GBSA.")
@@ -52,6 +67,19 @@ def _run_stage(args, requested_iteration):
             compound_ids=pending,
         )
     except Exception as exc:
+        # A status/download failure does not prove that the external job failed.
+        if load_job(directory) is not None:
+            raise
+        if isinstance(exc, PrimeAtomTypingError) and pending == [exc.compound_id]:
+            c.set_compound_state(
+                pending,
+                State.FAILED,
+                failed_stage="gbsa",
+                failure_message=str(exc),
+                db_path=args.db_path,
+            )
+            print(f"Iteration {iteration}: {exc}; marked failed and excluded from retries.")
+            return
         c.set_compound_state(
             pending,
             State.DOCKED,
@@ -60,6 +88,10 @@ def _run_stage(args, requested_iteration):
             db_path=args.db_path,
         )
         raise
+
+    if updated is None:
+        print(f"Iteration {iteration}: MM-GBSA submitted/running; results will be recovered on a later worker run.")
+        return
 
     # IDs that were selected but produced no GBSA score become retryable docked compounds.
     with c.open_sqlite(args.db_path) as conn:
