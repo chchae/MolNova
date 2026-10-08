@@ -201,6 +201,12 @@ groups in a single subjob. In 2026-3, explicit `-NJOBS` selects the JobDJ driver
 instead of automatic MQ driver selection; the docking backend and constraints
 remain unchanged. Glide submission remains asynchronous, with results published
 as each reference group finishes.
+Before splitting ligands or reading prior outputs, the Glide worker fingerprints
+`ligprep_all.maegz`. A changed input (or missing legacy fingerprint) deletes old
+Glide input/output files, logs, score tables and merged poses from all reference
+groups. Matching fingerprints retain files for asynchronous restart recovery.
+SQLite results are preserved; previously failed compounds are not automatically
+reset by this file cleanup.
 
 Override the shared host slot count separately for LigPrep and Glide:
 
@@ -216,10 +222,13 @@ host name retains Schrödinger defaults (localhost normally uses one slot); add
 a `:N` suffix or stage CPU overrides to request multiple CPUs. Explicit slot
 counts on multiple host entries are summed for LigPrep and Glide job splitting.
 
-MM-GBSA always uses eight slots per configured host and `-NJOBS 1`, regardless of
-batch size or shared slot count: `host = "t41-cpu:128"` produces
-`-HOST t41-cpu:8 -NJOBS 1`. The legacy `mmgbsa-cpus` setting is still accepted
-and validated for compatibility, but does not change MM-GBSA resources.
+MM-GBSA uses eight slots per configured host and creates one subjob per selected,
+unscored ligand. For 100 ligands, `host = "t41-cpu:128"` produces
+`-HOST t41-cpu:8 -NJOBS 100`. NJOBS controls the total number of subjobs, while
+HOST slots limit concurrent execution. JobDJ schedules the next queued ligand
+when a slot becomes available, without waiting for the other seven to finish.
+The legacy `mmgbsa-cpus` setting is still accepted and validated for compatibility,
+but does not change MM-GBSA resources.
 
 MM-GBSA submits only current top-N compounds without an existing GBSA score.
 Prime is submitted without `-WAIT`. The worker records JobId and submitted
@@ -230,7 +239,8 @@ overwritten. Use `molnova run` for repeated polling, or invoke the MM-GBSA stage
 again to collect results after a manual submission. License retries are deferred
 to later worker runs. `--once` submits jobs but does not wait to collect scores.
 Prime also prepares the free receptor before processing ligands. MM-GBSA runs
-with one subjob; active/submitted jobs may still be waiting for resources.
+with up to eight ligand subjobs, limited by the input ligand count;
+active/submitted jobs may still be waiting for resources.
 Previously submitted MM-GBSA jobs retain their recorded resource requests.
 A single-compound submission with an explicit Prime atomtyping error is marked
 `failed` with `failed_stage = "gbsa"` and excluded from further MM-GBSA retries.

@@ -14,7 +14,7 @@ host = "t41-cpu:128"
 # Optional LigPrep/Glide slot overrides (otherwise inherit host :128).
 ligprep-cpus = 64
 glide-cpus = 64
-# MM-GBSA always uses -HOST t41-cpu:8 -NJOBS 1.
+# MM-GBSA uses -HOST t41-cpu:8; -NJOBS equals the number of unscored input ligands.
 
 tail-timeout = 300
 
@@ -33,7 +33,7 @@ fep-enabled = false
 fep-input-count = 10
 
 # Enabled by default; policy-model and stock files are required.
-synthetic-feasibility-enabled = true
+synthetic-feasibility-enabled = false
 aizynth-nproc = 8
 aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 aizynth-ssh-host = "tensor"

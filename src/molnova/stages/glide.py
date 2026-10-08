@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 from pathlib import Path
 import sqlite3
 import time
@@ -7,6 +8,46 @@ from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started
 from molnova.states import CompoundState as State
+
+
+def prepare_glide_files(glide_root, ligprep_file):
+    """Remove results from another LigPrep input before inspecting job outputs.
+
+    Keep matching-input files so asynchronous jobs survive worker restarts.
+    Legacy outputs without a fingerprint are treated as stale.
+    """
+    digest = hashlib.sha256()
+    with ligprep_file.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    signature = digest.hexdigest()
+    marker = glide_root / "ligprep_input.sha256"
+    if marker.exists() and marker.read_text().strip() == signature:
+        return
+
+    removed = 0
+    for group in glide_root.glob("ref_*"):
+        if not group.is_dir():
+            continue
+        artifacts = set(group.glob("glide_constrained*"))
+        artifacts.update(group / name for name in (
+            "best_poses.maegz", "docking_scores.tsv", "_reference.maegz",
+            "ligprep_group.maegz",
+        ))
+        for path in artifacts:
+            if path.is_file():
+                path.unlink()
+                removed += 1
+    for name in ("best_poses.maegz", "best_poses.pending.maegz", "reference_map.tsv"):
+        path = glide_root / name
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    temporary = marker.with_suffix(".tmp")
+    temporary.write_text(signature + "\n")
+    temporary.replace(marker)
+    if removed:
+        print(f"Removed {removed} old Glide files for the current LigPrep input.")
 
 
 def query_groups(iteration, db_path):
@@ -114,6 +155,7 @@ def _run_stage(args, ns):
 
     glide_root = args.output / f"iter{iteration}" / "glide"
     glide_root.mkdir(parents=True, exist_ok=True)
+    prepare_glide_files(glide_root, ligprep_file)
     group_ligand_files = c.split_ligprep_by_reference(
         args.schrodinger, ligprep_file, groups, glide_root
     )

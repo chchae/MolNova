@@ -31,8 +31,9 @@ def test_config_loads_cpu_overrides(tmp_path):
     ("localhost", "localhost:8"),
     ("a:4 b:8", "a:8 b:8"),
 ])
-def test_mmgbsa_uses_fixed_resources(host, expected):
-    assert mmgbsa_job_options(host) == ["-HOST", expected, "-NJOBS", "1"]
+@pytest.mark.parametrize("ligand_count", [1, 8, 100])
+def test_mmgbsa_queues_each_ligand_with_fixed_host_slots(host, expected, ligand_count):
+    assert mmgbsa_job_options(host, ligand_count) == ["-HOST", expected, "-NJOBS", str(ligand_count)]
 
 
 def test_host_defaults_and_multiple_hosts():

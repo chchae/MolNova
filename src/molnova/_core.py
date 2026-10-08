@@ -4350,7 +4350,7 @@ def run_iteration_mmgbsa(
         args.schrodinger / "prime_mmgbsa",
         pv_file,
         "-OVERWRITE",
-        *mmgbsa_job_options(args.host),
+        *mmgbsa_job_options(args.host, len(top_rows)),
     ]
 
     print(f"MM-GBSA resources  : {' '.join(cmd[3:])}")
