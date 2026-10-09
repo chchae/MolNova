@@ -30,7 +30,7 @@ print(f"Pearson r = {r:.4f}")
 print(f"R² = {r2:.4f}")
 print( "----------------------------------------" )
 
-for iteration in range(14):
+for iteration in range(100):
     rows = conn.execute("""
         SELECT docking_score, gbsa_score
         FROM compound

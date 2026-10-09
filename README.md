@@ -74,7 +74,12 @@ the same options, such as `--once` and `--poll-interval`.
 
 For a 10-iteration EGFR run, set `max-iteration = 10` in `examples/egfr.toml`.
 The example currently uses 1000 compounds per iteration, docking top-100 MM-GBSA,
-and 20 GBSA elites:
+and 20 GBSA elites. Each next iteration waits until the previous iterations'
+LigPrep/Glide work and MM-GBSA processing of the final docking top-N have
+finished. Terminal failures are processed but cannot supply elites; retryable
+or running calculations continue to block generation. The next LibInvent TL
+cycle uses the 20 lowest GBSA scores from the immediately previous iteration.
+MM-GBSA may overlap Glide within an iteration:
 
 ```bash
 conda activate reinvent4

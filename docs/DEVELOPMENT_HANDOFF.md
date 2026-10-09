@@ -384,15 +384,20 @@ Lower GBSA score is considered better for ranking.
 
 ## 16. Next Iteration Eligibility
 
-Do not require all compounds in iteration N to complete every stage.
+Do not generate N+1 until generation and LigPrep/Glide in iteration N
+have finished, no compound remains `gbsa_running`, and every compound in
+the final docking top-N has a GBSA score or a terminal failure. Retryable
+failures and missing scores must finish before advancing. Docked compounds
+outside the top-N do not require MM-GBSA.
 
-However, do not generate N+1 prematurely.
+At least `gbsa-elite-count` finite GBSA results are required. Select the
+lowest GBSA scores from iteration N only to drive the next LibInvent TL
+cycle; do not pool elites from older iterations. Terminal failures supply
+no elite. MM-GBSA may still run alongside Glide within an iteration.
 
-Minimum requirement:
-
-    iteration N contains at least gbsa-elite-count valid GBSA results
-
-Then selected GBSA elites can drive the next LibInvent TL cycle.
+Explicit generation requests obey the same gate. When resuming a database
+created under the former early-generation policy, all earlier iterations
+must also satisfy the completion gate. Existing compounds are retained.
 
 ## 17. FEP
 

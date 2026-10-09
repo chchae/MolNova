@@ -58,28 +58,21 @@ def _run_stage(args, requested_iteration):
         print("Iteration 1: sampling original LibInvent prior.")
     else:
         previous = iteration - 1
-        with c.open_sqlite(args.db_path) as conn:
-            n_prev_gbsa = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM compound
-                WHERE iteration=? AND gbsa_score IS NOT NULL
-                """,
-                (previous,),
-            ).fetchone()[0]
-
-        if n_prev_gbsa < args.gbsa_elite_count:
-            print(
-                f"Iteration {iteration} not ready: iteration {previous} has "
-                f"only {n_prev_gbsa}/{args.gbsa_elite_count} MM-GBSA results."
+        # Also check earlier iterations when recovering a DB created by the old
+        # early-generation policy. Explicit --iteration cannot bypass this gate.
+        for completed_iteration in range(1, iteration):
+            reason = database.iteration_completion_reason(
+                args.db_path, completed_iteration, args.target_count,
+                args.gbsa_input_count, args.gbsa_elite_count,
             )
-            return
+            if reason is not None:
+                print(f"Iteration {iteration} not ready: iteration "
+                      f"{completed_iteration}: {reason}.")
+                return
 
         work_started(f"Iteration {iteration}: starting elite transfer learning and sampling.")
-        elites = c.select_global_elites(
-            target_iteration=iteration,
-            best_count=args.gbsa_elite_count,
-            db_path=args.db_path,
+        elites = database.iteration_gbsa_elites(
+            args.db_path, previous, args.gbsa_elite_count,
         )
         if len(elites) < args.gbsa_elite_count:
             raise RuntimeError(

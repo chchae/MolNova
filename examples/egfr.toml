@@ -9,7 +9,7 @@ out-dir = "./output"
 
 sample-size = 3000
 target-count = 1000
-max-iteration = 30
+max-iteration = 100
 host = "t41-cpu:128"
 # Optional LigPrep/Glide slot overrides (otherwise inherit host :128).
 ligprep-cpus = 64

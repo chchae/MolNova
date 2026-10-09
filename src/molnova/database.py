@@ -1,5 +1,6 @@
 """SQLite workflow-state API."""
 import sqlite3
+import math
 from contextlib import contextmanager
 from collections.abc import Iterable, Iterator
 import fcntl
@@ -167,6 +168,53 @@ def mmgbsa_candidates(path: str | Path, iteration: int, count: int) -> list[int]
             (iteration, count, State.DOCKED, State.GBSA_RUNNING),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+def iteration_completion_reason(path, iteration, target_count, input_count, elite_count):
+    """Return a blocking reason until docking and all selected GBSA work finish.
+
+    Terminal failures count as processed, but cannot supply an elite. Docked
+    compounds outside the final top-N need no GBSA result. A single SQLite read
+    keeps the readiness decision consistent with the persisted workflow state.
+    """
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT id,state,docking_score,gbsa_score FROM compound WHERE iteration=?",
+            (iteration,),
+        ).fetchall()
+    if len(rows) < target_count:
+        return f"generation incomplete ({len(rows)}/{target_count} compounds)"
+    upstream = {State.GENERATED, State.SYNTHETIC_RUNNING, State.LIGPREP_RUNNING,
+                State.LIGPREPPED, State.GLIDE_RUNNING}
+    unfinished = sum(state in upstream for _, state, _, _ in rows)
+    if unfinished:
+        return f"{unfinished} compounds still awaiting LigPrep/Glide completion"
+    running = sum(state == State.GBSA_RUNNING for _, state, _, _ in rows)
+    if running:
+        return f"MM-GBSA still running for {running} compounds"
+    docked = sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
+    pending = sum(
+        state != State.FAILED and (score is None or not math.isfinite(score))
+        for _, state, _, score in docked[:input_count]
+    )
+    if pending:
+        return f"final docking top-{input_count} has {pending} unfinished MM-GBSA results"
+    valid = sum(score is not None and math.isfinite(score) for _, _, _, score in rows)
+    if valid < elite_count:
+        return f"only {valid}/{elite_count} valid MM-GBSA results for elite selection"
+    return None
+
+
+def iteration_gbsa_elites(path, iteration, count):
+    """Select lowest finite GBSA scores from exactly the completed iteration."""
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT id,name,smiles,iteration,docking_score,gbsa_score FROM compound "
+            "WHERE iteration=? AND gbsa_score IS NOT NULL "
+            "ORDER BY gbsa_score ASC, docking_score ASC, id ASC",
+            (iteration,),
+        ).fetchall()
+    return [row for row in rows if math.isfinite(row[5])][:count]
 
 
 def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]:
