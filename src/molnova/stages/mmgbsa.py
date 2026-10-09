@@ -18,7 +18,8 @@ def eligible_iteration(args):
             )
         ]
     for iteration in iterations:
-        if database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count):
+        if database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
+                                      getattr(args, "target_count", 1)):
             return iteration
     return None
 
@@ -33,39 +34,46 @@ def _run_stage(args, requested_iteration):
         processed = False
         for iteration in iterations:
             if (load_job(args.output / f"iter{iteration}" / "mmgbsa") is not None
-                    or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count)):
+                    or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
+                                                  getattr(args, "target_count", 1))
+                    or database.docking_completion_reason(
+                        args.db_path, iteration, getattr(args, "target_count", 1)) is not None):
                 processed = True
                 _run_stage(args, iteration)
         if not processed:
-            print("No current docking top-N compounds require MM-GBSA.")
+            print("No completed docking iteration requires MM-GBSA.")
         return
     iteration = requested_iteration or eligible_iteration(args)
     if iteration is None:
-        print("No current docking top-N compounds require MM-GBSA.")
+        print("No completed docking iteration requires MM-GBSA.")
         return
 
     directory = args.output / f"iter{iteration}" / "mmgbsa"
+    target_count = getattr(args, "target_count", 1)
+    reason = database.docking_completion_reason(args.db_path, iteration, target_count)
+    if reason is not None:
+        print(f"Iteration {iteration}: MM-GBSA waiting: {reason}.")
+        return
     try:
         active = reconcile_saved_job(directory, args.db_path, iteration)
     except PrimeReconciliationPending as exc:
         print(str(exc))
         return
-    pending = (active["compound_ids"] if active is not None else
-               database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count))
-
+    if active is not None:
+        # Recover the exact saved submission, including jobs from the former
+        # streaming policy. Never overwrite an external job or erase its scores.
+        pending = database.claim_compounds(
+            args.db_path, active["compound_ids"],
+            expected_state=(State.DOCKED, State.GBSA_RUNNING),
+            claimed_state=State.GBSA_RUNNING,
+        )
+    else:
+        pending = database.claim_mmgbsa_candidates(
+            args.db_path, iteration, args.gbsa_input_count, target_count,
+        )
     if not pending:
-        print(f"Iteration {iteration}: current docking top-{args.gbsa_input_count} already has MM-GBSA.")
-        return
-
-    pending = database.claim_compounds(
-        args.db_path,
-        pending,
-        expected_state=(State.DOCKED, State.GBSA_RUNNING),
-        claimed_state=State.GBSA_RUNNING,
-    )
-    if not pending:
-        print(f"Iteration {iteration}: selected compounds are no longer in a claimable "
-              "docked/gbsa_running state; checking on the next poll.")
+        print(f"Iteration {iteration}: no unscored final docking top-{args.gbsa_input_count} "
+              "compounds ready to claim; checking on the next poll.")
         return
     work_started(f"Iteration {iteration}: starting MM-GBSA for {len(pending)} compounds.")
     try:

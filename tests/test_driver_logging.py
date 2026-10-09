@@ -69,4 +69,4 @@ def test_mmgbsa_idle_poll_has_explicit_reason(tmp_path, monkeypatch, capsys):
         _core.create_sqlite_schema(conn)
     args = SimpleNamespace(db_path=db, output=tmp_path, gbsa_input_count=100)
     mmgbsa._run_stage(args, None)
-    assert capsys.readouterr().out == "No current docking top-N compounds require MM-GBSA.\n"
+    assert capsys.readouterr().out == "No completed docking iteration requires MM-GBSA.\n"

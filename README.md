@@ -73,13 +73,13 @@ Passing a TOML path alone starts the same supervisor as `molnova run` and accept
 the same options, such as `--once` and `--poll-interval`.
 
 For a 10-iteration EGFR run, set `max-iteration = 10` in `examples/egfr.toml`.
-The example currently uses 1000 compounds per iteration, docking top-100 MM-GBSA,
+The example currently uses 1000 compounds per iteration, docking top-200 MM-GBSA,
 and 20 GBSA elites. Each next iteration waits until the previous iterations'
 LigPrep/Glide work and MM-GBSA processing of the final docking top-N have
 finished. Terminal failures are processed but cannot supply elites; retryable
 or running calculations continue to block generation. The next LibInvent TL
 cycle uses the 20 lowest GBSA scores from the immediately previous iteration.
-MM-GBSA may overlap Glide within an iteration:
+MM-GBSA waits for all docking work in its iteration to finish:
 
 ```bash
 conda activate reinvent4
@@ -162,7 +162,7 @@ the lock when its file handle closes.
 
 `generate → synthetic feasibility → LigPrep → Glide → MM-GBSA → FEP(optional)`
 
-The driver supervises independent subprocess workers. SQLite is the source of truth, so completed Glide groups can be written immediately and consumed by MM-GBSA without waiting for straggler Glide jobs.
+The driver supervises independent subprocess workers. SQLite is the source of truth. Completed Glide groups are written immediately; MM-GBSA waits until all upstream work in the iteration finishes, then selects the final docking top-N.
 
 During supervised runs, each successful idle poll prints one line such as
 `[ligprep ] skip: No iteration requires LigPrep.` Generate, synthetic feasibility,
@@ -183,11 +183,15 @@ fallback stays disabled. Across LigPrep states, each `CMPID_<id>` retains the
 lowest `r_i_docking_score` and its corresponding pose.
 
 Completed groups publish `best_poses.maegz` atomically before their scores enter
-SQLite, so MM-GBSA can read the matching poses while other groups still run.
-MM-GBSA ranks all docking results in the iteration, takes the current
-`gbsa-input-count` top compounds, and calculates only eligible compounds without
-an existing GBSA score. Completed GBSA compounds still occupy their docking
-rank; later docking results can enter the top set.
+SQLite. MM-GBSA waits until generation reaches `target-count` and no compounds
+remain in generation, synthetic screening, LigPrep or Glide states. A tail
+timeout leaves Glide work pending and does not release MM-GBSA. Terminal
+failures count as processed; retryable upstream failures continue to block it.
+Once docking finishes, the worker ranks all docking results by ascending score
+(with compound ID breaking ties), selects the final `gbsa-input-count` compounds,
+and calculates only eligible compounds without an existing GBSA score. Completed
+GBSA compounds still occupy their docking rank. Readiness, selection and claiming
+use one SQLite write transaction; explicit `--iteration` obeys the same gate.
 
 Prime MM-GBSA receives a receptor-first structure file containing the selected
 best ligand poses. The receptor comes from `mmgbsa-receptor` when specified, or
@@ -236,7 +240,7 @@ when a slot becomes available, without waiting for the other seven to finish.
 The legacy `mmgbsa-cpus` setting is still accepted and validated for compatibility,
 but does not change MM-GBSA resources.
 
-MM-GBSA submits only current top-N compounds without an existing GBSA score.
+MM-GBSA submits only final top-N compounds without an existing GBSA score.
 Prime is submitted without `-WAIT`. The worker records JobId and submitted
 compound IDs in `iterN/mmgbsa/prime_job.json`, then exits. Subsequent worker
 runs check JobServer, download completed outputs, and persist scores. Other
@@ -248,6 +252,9 @@ Prime also prepares the free receptor before processing ligands. MM-GBSA runs
 with up to eight ligand subjobs, limited by the input ligand count;
 active/submitted jobs may still be waiting for resources.
 Previously submitted MM-GBSA jobs retain their recorded resource requests.
+Jobs submitted under the former streaming policy are not canceled, and existing
+scores are preserved. Their collection or retry waits for docking completion;
+then saved submission IDs are recovered before selecting missing final top-N scores.
 Before claiming work, the worker checks saved submission IDs against the current
 SQLite iteration. If none belong to it and the external job has ended, the old
 `mmgbsa` directory is moved to `mmgbsa.stale-<timestamp>` and a clean directory is
@@ -262,7 +269,8 @@ Generic or ambiguous failures remain retryable; JobServer status/download errors
 retain the active job record.
 
 These counts apply per Glide reference group, not to the whole pipeline.
-Groups and stages can overlap, and the scheduler, available licenses, batch
+Glide groups can overlap; MM-GBSA waits for its iteration to finish docking.
+The scheduler, available licenses, batch
 size and host configuration determine actual concurrent CPU use. Existing
 submitted Glide jobs retain their original resource requests.
 

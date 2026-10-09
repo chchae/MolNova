@@ -344,7 +344,7 @@ Required behavior:
     → update immediately
 
     group C remains running
-    → A/B results remain available downstream
+    → A/B results remain persisted; MM-GBSA waits for C
 
 Default:
 
@@ -360,25 +360,28 @@ A later Glide worker invocation should recover completed outputs.
 
 ## 15. MM-GBSA
 
-MM-GBSA works on the current docking top-N.
+MM-GBSA works on the final docking top-N after the entire iteration finishes docking.
 
 Typical configuration:
 
-    gbsa-input-count = 50
+    gbsa-input-count = 200
     gbsa-elite-count = 10
 
 The worker should:
 
-1. inspect available docking results,
-2. determine current top-N,
-3. identify candidates without gbsa_score,
-4. calculate only those,
-5. persist gbsa_score.
+1. wait for `target-count` generated compounds and no upstream states
+   (`generated`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`),
+2. rank final docking scores ascending, breaking ties by compound ID,
+3. take the first `gbsa-input-count` compounds, including already scored compounds,
+4. atomically claim only eligible candidates without `gbsa_score`,
+5. calculate those and persist `gbsa_score`.
 
-Late Glide results may enter the top-N later.
-
-A later MM-GBSA invocation should calculate newly eligible compounds
-without recomputing existing GBSA results.
+Readiness, ranking and claiming occur in one SQLite write transaction.
+Terminal upstream failures count as processed. Retryable failures, unfinished
+generation and Glide tail timeouts block MM-GBSA. Explicit iteration requests
+obey this gate. Preserve old scores and submitted jobs from the former streaming
+policy; recover saved jobs after docking completes before submitting missing
+final top-N compounds.
 
 Lower GBSA score is considered better for ranking.
 
@@ -393,7 +396,7 @@ outside the top-N do not require MM-GBSA.
 At least `gbsa-elite-count` finite GBSA results are required. Select the
 lowest GBSA scores from iteration N only to drive the next LibInvent TL
 cycle; do not pool elites from older iterations. Terminal failures supply
-no elite. MM-GBSA may still run alongside Glide within an iteration.
+no elite. MM-GBSA starts only after Glide finishes within its iteration.
 
 Explicit generation requests obey the same gate. When resuming a database
 created under the former early-generation policy, all earlier iterations

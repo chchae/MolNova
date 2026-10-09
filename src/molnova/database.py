@@ -152,22 +152,64 @@ def find_iteration(stage: str, path: str | Path) -> int | None:
     return _core.find_iteration_for_state(stage, path)
 
 
-def mmgbsa_candidates(path: str | Path, iteration: int, count: int) -> list[int]:
-    """Rank all docking results first, then select unscored, eligible top-N IDs."""
+_PRE_DOCKING_STATES = {
+    State.GENERATED, State.SYNTHETIC_RUNNING, State.LIGPREP_RUNNING,
+    State.LIGPREPPED, State.GLIDE_RUNNING,
+}
+
+
+def _iteration_rows(conn, iteration):
+    return conn.execute(
+        "SELECT id,state,docking_score,gbsa_score FROM compound WHERE iteration=?",
+        (iteration,),
+    ).fetchall()
+
+
+def _docking_completion_reason(rows, target_count):
+    if len(rows) < target_count:
+        return f"generation incomplete ({len(rows)}/{target_count} compounds)"
+    unfinished = sum(state in _PRE_DOCKING_STATES for _, state, _, _ in rows)
+    if unfinished:
+        return f"{unfinished} compounds still awaiting LigPrep/Glide completion"
+    return None
+
+
+def docking_completion_reason(path, iteration, target_count):
+    """Wait for the entire iteration, including retryable upstream work."""
     with connect(path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id FROM (
-                SELECT id, state, gbsa_score, docking_score FROM compound
-                WHERE iteration=? AND iteration>0 AND docking_score IS NOT NULL
-                ORDER BY docking_score ASC, id ASC LIMIT ?
+        return _docking_completion_reason(_iteration_rows(conn, iteration), target_count)
+
+
+def _mmgbsa_candidates(conn, iteration, count, target_count):
+    rows = _iteration_rows(conn, iteration)
+    if iteration <= 0 or _docking_completion_reason(rows, target_count) is not None:
+        return []
+    docked = sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
+    return [cid for cid, state, _, score in docked[:count]
+            if score is None and state in (State.DOCKED, State.GBSA_RUNNING)]
+
+
+def mmgbsa_candidates(path: str | Path, iteration: int, count: int,
+                      target_count: int = 1) -> list[int]:
+    """Select unscored final top-N only after all upstream work has finished."""
+    with connect(path) as conn:
+        return _mmgbsa_candidates(conn, iteration, count, target_count)
+
+
+def claim_mmgbsa_candidates(path, iteration, count, target_count):
+    """Check completion, rank and claim in one SQLite write transaction."""
+    with connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = _mmgbsa_candidates(conn, iteration, count, target_count)
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            marks = ",".join("?" for _ in batch)
+            conn.execute(
+                f"UPDATE compound SET state=?, failed_stage=NULL, failure_message=NULL, "
+                f"modified_at=CURRENT_TIMESTAMP WHERE id IN ({marks})",
+                [State.GBSA_RUNNING, *batch],
             )
-            WHERE gbsa_score IS NULL AND state IN (?, ?)
-            ORDER BY docking_score ASC, id ASC
-            """,
-            (iteration, count, State.DOCKED, State.GBSA_RUNNING),
-        ).fetchall()
-    return [row[0] for row in rows]
+        return ids
 
 
 def iteration_completion_reason(path, iteration, target_count, input_count, elite_count):
@@ -178,17 +220,10 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
     keeps the readiness decision consistent with the persisted workflow state.
     """
     with connect(path) as conn:
-        rows = conn.execute(
-            "SELECT id,state,docking_score,gbsa_score FROM compound WHERE iteration=?",
-            (iteration,),
-        ).fetchall()
-    if len(rows) < target_count:
-        return f"generation incomplete ({len(rows)}/{target_count} compounds)"
-    upstream = {State.GENERATED, State.SYNTHETIC_RUNNING, State.LIGPREP_RUNNING,
-                State.LIGPREPPED, State.GLIDE_RUNNING}
-    unfinished = sum(state in upstream for _, state, _, _ in rows)
-    if unfinished:
-        return f"{unfinished} compounds still awaiting LigPrep/Glide completion"
+        rows = _iteration_rows(conn, iteration)
+    reason = _docking_completion_reason(rows, target_count)
+    if reason is not None:
+        return reason
     running = sum(state == State.GBSA_RUNNING for _, state, _, _ in rows)
     if running:
         return f"MM-GBSA still running for {running} compounds"

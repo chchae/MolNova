@@ -103,9 +103,11 @@ Do not require all Glide jobs to finish before processing completed results.
 
 A completed Glide reference group should immediately update SQLite.
 
-MM-GBSA may process eligible docking results while other Glide groups are still running.
+MM-GBSA must wait until generation reaches target-count and all LigPrep/Glide
+work in the iteration is processed. Running or retryable upstream work blocks it.
 
-Late docking results may subsequently enter the MM-GBSA candidate set.
+Select the final docking top-N only after docking completion; check readiness,
+rank and claim atomically. Preserve streaming Glide result persistence.
 
 Do not generate iteration N+1 until iteration N contains enough valid GBSA results for elite selection.
 
@@ -163,7 +165,7 @@ For Schrödinger 2026-3, do not pass `-r 1`; in this environment `-r` is interpr
 
 ## MM-GBSA
 
-MM-GBSA operates on the current docking top-N.
+MM-GBSA operates on the final docking top-N after docking completion.
 
 Only calculate candidates without an existing GBSA result.
 

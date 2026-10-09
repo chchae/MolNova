@@ -19,7 +19,7 @@ glide-cpus = 64
 tail-timeout = 300
 
 elite-tl-epochs = 3
-gbsa-input-count = 100
+gbsa-input-count = 200
 gbsa-elite-count = 20
 gbsa-license-retry-seconds = 300
 gbsa-license-retries = 3

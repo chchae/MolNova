@@ -6,6 +6,7 @@ import pytest
 
 from molnova import _core, database
 from molnova.stages import glide, mmgbsa
+from molnova.states import CompoundState as State
 
 
 def _project(tmp_path):
@@ -36,6 +37,97 @@ def test_late_docking_result_enters_mmgbsa_top_n(tmp_path):
     with sqlite3.connect(args.db_path) as conn:
         conn.execute("UPDATE compound SET docking_score=-11 WHERE id=?", (ids["OUTSIDE"],))
     assert database.mmgbsa_candidates(args.db_path, 1, 2) == [ids["OUTSIDE"]]
+
+
+@pytest.mark.parametrize("state", [State.GENERATED, State.SYNTHETIC_RUNNING,
+                                  State.LIGPREP_RUNNING, State.LIGPREPPED, State.GLIDE_RUNNING])
+@pytest.mark.parametrize("requested", [None, 1])
+def test_mmgbsa_waits_for_all_upstream_work(tmp_path, monkeypatch, state, requested, capsys):
+    args, ids = _project(tmp_path)
+    args.target_count = 3
+    with sqlite3.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state=?,docking_score=NULL WHERE id=?",
+                     (state, ids["OUTSIDE"]))
+    monkeypatch.setattr(_core, "run_iteration_mmgbsa",
+                        lambda **kw: pytest.fail("MM-GBSA started before docking finished"))
+    assert database.mmgbsa_candidates(args.db_path, 1, 2, 3) == []
+    assert mmgbsa.eligible_iteration(args) is None
+    mmgbsa._run_stage(args, requested)
+    assert "awaiting LigPrep/Glide" in capsys.readouterr().out
+    with sqlite3.connect(args.db_path) as conn:
+        assert conn.execute("SELECT state FROM compound WHERE id=?",
+                            (ids["PENDING"],)).fetchone()[0] == State.DOCKED
+        # The last group can change the final ranking substantially.
+        conn.execute("UPDATE compound SET state=?,docking_score=-11 WHERE id=?",
+                     (State.DOCKED, ids["OUTSIDE"]))
+    assert database.claim_mmgbsa_candidates(args.db_path, 1, 2, 3) == [ids["OUTSIDE"]]
+
+
+def test_mmgbsa_waits_for_generation_target_and_allows_terminal_docking_failure(tmp_path):
+    args, ids = _project(tmp_path)
+    assert database.claim_mmgbsa_candidates(args.db_path, 1, 2, 4) == []
+    with sqlite3.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state=?,docking_score=NULL,failed_stage='glide' "
+                     "WHERE id=?", (State.FAILED, ids["OUTSIDE"]))
+    assert database.claim_mmgbsa_candidates(args.db_path, 1, 2, 3) == [ids["PENDING"]]
+
+
+def test_mmgbsa_rechecks_completion_when_claiming(tmp_path, monkeypatch):
+    args, ids = _project(tmp_path)
+    args.target_count = 3
+    def changed(*a):
+        with sqlite3.connect(args.db_path) as conn:
+            conn.execute("UPDATE compound SET state=? WHERE id=?",
+                         (State.GLIDE_RUNNING, ids["OUTSIDE"]))
+        return None
+    monkeypatch.setattr(database, "docking_completion_reason", changed)
+    monkeypatch.setattr(_core, "run_iteration_mmgbsa", lambda **kw: pytest.fail("stale claim"))
+    mmgbsa._run_stage(args, 1)
+    with sqlite3.connect(args.db_path) as conn:
+        assert conn.execute("SELECT state FROM compound WHERE id=?",
+                            (ids["PENDING"],)).fetchone()[0] == State.DOCKED
+
+
+def test_final_top_200_selection_keeps_completed_scores_in_ranking(tmp_path, monkeypatch):
+    db = tmp_path / "project.sqlite"
+    with sqlite3.connect(db) as conn:
+        _core.create_sqlite_schema(conn)
+        conn.executemany(
+            "INSERT INTO compound(name,smiles,iteration,docking_score,state) "
+            "VALUES (?,'C',1,?,?)",
+            [(f"C{i}", -i, State.DOCKED) for i in range(205)],
+        )
+        conn.execute("UPDATE compound SET state=?,gbsa_score=-50 WHERE name='C204'",
+                     (State.GBSA_DONE,))
+        expected = [row[0] for row in conn.execute(
+            "SELECT id FROM compound WHERE name!='C204' AND docking_score<=-5 "
+            "ORDER BY docking_score,id")]
+    args = SimpleNamespace(db_path=db, output=tmp_path, target_count=205, gbsa_input_count=200)
+    calls = []
+    monkeypatch.setattr(_core, "run_iteration_mmgbsa",
+                        lambda **kw: calls.append(kw["compound_ids"]))
+    mmgbsa._run_stage(args, 1)
+    assert calls == [expected]
+    assert len(expected) == 199
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM compound WHERE state=?",
+                            (State.DOCKED,)).fetchone()[0] == 5
+
+
+def test_saved_prime_job_cannot_retry_while_docking_is_unfinished(tmp_path, monkeypatch):
+    from molnova import prime_async
+    args, ids = _project(tmp_path)
+    args.target_count = 3
+    directory = tmp_path / "iter1/mmgbsa"
+    directory.mkdir(parents=True)
+    prime_async._save(directory, {"command": ["/suite/prime_mmgbsa"],
+                                 "compound_ids": [ids["PENDING"]], "job_id": None})
+    with sqlite3.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state=? WHERE id=?",
+                     (State.GLIDE_RUNNING, ids["OUTSIDE"]))
+    monkeypatch.setattr(_core, "run_iteration_mmgbsa", lambda **kw: pytest.fail("early retry"))
+    mmgbsa._run_stage(args, None)
+    assert prime_async.load_job(directory)["compound_ids"] == [ids["PENDING"]]
 
 
 def test_license_retry_exhaustion_restores_only_pending_compounds(monkeypatch, tmp_path):
