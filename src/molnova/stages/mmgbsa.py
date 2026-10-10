@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import work_started
+from molnova.stages._logging import work_started, timed_stage
 from molnova.states import CompoundState as State
 from molnova.prime_async import (PrimeAtomTypingError, PrimeReconciliationPending,
                                 load_job, reconcile_saved_job)
@@ -25,6 +25,7 @@ def eligible_iteration(args):
     return None
 
 
+@timed_stage("MM-GBSA worker")
 def _run_stage(args, requested_iteration):
     if requested_iteration is None:
         with c.open_sqlite(args.db_path) as conn:
@@ -98,6 +99,9 @@ def _run_stage(args, requested_iteration):
         # A status/download failure does not prove that the external job failed.
         if load_job(directory) is not None:
             raise
+        rows = database.mmgbsa_submission_rows(args.db_path, pending)
+        pending = [cid for cid in pending if cid in rows and rows[cid][2] is None
+                   and rows[cid][1] in (State.DOCKED, State.GBSA_RUNNING)]
         if isinstance(exc, PrimeAtomTypingError):
             failed = sorted(set(pending) & set(exc.compound_ids))
             database.mark_gbsa_atomtyping_failures(args.db_path, failed, str(exc))

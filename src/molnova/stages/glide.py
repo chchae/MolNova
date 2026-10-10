@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import hashlib
+import re
 from pathlib import Path
 import sqlite3
 import time
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import work_started
+from molnova.stages._logging import work_started, timed_stage, format_elapsed
 from molnova.states import CompoundState as State
 
 
@@ -112,8 +113,17 @@ def process_completed_job(iteration, args, job, extractor, merger, glide_root):
             db_path=args.db_path,
         )
     print(f"Reference {job['reference_id']} completed: DB updated={updated}, no-pose={len(failed)}")
+    logfile = job.get("log_file", job["group_dir"] / "glide_constrained.log")
+    if logfile.exists():
+        match = re.search(r"Total elapsed time for Glide script\s*=\s*([0-9.]+)\s*seconds",
+                          logfile.read_text(errors="replace"))
+        if match:
+            print(f"Glide reference {job['reference_id']} calculation completed; "
+                  f"elapsed={format_elapsed(float(match.group(1)))}.", flush=True)
 
 
+
+@timed_stage("Glide stage worker")
 def _run_stage(args, ns):
     args.poll_interval = ns.poll_interval
     args.completion_fraction = ns.completion_fraction

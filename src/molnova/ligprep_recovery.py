@@ -2,7 +2,10 @@
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
+
+from molnova.stages._logging import job_elapsed, format_elapsed
 
 
 def job_file(directory):
@@ -25,6 +28,7 @@ def run_or_recover(command, directory, compound_ids, output):
     """Return False while a saved job is live; never repeat an uncertain launch."""
     directory, output = Path(directory), Path(output)
     record = load_job(directory)
+    elapsed = None
     if record is not None:
         if not record.get('job_id'):
             raise RuntimeError('Interrupted LigPrep launch without saved JobId; '
@@ -33,7 +37,9 @@ def run_or_recover(command, directory, compound_ids, output):
         result = subprocess.run([str(jsc), 'info', '--json', record['job_id']],
                                 cwd=directory, check=True, capture_output=True, text=True)
         jobs = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-        status = next(job['status'] for job in jobs if job['jobId'] == record['job_id'])
+        parent = next(job for job in jobs if job['jobId'] == record['job_id'])
+        status = parent['status']
+        elapsed = job_elapsed(parent)
         if status not in {'DONE', 'FAILED', 'CANCELED', 'STOPPED'}:
             print(f"LigPrep job {record['job_id']}: {status}; checking on next worker run.")
             return False
@@ -57,7 +63,8 @@ def run_or_recover(command, directory, compound_ids, output):
                     return run_or_recover(command, directory, compound_ids, output)
             raise RuntimeError('Legacy LigPrep logs have no JobId; reconcile existing job before resubmitting.')
         command = [str(value) for value in command]
-        record = {'command': command, 'compound_ids': list(compound_ids), 'job_id': None}
+        record = {'command': command, 'compound_ids': list(compound_ids), 'job_id': None,
+                  'submitted_at': time.time()}
         _save(directory, record)  # Write before launching, including uncertain launches.
         output.unlink(missing_ok=True)
         print('$', ' '.join(command), flush=True)
@@ -78,4 +85,8 @@ def run_or_recover(command, directory, compound_ids, output):
     if not output.is_file() or not output.stat().st_size:
         job_file(directory).unlink()
         raise RuntimeError('Completed LigPrep job produced no output.')
+    if elapsed is None and record.get('submitted_at') is not None:
+        elapsed = time.time() - record['submitted_at']
+    if elapsed is not None:
+        print(f'LigPrep calculation completed; elapsed={format_elapsed(elapsed)}.', flush=True)
     return True  # Retain record until the stage commits its compound states.

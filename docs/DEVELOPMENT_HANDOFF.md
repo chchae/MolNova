@@ -510,3 +510,22 @@ saves JobId while reading the existing `-WAIT` command output. On restart,
 query the parent job and download only terminal output. Retain submission
 records until compound states have committed; unknown launches/status failures
 must not trigger resubmission. Legacy LigPrep logs require a recoverable JobId.
+
+## Streaming GBSA results and elapsed times
+
+While a saved Prime parent runs, query its direct children and import only DONE
+ligand subjobs with matching native names. Read each immutable MAEGZ snapshot
+using `jsc tail-file --name <subjob>-out.maegz --force <parent-or-child-JobId>`;
+this also works after the parent has collected the child's output. Do not use
+`jsc download` for a running parent, nor consume a partially written output.
+Keep cache paths isolated by parent/child JobId. Use the existing score extractor
+and validate all returned compound IDs against the saved submission. Commit scores
+before checkpointing imported child IDs. Mark scored compounds `gbsa_done` and
+keep unfinished compounds `gbsa_running`. A later parent failure must reset only
+unscored claims; preserve streamed results and later states. Final parent output
+import remains idempotent. Partial results never bypass the iteration gates.
+
+Report active stage invocation elapsed time (including failures) separately from
+external calculation duration. GBSA uses JobServer start/end timestamps; LigPrep
+retains submission timing for restart, and Glide group timing comes from native
+completed logs. Do not clutter successful idle polls with timing messages.

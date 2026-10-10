@@ -5,9 +5,10 @@ from molnova.ligprep_recovery import load_job, job_file
 from molnova.states import CompoundState as State
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import work_started
+from molnova.stages._logging import work_started, timed_stage
 
 
+@timed_stage("LigPrep stage worker")
 def _run_stage(args, requested_iteration):
     iteration = requested_iteration or c.find_iteration_for_state(
         "ligprep", args.db_path

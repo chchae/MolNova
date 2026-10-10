@@ -232,24 +232,32 @@ host name retains Schrödinger defaults (localhost normally uses one slot); add
 a `:N` suffix or stage CPU overrides to request multiple CPUs. Explicit slot
 counts on multiple host entries are summed for LigPrep and Glide job splitting.
 
-MM-GBSA uses eight slots per configured host and creates one subjob per selected,
+MM-GBSA uses seven slots per configured host and creates one subjob per selected,
 unscored ligand. For 100 ligands, `host = "t41-cpu:128"` produces
-`-HOST t41-cpu:8 -NJOBS 100`. NJOBS controls the total number of subjobs, while
+`-HOST t41-cpu:7 -NJOBS 100`. NJOBS controls the total number of subjobs, while
 HOST slots limit concurrent execution. JobDJ schedules the next queued ligand
-when a slot becomes available, without waiting for the other seven to finish.
+when a slot becomes available, without waiting for the other six to finish.
 The legacy `mmgbsa-cpus` setting is still accepted and validated for compatibility,
 but does not change MM-GBSA resources.
 
 MM-GBSA submits only final top-N compounds without an existing GBSA score.
 Prime is submitted without `-WAIT`. The worker records JobId and submitted
 compound IDs in `iterN/mmgbsa/prime_job.json`, then exits. Subsequent worker
-runs check JobServer, download completed outputs, and persist scores. Other
+runs check JobServer and immediately import scores from completed ligand subjobs,
+even while the parent Prime job remains running. Each imported compound receives
+`gbsa_score` and `gbsa_done`; unfinished compounds remain `gbsa_running`. The
+worker reads complete MAEGZ snapshots with the verified JobServer `tail-file`
+interface, validates `CMPID_<id>` against the saved submission, and records imported
+subjob IDs only after the database commit. Cached outputs are isolated by parent
+and child JobId. Failed transfers are retried on later polls; the final parent
+output collects anything not imported earlier. Existing scores survive restart
+and later batch failure. Other
 iterations can be submitted while earlier jobs run; a running batch is never
 overwritten. Use `molnova run` for repeated polling, or invoke the MM-GBSA stage
 again to collect results after a manual submission. License retries are deferred
 to later worker runs. `--once` submits jobs but does not wait to collect scores.
 Prime also prepares the free receptor before processing ligands. MM-GBSA runs
-with up to eight ligand subjobs, limited by the input ligand count;
+with up to seven ligand subjobs, limited by the input ligand count;
 active/submitted jobs may still be waiting for resources.
 Previously submitted MM-GBSA jobs retain their recorded resource requests.
 Jobs submitted under the former streaming policy are not canceled, and existing
@@ -386,3 +394,12 @@ unchanged. LigPrep saves its JobId while the existing `-WAIT` command runs and
 checks/downloads that job on restart. Unknown launch/status information blocks
 resubmission until reconciled; never reset all running flags indiscriminately.
 The log distinguishes recovering a saved MM-GBSA job from starting a new job.
+
+Active Generate, synthetic feasibility, LigPrep, Glide, and MM-GBSA workers report
+`elapsed=HH:MM:SS.s` when their invocation finishes (including errors). Idle polls
+remain concise. Asynchronous worker time is labeled separately from calculation
+time: each completed GBSA subjob and parent Prime job report JobServer runtime;
+LigPrep recovery uses server timestamps, and completed Glide reference groups
+report the elapsed time in their native logs. Partial GBSA persistence does not
+relax docking completion or next-iteration eligibility gates. Under the supervisor,
+partial scores are collected on its next worker poll (default 30 seconds).

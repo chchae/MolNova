@@ -10,7 +10,7 @@ from pathlib import Path
 
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import work_started
+from molnova.stages._logging import work_started, timed_stage
 from molnova.chemistry.sa_score import calculate_sa_score
 from molnova.states import CompoundState as State
 
@@ -222,6 +222,7 @@ def import_results(args, iteration, result_file):
     return updated
 
 
+@timed_stage("Synthetic feasibility stage")
 def _run_stage(args, requested_iteration, result_file=None):
     if result_file is not None:
         return import_results(args, requested_iteration, result_file)

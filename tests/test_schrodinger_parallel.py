@@ -26,12 +26,12 @@ def test_config_loads_cpu_overrides(tmp_path):
 
 
 @pytest.mark.parametrize("host,expected", [
-    ("t41-cpu:16", "t41-cpu:8"),
-    ("t41-cpu:128", "t41-cpu:8"),
-    ("localhost", "localhost:8"),
-    ("a:4 b:8", "a:8 b:8"),
+    ("t41-cpu:16", "t41-cpu:7"),
+    ("t41-cpu:128", "t41-cpu:7"),
+    ("localhost", "localhost:7"),
+    ("a:4 b:8", "a:7 b:7"),
 ])
-@pytest.mark.parametrize("ligand_count", [1, 8, 100])
+@pytest.mark.parametrize("ligand_count", [1, 7, 8, 200])
 def test_mmgbsa_queues_each_ligand_with_fixed_host_slots(host, expected, ligand_count):
     assert mmgbsa_job_options(host, ligand_count) == ["-HOST", expected, "-NJOBS", str(ligand_count)]
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import work_started
+from molnova.stages._logging import work_started, timed_stage
 
 
 def choose_iteration(args, requested):
@@ -31,6 +31,7 @@ def choose_iteration(args, requested):
     return next_iteration if next_iteration <= args.max_iteration else None
 
 
+@timed_stage("Generate stage")
 def _run_stage(args, requested_iteration):
     iteration = choose_iteration(args, requested_iteration)
     if iteration is None:

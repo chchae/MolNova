@@ -4175,9 +4175,12 @@ def run_iteration_mmgbsa(
     mmgbsa_dir = iteration_dir / "mmgbsa"
     active = load_job(mmgbsa_dir)
     if active is not None:
+        from molnova.gbsa_streaming import collect_completed_subjobs
         if not submit_or_poll(active["command"], mmgbsa_dir, active["compound_ids"],
                               wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
-                              retries=getattr(args, "gbsa_license_retries", 3)):
+                              retries=getattr(args, "gbsa_license_retries", 3),
+                              on_completed_subjobs=lambda record, jobs: collect_completed_subjobs(
+                                  args, iteration, mmgbsa_dir, record, jobs)):
             return None
         updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, active["compound_ids"])
         persist_atomtyping_failures(mmgbsa_dir, args.db_path)

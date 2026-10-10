@@ -109,12 +109,17 @@ class PrimeReconciliationPending(RuntimeError):
     """A mismatched saved job cannot yet be safely removed."""
 
 
-def _job_status(record, directory):
+def _job_details(record, directory):
     jsc = Path(record["command"][0]).parent / "jsc"
     result = subprocess.run([str(jsc), "info", "--json", record["job_id"]],
                             cwd=directory, check=True, capture_output=True, text=True)
     jobs = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    return next(job["status"] for job in jobs if job["jobId"] == record["job_id"])
+    return jobs
+
+
+def _job_status(record, directory):
+    return next(job["status"] for job in _job_details(record, directory)
+                if job["jobId"] == record["job_id"])
 
 
 def reconcile_saved_job(directory, db_path, iteration):
@@ -152,7 +157,8 @@ def reconcile_saved_job(directory, db_path, iteration):
     return None
 
 
-def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retries=3):
+def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retries=3,
+                   on_completed_subjobs=None):
     """Return True only after a terminal job's outputs have been downloaded."""
     directory = Path(directory)
     record = load_job(directory)
@@ -163,7 +169,11 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
     command = record["command"]
     jsc = Path(command[0]).parent / "jsc"
     if record["job_id"]:
-        status = _job_status(record, directory)
+        jobs = _job_details(record, directory)
+        parent = next(job for job in jobs if job["jobId"] == record["job_id"])
+        status = parent["status"]
+        if on_completed_subjobs is not None:
+            on_completed_subjobs(record, jobs)
         if status not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
             print(f"Prime job {record['job_id']}: {status}; checking on next worker run.")
             return False
@@ -176,6 +186,10 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
                 and not all_failed and set(failed) != set(record["compound_ids"])):
             record["atomtyping_failed_ids"] = failed
             _save(directory, record)
+            from molnova.stages._logging import job_elapsed, format_elapsed
+            elapsed = job_elapsed(parent)
+            if elapsed is not None:
+                print(f"Prime MM-GBSA calculation completed; elapsed={format_elapsed(elapsed)}.", flush=True)
             return True
         if failed:
             job_file(directory).unlink()

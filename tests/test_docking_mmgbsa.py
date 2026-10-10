@@ -254,7 +254,7 @@ def test_constrained_glide_settings_match_reference_method(tmp_path):
         _core.write_constrained_glide_input(tmp_path, "grid", "ligands", "reference", "c1ccccc1")
 
 
-@pytest.mark.parametrize("cpus,host", [(None, "compute:8"), (16, "compute:8")])
+@pytest.mark.parametrize("cpus,host", [(None, "compute:7"), (16, "compute:7")])
 @pytest.mark.parametrize("batch_size", [1, 2, 12])
 def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, cpus, host, batch_size):
     args, ids = _project(tmp_path)

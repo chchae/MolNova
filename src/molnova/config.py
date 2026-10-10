@@ -47,7 +47,7 @@ def mmgbsa_job_options(host: str, ligand_count: int) -> list[str]:
     """Queue one ligand per subjob; host slots bound concurrent execution."""
     if isinstance(ligand_count, bool) or not isinstance(ligand_count, int) or ligand_count < 1:
         raise ValueError("MM-GBSA ligand_count must be a positive integer")
-    hosts = " ".join(f"{entry.split(':', 1)[0]}:8" for entry in host.split())
+    hosts = " ".join(f"{entry.split(':', 1)[0]}:7" for entry in host.split())
     return ["-HOST", hosts, "-NJOBS", str(ligand_count)]
 
 
