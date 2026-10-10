@@ -545,3 +545,20 @@ batches; their recorded resource requests block new queue submissions in other
 iterations until retired. Never cancel or reset their live jobs during migration.
 Single-compound execution optimizes the free receptor for each job using the
 same Prime settings; unlike a batch, this repeats receptor preparation work.
+
+
+## Glide / MM-GBSA submission exclusion and durable Glide identity
+
+Do not overlap Glide and MM-GBSA native jobs. Use `schrodinger_guard.py` for
+active JobServer parent/child checks and an atomic shared submission mutex on
+the launch host, including legacy Prime retries. Pause GBSA refill while any
+Glide lives; collect already submitted results normally. Prevent new Glide
+submission while Prime lives. Keep workers independent; driver supervision and
+streaming persistence remain unchanged.
+
+Glide records submission identity before launch in each group's `glide_job.json`.
+Recover legacy live jobs by launch directory, taking precedence over old logs and
+outputs from earlier attempts. Parent and children must terminate before result
+import; download that exact completed submission. A failed child log line alone
+must never cause duplicate parent submission. Unknown launches/status queries
+retain work. Never remove live job files when a LigPrep fingerprint changes.

@@ -403,3 +403,19 @@ report the elapsed time in their native logs. Partial GBSA persistence does not
 relax docking completion or next-iteration eligibility gates. Under the supervisor,
 partial scores and freed slots are collected on its next worker poll (maximum
 five-second interval for MM-GBSA).
+
+
+Glide and MM-GBSA submissions are mutually exclusive across this user's projects
+on the launch host. A shared submission mutex encloses the JobServer check and
+launch. Any live opposing parent or child blocks new work; unavailable/unknown
+JobServer status also blocks submission. Existing GBSA jobs may finish and save
+scores while refill is paused. All native Glide jobs must end before GBSA refill
+resumes, including orphaned or duplicate submissions absent from compound states.
+
+Glide saves `glide_job.json` before launch and records the returned JobId.
+Completion requires that parent and descendants reach terminal status; a cached
+pose file or subjob failure message is insufficient. Recover active jobs by their
+launch directory, replacing older log identities, and download the matching
+completed job before importing scores. Unknown launches retain files and block
+resubmission. Input changes cannot discard live/uncertain job artifacts. Finished
+reference groups still publish scores independently as before.

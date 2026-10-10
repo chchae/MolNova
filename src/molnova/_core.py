@@ -3024,9 +3024,6 @@ REF_LIGAND_FILE {reference_file}
 def submit_glide(schrodinger, glide_input, group_dir, host, cpus=None):
     """Submit a Glide job and return immediately; intentionally no -WAIT."""
     from molnova.config import schrodinger_job_options
-    for old_file in group_dir.glob("*_lib.maegz"):
-        old_file.unlink()
-
     cmd = [
         schrodinger / "glide",
         glide_input,
@@ -3038,20 +3035,11 @@ def submit_glide(schrodinger, glide_input, group_dir, host, cpus=None):
     print("$", " ".join(str(x) for x in cmd))
     print()
 
-    result = subprocess.run(
-        [str(x) for x in cmd],
-        cwd=group_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    if result.stdout:
-        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-    if result.stderr:
-        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    from molnova.glide_recovery import submit
+    job_id = submit(schrodinger, cmd, group_dir)
 
     return {
+        "job_id": job_id,
         "group_dir": group_dir,
         "glide_input": glide_input,
         "output_file": group_dir / f"{glide_input.stem}_lib.maegz",
@@ -4179,11 +4167,13 @@ def run_iteration_mmgbsa(
         return poll_queue(iteration, args, mmgbsa_dir, active)
     if active is not None:
         from molnova.gbsa_streaming import collect_completed_subjobs
+        from molnova.schrodinger_guard import submission_guard
         if not submit_or_poll(active["command"], mmgbsa_dir, active["compound_ids"],
                               wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
                               retries=getattr(args, "gbsa_license_retries", 3),
                               on_completed_subjobs=lambda record, jobs: collect_completed_subjobs(
-                                  args, iteration, mmgbsa_dir, record, jobs)):
+                                  args, iteration, mmgbsa_dir, record, jobs),
+                              submission_fence=lambda: submission_guard(args.schrodinger, "mmgbsa")):
             return None
         updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, active["compound_ids"])
         persist_atomtyping_failures(mmgbsa_dir, args.db_path)

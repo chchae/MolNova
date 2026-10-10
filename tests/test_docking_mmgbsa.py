@@ -257,6 +257,8 @@ def test_constrained_glide_settings_match_reference_method(tmp_path):
 @pytest.mark.parametrize("cpus,host", [(None, "compute"), (16, "compute")])
 @pytest.mark.parametrize("batch_size", [1, 2, 12])
 def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, cpus, host, batch_size):
+    from molnova import schrodinger_guard
+    monkeypatch.setattr(schrodinger_guard, "active_jobs", lambda *a: [])
     args, ids = _project(tmp_path)
     args.gbsa_input_count = batch_size + 1
     pending = [ids["PENDING"]] + ([ids["OUTSIDE"]] if batch_size >= 2 else [])
@@ -330,6 +332,8 @@ def test_glide_zero_pose_detection_requires_finished_log(tmp_path, text, expecte
 
 
 def test_glide_recovers_completed_job_without_poses(monkeypatch, tmp_path):
+    from molnova import schrodinger_guard
+    monkeypatch.setattr(glide, "active_jobs", lambda *a: [])
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
@@ -405,6 +409,7 @@ def test_glide_keeps_current_jobs_and_results_after_restart(tmp_path):
 
 
 def test_glide_submits_new_job_instead_of_importing_legacy_results(monkeypatch, tmp_path):
+    monkeypatch.setattr(glide, "active_jobs", lambda *a: [])
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)

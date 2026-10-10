@@ -9,9 +9,11 @@ from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started, timed_stage, format_elapsed
 from molnova.states import CompoundState as State
+from molnova.glide_recovery import group_status, load_record, record_file
+from molnova.schrodinger_guard import active_jobs, belongs_to_directory, SubmissionBlocked, job_details, TERMINAL
 
 
-def prepare_glide_files(glide_root, ligprep_file):
+def prepare_glide_files(glide_root, ligprep_file, live=(), suite=None):
     """Remove results from another LigPrep input before inspecting job outputs.
 
     Keep matching-input files so asynchronous jobs survive worker restarts.
@@ -26,10 +28,19 @@ def prepare_glide_files(glide_root, ligprep_file):
     if marker.exists() and marker.read_text().strip() == signature:
         return
 
+    if any(belongs_to_directory(job, group) for group in glide_root.glob('ref_*') for job in live):
+        raise RuntimeError('Changed LigPrep input has live Glide jobs; files retained for reconciliation')
     removed = 0
     for group in glide_root.glob("ref_*"):
         if not group.is_dir():
             continue
+        saved = load_record(group)
+        if saved:
+            if not saved.get('job_id'):
+                raise RuntimeError('Changed input has an uncertain Glide launch; files retained')
+            if suite is not None and any(j.get('status') not in TERMINAL for j in job_details(suite, saved['job_id'], group)):
+                raise RuntimeError('Changed input has live saved Glide jobs; files retained')
+            record_file(group).replace(group / f'glide_job.previous-{time.time_ns()}.json')
         artifacts = set(group.glob("glide_constrained*"))
         artifacts.update(group / name for name in (
             "best_poses.maegz", "docking_scores.tsv", "_reference.maegz",
@@ -172,7 +183,8 @@ def _run_stage(args, ns):
 
     glide_root = args.output / f"iter{iteration}" / "glide"
     glide_root.mkdir(parents=True, exist_ok=True)
-    prepare_glide_files(glide_root, ligprep_file)
+    live = active_jobs(args.schrodinger)
+    prepare_glide_files(glide_root, ligprep_file, live, args.schrodinger)
     group_ligand_files = c.split_ligprep_by_reference(
         args.schrodinger, ligprep_file, groups, glide_root
     )
@@ -199,19 +211,21 @@ def _run_stage(args, ns):
                    output_file=output_file, log_file=log_file,
                    input_count=len(compounds), compounds=compounds)
 
-        # A previously submitted job may have completed while this driver was not running.
-        if output_file.exists() and output_file.stat().st_size > 0:
-            process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
-            continue
-
-        if c.glide_log_no_poses(log_file):
-            mark_group(args.db_path, compounds, State.FAILED, failed_stage="glide", message="Completed Glide job produced no poses")
-            continue
-
-        # Existing non-failed log without output: assume the JobServer/SLURM job is still running.
-        if log_file.exists() and not c.glide_log_failed(log_file):
-            mark_group(args.db_path, compounds, "glide_running")
+        status = group_status(args.schrodinger, gdir, log_file, output_file, live)
+        if status in ('RUNNING', 'UNKNOWN'):
+            mark_group(args.db_path, compounds, State.GLIDE_RUNNING)
             jobs.append(job)
+            continue
+        if status == 'DONE':
+            if output_file.exists() and output_file.stat().st_size:
+                process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
+            else:
+                mark_group(args.db_path, compounds, State.FAILED, failed_stage='glide',
+                           message='Completed Glide job produced no poses')
+            continue
+        if status is not None:
+            mark_group(args.db_path, compounds, State.FAILED, failed_stage='glide',
+                       message=f'Glide job ended with {status}')
             continue
 
         c.extract_reference_pose(
@@ -227,10 +241,14 @@ def _run_stage(args, ns):
             gdir, args.grid, ligand_file, ref_file,
             args.mcs_smarts, core_atoms
         )
-        submitted = c.submit_glide(
-            args.schrodinger, inp, gdir, args.host,
-            cpus=getattr(args, "glide_cpus", None),
-        )
+        try:
+            submitted = c.submit_glide(
+                args.schrodinger, inp, gdir, args.host,
+                cpus=getattr(args, "glide_cpus", None),
+            )
+        except SubmissionBlocked as exc:
+            print(f'Iteration {iteration}: Glide submissions waiting: {exc}.')
+            return
         job.update(submitted)
         mark_group(args.db_path, compounds, "glide_running")
         jobs.append(job)
@@ -246,21 +264,20 @@ def _run_stage(args, ns):
     pending = list(jobs)
 
     while pending:
+        live = active_jobs(args.schrodinger)
         rest = []
         for job in pending:
-            if job["output_file"].exists() and job["output_file"].stat().st_size > 0:
-                process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
+            status = group_status(args.schrodinger, job['group_dir'], job['log_file'], job['output_file'], live)
+            if status == 'DONE':
+                if job['output_file'].exists() and job['output_file'].stat().st_size:
+                    process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
+                else:
+                    mark_group(args.db_path, job['compounds'], State.FAILED, failed_stage='glide', message='Completed Glide job produced no poses')
                 terminal += 1
                 continue
-            if c.glide_log_no_poses(job["log_file"]):
-                mark_group(args.db_path, job["compounds"], State.FAILED, failed_stage="glide", message="Completed Glide job produced no poses")
+            if status is not None and status not in ('RUNNING', 'UNKNOWN'):
+                mark_group(args.db_path, job['compounds'], State.FAILED, failed_stage='glide', message=f'Glide job ended with {status}')
                 terminal += 1
-                print(f"Reference {job['reference_id']} completed without poses.")
-                continue
-            if c.glide_log_failed(job["log_file"]):
-                mark_group(args.db_path, job["compounds"], "failed", failed_stage="glide", message="Glide job failed")
-                terminal += 1
-                print(f"Reference {job['reference_id']} failed.")
                 continue
             rest.append(job)
         pending = rest

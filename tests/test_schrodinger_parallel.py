@@ -70,11 +70,16 @@ def test_ligprep_splits_jobs_preserving_scientific_options(monkeypatch, tmp_path
     ("localhost", None, "localhost", None),
 ])
 def test_glide_splits_reference_groups_and_remains_asynchronous(monkeypatch, tmp_path, source_host, cpus, host, njobs):
+    from molnova import schrodinger_guard
+    monkeypatch.setattr(schrodinger_guard, "active_jobs", lambda *a: [])
+    from molnova import glide_recovery
+    monkeypatch.setattr(glide_recovery, "active_jobs", lambda *a: [])
+    (tmp_path / "dock.in").write_text("grid")
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(stdout="", stderr="")
+        return SimpleNamespace(stdout="JobId: test-glide\n", stderr="")
 
     monkeypatch.setattr(_core.subprocess, "run", run)
     _core.submit_glide(Path("/suite"), tmp_path / "dock.in", tmp_path,

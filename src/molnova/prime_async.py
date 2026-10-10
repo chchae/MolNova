@@ -4,6 +4,7 @@ import hashlib
 import re
 import subprocess
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from molnova.schrodinger_retry import _run_attempt, license_unavailable
@@ -161,7 +162,7 @@ def reconcile_saved_job(directory, db_path, iteration):
 
 
 def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retries=3,
-                   on_completed_subjobs=None):
+                   on_completed_subjobs=None, submission_fence=None):
     """Return True only after a terminal job's outputs have been downloaded."""
     directory = Path(directory)
     record = load_job(directory)
@@ -212,13 +213,19 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
     if record["attempt"] > retries:
         job_file(directory).unlink(missing_ok=True)
         raise RuntimeError(f"Prime license unavailable after {retries + 1} attempts; compounds remain retryable.")
-    record["log_snapshot"] = {path.name: _log_signature(path)
-                              for path in directory.glob("*.log")}
-    record["launching"] = True
-    record["attempt"] += 1
-    _save(directory, record)
-    print("$", " ".join(command), flush=True)
-    code, output = _run_attempt(command, directory)
+    from molnova.schrodinger_guard import SubmissionBlocked
+    try:
+        with submission_fence() if submission_fence is not None else nullcontext():
+            record["log_snapshot"] = {path.name: _log_signature(path)
+                                      for path in directory.glob("*.log")}
+            record["launching"] = True
+            record["attempt"] += 1
+            _save(directory, record)
+            print("$", " ".join(command), flush=True)
+            code, output = _run_attempt(command, directory)
+    except SubmissionBlocked as exc:
+        print(f'Prime submission waiting: {exc}.', flush=True)
+        return False
     match = re.search(r"^JobId:\s*(\S+)", output, re.MULTILINE | re.IGNORECASE)
     if match:
         record.update(job_id=match.group(1), launching=False)

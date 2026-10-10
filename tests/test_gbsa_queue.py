@@ -9,6 +9,8 @@ from molnova.stages import mmgbsa
 
 
 def fixture(tmp_path, monkeypatch, count=10):
+    from molnova import schrodinger_guard
+    monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     db = tmp_path / 'results.sqlite'
     with sqlite3.connect(db) as conn:
         c.create_sqlite_schema(conn)
@@ -215,5 +217,21 @@ def test_refills_before_checking_remaining_active_jobs(tmp_path, monkeypatch):
             assert launches == list(range(1, 9)), 'Freed slot must be refilled before next status check'
         return submit(command, folder, ids, **kw)
     monkeypatch.setattr(prime, 'submit_or_poll', check_order)
+    q.poll_queue(1, args, root, prime.load_job(root))
+    assert launches == list(range(1, 9))
+
+
+def test_glide_blocks_refill_but_existing_scores_are_still_collected(tmp_path, monkeypatch):
+    from molnova import schrodinger_guard
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
+    q.poll_queue(1, args, root, record)
+    completed.add(1)
+    monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a:
+                        [{'jobId':'live-glide','jobName':'glide_constrained','status':'RUNNING'}])
+    q.poll_queue(1, args, root, prime.load_job(root))
+    assert launches == list(range(1, 8))
+    assert database.mmgbsa_submission_rows(args.db_path, [1])[1][2] == -35
+    assert sum(s == 'active' for s in prime.load_job(root)['entries'].values()) == 6
+    monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 9))

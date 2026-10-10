@@ -6,6 +6,7 @@ from pathlib import Path
 
 from molnova import _core as c, database
 from molnova import prime_async as prime
+from molnova.schrodinger_guard import submission_guard, SubmissionBlocked
 from molnova.states import CompoundState as State
 
 MAX_ACTIVE = 7
@@ -147,7 +148,22 @@ def poll_queue(iteration, args, directory, record):
 
     occupied = other_active_slots(args, directory)
 
+    submission_blocked = False
+
     def refill():
+        nonlocal submission_blocked
+        if submission_blocked:
+            return
+        if not any(state == 'pending' for state in record['entries'].values()):
+            return
+        try:
+            with submission_guard(args.schrodinger, 'mmgbsa'):
+                fill_slots()
+        except SubmissionBlocked as exc:
+            submission_blocked = True
+            print(f'Iteration {iteration}: MM-GBSA submissions waiting: {exc}.', flush=True)
+
+    def fill_slots():
         for cid in record['compound_ids']:
             if record['entries'][str(cid)] != 'pending' or cid in blocked:
                 continue
