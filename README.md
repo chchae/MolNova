@@ -382,7 +382,7 @@ Within each iteration, LigPrep waits for generation to reach `target-count`
 and the generation worker to exit (and for optional synthetic screening).
 Glide waits for all LigPrep work, including retryable work, to finish. Completed
 Glide reference groups still persist results immediately; MM-GBSA starts only
-once docking finishes, using the final `gbsa-input-count` ranking (200 in the
+once docking finishes, using the final `gbsa-input-count` ranking (100 in the
 EGFR example). New GBSA claims exclude `gbsa_running`, so concurrent claimers
 cannot submit the same compound again.
 
