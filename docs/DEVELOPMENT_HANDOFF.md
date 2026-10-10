@@ -114,7 +114,9 @@ DB query
 
 The driver periodically launches workers again.
 
-This architecture allows pipeline stages to overlap.
+Each iteration now enforces generation completion before LigPrep and LigPrep
+completion before Glide. Workers remain independent subprocesses coordinated
+through SQLite. Completed Glide groups still stream results into SQLite.
 
 ## 6. SQLite
 
@@ -496,3 +498,15 @@ The primary design principle remains:
 
     Workers do not coordinate directly.
     SQLite coordinates the workflow.
+
+## Restart recovery update
+
+New MM-GBSA claims accept only `docked` compounds. Under the MM-GBSA stage
+lock, reset unscored `gbsa_running` claims with no saved submission to `docked`;
+protect every ID in the saved Prime record. Recover the exact saved job before
+submitting missing final top-N candidates. Do not reset active external jobs.
+LigPrep records submission identity in `ligprep_job.json` before launch and
+saves JobId while reading the existing `-WAIT` command output. On restart,
+query the parent job and download only terminal output. Retain submission
+records until compound states have committed; unknown launches/status failures
+must not trigger resubmission. Legacy LigPrep logs require a recoverable JobId.

@@ -2753,12 +2753,13 @@ def run_ligprep_once(
     max_stereo=1,
     ring_confs=1,
     cpus=None,
+    compound_ids=None,
 ):
     """Run LigPrep once while limiting state expansion for docking."""
     from molnova.config import schrodinger_job_options
     output_file = glide_root / "ligprep_all.maegz"
 
-    if output_file.exists():
+    if compound_ids is None and output_file.exists():
         output_file.unlink()
 
     epik_options = (
@@ -2779,19 +2780,22 @@ def run_ligprep_once(
     )
     # Schrödinger 2026-3: do not pass "-r" here; it maps to -retain.
 
-    run_command(
-        [
-            schrodinger / "ligprep",
-            "-ismi", input_file,
-            "-omae", output_file,
-            "-epik",
-            epik_options,
-            "-s", str(max_stereo),
-            *schrodinger_job_options(host, cpus, split_jobs=True),
-            "-WAIT",
-        ],
-        cwd=glide_root,
-    )
+    command = [
+        schrodinger / "ligprep",
+        "-ismi", input_file,
+        "-omae", output_file,
+        "-epik",
+        epik_options,
+        "-s", str(max_stereo),
+        *schrodinger_job_options(host, cpus, split_jobs=True),
+        "-WAIT",
+    ]
+    if compound_ids is None:
+        run_command(command, cwd=glide_root)
+    else:
+        from molnova.ligprep_recovery import run_or_recover
+        if not run_or_recover(command, glide_root, compound_ids, output_file):
+            return None
 
     if not output_file.exists():
         raise RuntimeError("LigPrep output not created.")

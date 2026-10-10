@@ -180,13 +180,59 @@ def docking_completion_reason(path, iteration, target_count):
         return _docking_completion_reason(_iteration_rows(conn, iteration), target_count)
 
 
+def stage_is_running(path, stage):
+    try:
+        with stage_lock(path, stage):
+            return False
+    except RuntimeError:
+        return True
+
+
+def upstream_completion_reason(path, iteration, target_count, stage,
+                               synthetic_enabled=False):
+    """Require a full iteration and finished upstream workers before starting."""
+    upstream = ['generate', 'synthetic_feasibility'] if stage == 'ligprep' else ['generate', 'synthetic_feasibility', 'ligprep']
+    for worker in upstream:
+        if stage_is_running(path, worker):
+            return f'{worker} worker still running'
+    with connect(path) as conn:
+        rows = _iteration_rows(conn, iteration)
+        if len(rows) < target_count:
+            return f'generation incomplete ({len(rows)}/{target_count} compounds)'
+        blocked = {State.SYNTHETIC_RUNNING}
+        if stage == 'glide':
+            blocked.update((State.GENERATED, State.LIGPREP_RUNNING))
+        if any(state in blocked for _, state, _, _ in rows):
+            return 'upstream compounds still pending or running'
+        if synthetic_enabled and conn.execute(
+            'SELECT 1 FROM compound WHERE iteration=? AND state != ? '
+            'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED)
+        ).fetchone():
+            return 'synthetic feasibility assessment incomplete'
+    return None
+
+
+def reset_unsubmitted_mmgbsa(path, iteration, protected_ids=()):
+    """Recover claims without a durable submission; caller holds MM-GBSA lock."""
+    protected = set(protected_ids)
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        ids = [cid for (cid,) in conn.execute(
+            'SELECT id FROM compound WHERE iteration=? AND state=? AND gbsa_score IS NULL',
+            (iteration, State.GBSA_RUNNING)) if cid not in protected]
+        for cid in ids:
+            conn.execute('UPDATE compound SET state=?, modified_at=CURRENT_TIMESTAMP WHERE id=?',
+                         (State.DOCKED, cid))
+        return ids
+
+
 def _mmgbsa_candidates(conn, iteration, count, target_count):
     rows = _iteration_rows(conn, iteration)
     if iteration <= 0 or _docking_completion_reason(rows, target_count) is not None:
         return []
     docked = sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
     return [cid for cid, state, _, score in docked[:count]
-            if score is None and state in (State.DOCKED, State.GBSA_RUNNING)]
+            if score is None and state == State.DOCKED]
 
 
 def mmgbsa_candidates(path: str | Path, iteration: int, count: int,
@@ -329,3 +375,9 @@ def mmgbsa_submission_rows(path, compound_ids):
             ):
                 rows[cid] = (iteration, state, score)
     return rows
+
+
+def has_running_mmgbsa(path, iteration):
+    with connect(path) as conn:
+        return conn.execute('SELECT 1 FROM compound WHERE iteration=? AND state=? LIMIT 1',
+                            (iteration, State.GBSA_RUNNING)).fetchone() is not None

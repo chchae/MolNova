@@ -18,8 +18,9 @@ def eligible_iteration(args):
             )
         ]
     for iteration in iterations:
-        if database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
-                                      getattr(args, "target_count", 1)):
+        if (database.has_running_mmgbsa(args.db_path, iteration)
+                or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
+                                              getattr(args, "target_count", 1))):
             return iteration
     return None
 
@@ -34,6 +35,7 @@ def _run_stage(args, requested_iteration):
         processed = False
         for iteration in iterations:
             if (load_job(args.output / f"iter{iteration}" / "mmgbsa") is not None
+                    or database.has_running_mmgbsa(args.db_path, iteration)
                     or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
                                                   getattr(args, "target_count", 1))
                     or database.docking_completion_reason(
@@ -59,6 +61,9 @@ def _run_stage(args, requested_iteration):
     except PrimeReconciliationPending as exc:
         print(str(exc))
         return
+    database.reset_unsubmitted_mmgbsa(
+        args.db_path, iteration, active["compound_ids"] if active else (),
+    )
     if active is not None:
         # Recover the exact saved submission, including jobs from the former
         # streaming policy. Never overwrite an external job or erase its scores.
@@ -71,11 +76,16 @@ def _run_stage(args, requested_iteration):
         pending = database.claim_mmgbsa_candidates(
             args.db_path, iteration, args.gbsa_input_count, target_count,
         )
+    if not pending and active is not None:
+        # A crash may occur after score commit but before job-record deletion.
+        # Finish recovery/cleanup even when all submitted IDs are already scored.
+        pending = active["compound_ids"]
     if not pending:
         print(f"Iteration {iteration}: no unscored final docking top-{args.gbsa_input_count} "
               "compounds ready to claim; checking on the next poll.")
         return
-    work_started(f"Iteration {iteration}: starting MM-GBSA for {len(pending)} compounds.")
+    action = "recovering saved MM-GBSA job" if active else "starting MM-GBSA"
+    work_started(f"Iteration {iteration}: {action} for {len(pending)} compounds.")
     try:
         updated = c.run_iteration_mmgbsa(
             iteration=iteration,

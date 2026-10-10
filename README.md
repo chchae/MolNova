@@ -370,3 +370,19 @@ their scores, workflow states, and failure details. Identical results can be
 imported repeatedly; unknown targets and conflicting existing results are rejected
 without partial database updates. The result-file path is relative to the shell's
 working directory; project TOML paths resolve relative to the TOML file.
+
+Within each iteration, LigPrep waits for generation to reach `target-count`
+and the generation worker to exit (and for optional synthetic screening).
+Glide waits for all LigPrep work, including retryable work, to finish. Completed
+Glide reference groups still persist results immediately; MM-GBSA starts only
+once docking finishes, using the final `gbsa-input-count` ranking (200 in the
+EGFR example). New GBSA claims exclude `gbsa_running`, so concurrent claimers
+cannot submit the same compound again.
+
+On restart, stage locks prevent overlapping local workers. Saved Prime and
+LigPrep submissions are recovered by JobId rather than submitted again. GBSA
+claims without a saved submission return to `docked`; completed scores remain
+unchanged. LigPrep saves its JobId while the existing `-WAIT` command runs and
+checks/downloads that job on restart. Unknown launch/status information blocks
+resubmission until reconciled; never reset all running flags indiscriminately.
+The log distinguishes recovering a saved MM-GBSA job from starting a new job.

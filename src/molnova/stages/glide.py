@@ -125,6 +125,13 @@ def _run_stage(args, ns):
         print("No iteration requires Glide.")
         return
 
+    reason = database.upstream_completion_reason(
+        args.db_path, iteration, getattr(args, "target_count", 1), "glide",
+    )
+    if reason:
+        print(f"Iteration {iteration}: Glide waiting: {reason}.")
+        return
+
     # Assign nearest reference for any still-undocked compounds.
     c.assign_reference_compounds(iteration, args)
     groups = query_groups(iteration, args.db_path)
