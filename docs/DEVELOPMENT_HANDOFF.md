@@ -529,3 +529,19 @@ Report active stage invocation elapsed time (including failures) separately from
 external calculation duration. GBSA uses JobServer start/end timestamps; LigPrep
 retains submission timing for restart, and Glide group timing comes from native
 completed logs. Do not clutter successful idle polls with timing messages.
+
+
+## Per-compound MM-GBSA queue
+
+New submissions use `gbsa_queue.py` and manifest mode `compound_queue_v1`.
+Claim the final top-N once, split the validated PV without changing titles,
+properties or scientific parameters, and submit receptor + one ligand with
+`-NJOBS 1`. Limit active/uncertain submissions to seven across project iterations.
+Use per-compound Prime records for license retry and JobId recovery. Persist
+scores before queue progress, and refill each finished slot independently.
+MM-GBSA supervisor interval is capped at five seconds; workers remain independent
+subprocesses and exit after each queue pass. Preserve and recover legacy native
+batches; their recorded resource requests block new queue submissions in other
+iterations until retired. Never cancel or reset their live jobs during migration.
+Single-compound execution optimizes the free receptor for each job using the
+same Prime settings; unlike a batch, this repeats receptor preparation work.

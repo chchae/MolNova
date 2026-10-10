@@ -85,6 +85,9 @@ def worker_loop(
     wake_event=None, after_run_event=None,
 ):
     cmd = [sys.executable, "-m", module, str(project_toml)]
+    # Refill individual GBSA slots promptly; other workers keep their interval.
+    if stage == "mmgbsa":
+        poll_interval = min(poll_interval, 5)
 
     # In one-shot mode, evaluate the compounds persisted by this generation
     # attempt. The supervisor schedules subprocesses; workers still use SQLite.

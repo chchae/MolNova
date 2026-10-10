@@ -254,7 +254,7 @@ def test_constrained_glide_settings_match_reference_method(tmp_path):
         _core.write_constrained_glide_input(tmp_path, "grid", "ligands", "reference", "c1ccccc1")
 
 
-@pytest.mark.parametrize("cpus,host", [(None, "compute:7"), (16, "compute:7")])
+@pytest.mark.parametrize("cpus,host", [(None, "compute"), (16, "compute")])
 @pytest.mark.parametrize("batch_size", [1, 2, 12])
 def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, cpus, host, batch_size):
     args, ids = _project(tmp_path)
@@ -267,7 +267,7 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
                     "INSERT INTO compound(name,smiles,iteration,docking_score,state) "
                     "VALUES (?,'C',1,-7,'docked')", (f"EXTRA_{index}",))
                 pending.append(cursor.lastrowid)
-    njobs = str(batch_size)
+    njobs = "1"
     args.schrodinger = Path("/schrodinger")
     args.host = "compute:4"
     args.mmgbsa_cpus = cpus
@@ -290,8 +290,16 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
             assert Path(command[2]).read_text() == "receptor"
             assert Path(command[4]).read_text() == "".join(f"{cid}\n" for cid in pending)
             Path(command[5]).write_text("receptor plus selected poses")
+        elif Path(command[1]).name == "_split_mmgbsa_queue.py":
+            from molnova import prime_async
+            record = prime_async.load_job(cwd)
+            for cid in record['compound_ids']:
+                folder = cwd / record['run_dir'] / f'CMPID_{cid}'
+                folder.mkdir(parents=True)
+                (folder / 'mmgbsa_input.maegz').write_text('receptor plus selected poses')
         elif Path(command[1]).name == "_extract_mmgbsa_scores.py":
-            Path(command[3]).write_text("id\tgbsa_score\n" + "".join(f"{cid}\t-35\n" for cid in pending))
+            cid = int(cwd.name.removeprefix('CMPID_'))
+            Path(command[3]).write_text(f"id\tgbsa_score\n{cid}\t-35\n")
         else:
             pytest.fail(f"Unexpected command: {command}")
 
@@ -304,10 +312,10 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
     assert _core.run_iteration_mmgbsa(
         1, args, iteration_dir, glide_dir, compound_ids=pending
     ) == batch_size
-    assert len(commands) == 3
+    assert len(commands) == 2 + 2 * batch_size
     assert (iteration_dir / "mmgbsa/gbsa_top.tsv").is_file()
     output = capsys.readouterr().out
-    assert f"MM-GBSA resources  : -HOST {host} -NJOBS {njobs}" in output
+    assert "queue active=0, waiting=0, limit=7" in output
 
 
 @pytest.mark.parametrize("text,expected", [

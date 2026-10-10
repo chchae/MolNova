@@ -4174,6 +4174,9 @@ def run_iteration_mmgbsa(
     from molnova.prime_async import load_job, submit_or_poll, job_file, persist_atomtyping_failures
     mmgbsa_dir = iteration_dir / "mmgbsa"
     active = load_job(mmgbsa_dir)
+    if active is not None and active.get("mode") == "compound_queue_v1":
+        from molnova.gbsa_queue import poll_queue
+        return poll_queue(iteration, args, mmgbsa_dir, active)
     if active is not None:
         from molnova.gbsa_streaming import collect_completed_subjobs
         if not submit_or_poll(active["command"], mmgbsa_dir, active["compound_ids"],
@@ -4353,23 +4356,9 @@ def run_iteration_mmgbsa(
         f"Docking top input   : {len(top_rows)}"
     )
 
-    from molnova.config import mmgbsa_job_options
-    cmd = [
-        args.schrodinger / "prime_mmgbsa",
-        pv_file,
-        "-OVERWRITE",
-        *mmgbsa_job_options(args.host, len(top_rows)),
-    ]
-
-    print(f"MM-GBSA resources  : {' '.join(cmd[3:])}")
-    if not submit_or_poll(cmd, mmgbsa_dir, [row[0] for row in top_rows],
-                          wait_seconds=getattr(args, "gbsa_license_retry_seconds", 300),
-                          retries=getattr(args, "gbsa_license_retries", 3)):
-        return None
-    updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, [row[0] for row in top_rows])
-    persist_atomtyping_failures(mmgbsa_dir, args.db_path)
-    job_file(mmgbsa_dir).unlink(missing_ok=True)
-    return updated
+    from molnova.gbsa_queue import create_queue, poll_queue
+    record = create_queue(args, mmgbsa_dir, [row[0] for row in top_rows])
+    return poll_queue(iteration, args, mmgbsa_dir, record)
 
 
 def finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, compound_ids):

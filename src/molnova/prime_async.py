@@ -138,6 +138,9 @@ def reconcile_saved_job(directory, db_path, iteration):
         raise PrimeReconciliationPending(
             f"Iteration {iteration}: saved Prime job mixes current and obsolete compound IDs; "
             "files retained for reconciliation.")
+    if record.get("mode") == "compound_queue_v1":
+        raise PrimeReconciliationPending(
+            f"Iteration {iteration}: obsolete compound queue retained for job reconciliation.")
     if record.get("job_id"):
         status = _job_status(record, directory)
         if status not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
