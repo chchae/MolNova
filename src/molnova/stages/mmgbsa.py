@@ -14,7 +14,7 @@ def eligible_iteration(args):
         iterations = [
             row[0] for row in conn.execute(
                 "SELECT DISTINCT iteration FROM compound "
-                "WHERE iteration>0 AND docking_score IS NOT NULL ORDER BY iteration"
+                "WHERE iteration=0 OR (iteration>0 AND docking_score IS NOT NULL) ORDER BY iteration"
             )
         ]
     for iteration in iterations:
@@ -30,8 +30,8 @@ def _run_stage(args, requested_iteration):
     if requested_iteration is None:
         with c.open_sqlite(args.db_path) as conn:
             iterations = [row[0] for row in conn.execute(
-                "SELECT DISTINCT iteration FROM compound WHERE iteration>0 "
-                "AND docking_score IS NOT NULL ORDER BY iteration"
+                "SELECT DISTINCT iteration FROM compound WHERE iteration=0 "
+                "OR (iteration>0 AND docking_score IS NOT NULL) ORDER BY iteration"
             )]
         processed = False
         for iteration in iterations:
@@ -39,21 +39,21 @@ def _run_stage(args, requested_iteration):
                     or database.has_running_mmgbsa(args.db_path, iteration)
                     or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
                                                   getattr(args, "target_count", 1))
-                    or database.docking_completion_reason(
-                        args.db_path, iteration, getattr(args, "target_count", 1)) is not None):
+                    or (iteration > 0 and database.docking_completion_reason(
+                        args.db_path, iteration, getattr(args, "target_count", 1)) is not None)):
                 processed = True
                 _run_stage(args, iteration)
         if not processed:
             print("No completed docking iteration requires MM-GBSA.")
         return
-    iteration = requested_iteration or eligible_iteration(args)
+    iteration = requested_iteration if requested_iteration is not None else eligible_iteration(args)
     if iteration is None:
         print("No completed docking iteration requires MM-GBSA.")
         return
 
     directory = args.output / f"iter{iteration}" / "mmgbsa"
     target_count = getattr(args, "target_count", 1)
-    reason = database.docking_completion_reason(args.db_path, iteration, target_count)
+    reason = database.docking_completion_reason(args.db_path, iteration, target_count) if iteration > 0 else None
     if reason is not None:
         print(f"Iteration {iteration}: MM-GBSA waiting: {reason}.")
         return
@@ -70,7 +70,7 @@ def _run_stage(args, requested_iteration):
         # streaming policy. Never overwrite an external job or erase its scores.
         pending = database.claim_compounds(
             args.db_path, active["compound_ids"],
-            expected_state=(State.DOCKED, State.GBSA_RUNNING),
+            expected_state=(State.REFERENCE, State.DOCKED, State.GBSA_RUNNING) if iteration == 0 else (State.DOCKED, State.GBSA_RUNNING),
             claimed_state=State.GBSA_RUNNING,
         )
     else:
@@ -108,7 +108,7 @@ def _run_stage(args, requested_iteration):
             retryable = sorted(set(pending) - set(failed))
             if retryable:
                 c.set_compound_state(
-                    retryable, State.DOCKED, failed_stage="gbsa",
+                    retryable, State.REFERENCE if iteration == 0 else State.DOCKED, failed_stage="gbsa",
                     failure_message="Prime batch failed; no confirmed atomtyping error for this compound",
                     db_path=args.db_path,
                 )
@@ -117,7 +117,7 @@ def _run_stage(args, requested_iteration):
             return
         c.set_compound_state(
             pending,
-            State.DOCKED,
+            State.REFERENCE if iteration == 0 else State.DOCKED,
             failed_stage="gbsa",
             failure_message=str(exc),
             db_path=args.db_path,
@@ -140,7 +140,7 @@ def _run_stage(args, requested_iteration):
     if missing:
         c.set_compound_state(
             missing,
-            State.DOCKED,
+            State.REFERENCE if iteration == 0 else State.DOCKED,
             failed_stage="gbsa",
             failure_message="No MM-GBSA score returned; retryable",
             db_path=args.db_path,

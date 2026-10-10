@@ -583,3 +583,18 @@ restarts. Never checkpoint completion on a pause or failed/incomplete stage.
 For existing iterations without a timer, use their earliest compound creation
 UTC timestamp and label the duration as estimated. Preserve the first finish
 on reruns, and preserve scientific results.
+
+
+## Reference MM-GBSA
+
+Iteration 0 is eligible for MM-GBSA when references lack `gbsa_score`. Use all
+unscored reference poses, independent of docking scores, target-count and top-N.
+Claim `reference` rows atomically, recover saved iter0 queues, and restore orphan
+claims to `reference`. Use the same receptor source and per-compound queue as
+later iterations. Map original reference titles to SQLite IDs when building the
+PV and rename only calculation inputs to CMPID_<id>. Existing scores, reference
+names, coordinates, experimental values and reference selection remain intact.
+New DB import preserves finite GBSA scores present in reference input properties.
+Default driver selects iter0 first; an explicit later iteration completes pending
+reference work first. Iteration 0 runs only the MM-GBSA worker, without generation,
+LigPrep, Glide or FEP. Terminal failures remain terminal and provide no score.

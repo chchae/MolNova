@@ -452,8 +452,13 @@ def import_reference_poses_to_sqlite(
                 ["dG_exp", "r_user_dG_exp", "r_i_dG_exp"],
             )
 
+            gbsa_score = _first_float_property(mol, [
+                'r_psp_MMGBSA_dG_Bind', 'r_psp_MMGBSA_dG_Bind(NS)', 'gbsa_score',
+            ])
+            if gbsa_score is not None and not math.isfinite(gbsa_score):
+                gbsa_score = None
             references.append(
-                (name, smiles, 0, dg_exp, docking_score)
+                (name, smiles, 0, dg_exp, docking_score, gbsa_score)
             )
 
     if not references:
@@ -476,9 +481,10 @@ def import_reference_poses_to_sqlite(
                 iteration,
                 dG_exp,
                 docking_score,
+                gbsa_score,
                 state
             )
-            VALUES (?, ?, ?, ?, ?, 'reference')
+            VALUES (?, ?, ?, ?, ?, ?, 'reference')
             """,
             references,
         )
@@ -3869,11 +3875,12 @@ def create_mmgbsa_pv_builder(root_dir):
 
     script = r"""
 import re
+import json
 import sys
 from pathlib import Path
 from schrodinger import structure
 
-if len(sys.argv) != 5:
+if len(sys.argv) not in (5, 6):
     raise SystemExit(
         "Usage: _build_mmgbsa_pv.py "
         "<receptor.maegz> <best_poses.maegz> "
@@ -3884,6 +3891,7 @@ receptor_file = Path(sys.argv[1])
 poses_file = Path(sys.argv[2])
 ids_file = Path(sys.argv[3])
 output_file = Path(sys.argv[4])
+reference_ids = json.loads(Path(sys.argv[5]).read_text()) if len(sys.argv) == 6 else None
 
 wanted = {
     int(line.strip())
@@ -3915,23 +3923,23 @@ writer.append(
 
 written = 0
 
-for st in structure.StructureReader(
-    str(poses_file)
-):
+for index, st in enumerate(structure.StructureReader(str(poses_file)), start=1):
     match = pattern.search(
         st.title or ""
     )
 
-    if not match:
-        continue
-
-    compound_id = int(
-        match.group(1)
-    )
+    if reference_ids is not None:
+        # Match original reference titles; only the calculation input is renamed.
+        name = (st.title or '').strip() or f'REF_{index:04d}'
+        compound_id = reference_ids.get(name)
+    else:
+        compound_id = int(match.group(1)) if match else None
 
     if compound_id not in wanted:
         continue
 
+    if reference_ids is not None:
+        st.title = f'CMPID_{compound_id}'
     st.property[
         "i_user_compound_id"
     ] = compound_id
@@ -4144,7 +4152,7 @@ def update_gbsa_scores(
                     failed_stage = NULL,
                     failure_message = NULL,
                     modified_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND iteration > 0 AND gbsa_score IS NULL
+                WHERE id = %s AND iteration >= 0 AND gbsa_score IS NULL
                 """,
                 rows,
             )
@@ -4181,11 +4189,17 @@ def run_iteration_mmgbsa(
         job_file(mmgbsa_dir).unlink()
         return updated
 
-    top_rows = select_iteration_docking_top(
-        iteration=iteration,
-        limit_count=args.gbsa_input_count,
-        db_path=args.db_path,
-    )
+    if iteration == 0:
+        with open_sqlite(args.db_path) as conn:
+            top_rows = conn.execute(
+                'SELECT id,name,docking_score FROM compound WHERE iteration=0 ORDER BY id'
+            ).fetchall()
+    else:
+        top_rows = select_iteration_docking_top(
+            iteration=iteration,
+            limit_count=args.gbsa_input_count,
+            db_path=args.db_path,
+        )
 
     if compound_ids is not None:
         claimed_ids = set(compound_ids)
@@ -4211,10 +4225,7 @@ def run_iteration_mmgbsa(
         )
         return 0
 
-    best_poses = (
-        glide_dir
-        / "best_poses.maegz"
-    )
+    best_poses = args.reference_poses if iteration == 0 else glide_dir / 'best_poses.maegz'
 
     if not best_poses.exists():
         print()
@@ -4323,17 +4334,14 @@ def run_iteration_mmgbsa(
         / "mmgbsa_input.maegz"
     )
 
-    run_command(
-        [
-            args.schrodinger / "run",
-            pv_builder,
-            receptor_file,
-            best_poses,
-            ids_file,
-            pv_file,
-        ],
-        cwd=mmgbsa_dir,
-    )
+    pv_command = [args.schrodinger / 'run', pv_builder, receptor_file,
+                  best_poses, ids_file, pv_file]
+    if iteration == 0:
+        import json
+        reference_map = mmgbsa_dir / 'reference_ids.json'
+        reference_map.write_text(json.dumps({row[1]: row[0] for row in top_rows}))
+        pv_command.append(reference_map)
+    run_command(pv_command, cwd=mmgbsa_dir)
 
     for old_file in mmgbsa_dir.glob(
         "*-out.maegz"

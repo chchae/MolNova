@@ -223,13 +223,16 @@ def reset_unsubmitted_mmgbsa(path, iteration, protected_ids=()):
             (iteration, State.GBSA_RUNNING)) if cid not in protected]
         for cid in ids:
             conn.execute('UPDATE compound SET state=?, modified_at=CURRENT_TIMESTAMP WHERE id=?',
-                         (State.DOCKED, cid))
+                         (State.REFERENCE if iteration == 0 else State.DOCKED, cid))
         return ids
 
 
 def _mmgbsa_candidates(conn, iteration, count, target_count):
     rows = _iteration_rows(conn, iteration)
-    if iteration <= 0 or _docking_completion_reason(rows, target_count) is not None:
+    if iteration == 0:
+        return [cid for cid, state, _, score in rows
+                if score is None and state in (State.REFERENCE, State.DOCKED)]
+    if iteration < 0 or _docking_completion_reason(rows, target_count) is not None:
         return []
     docked = sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
     return [cid for cid, state, _, score in docked[:count]
@@ -387,6 +390,8 @@ def has_running_mmgbsa(path, iteration):
 def stage_completion_reason(path, iteration, stage, target_count, input_count,
                             synthetic_enabled=False):
     """Driver readiness from persisted state, never worker exit status alone."""
+    if stage == 'mmgbsa' and iteration == 0:
+        return reference_mmgbsa_completion_reason(path)
     if stage == 'mmgbsa':
         # Ending a single iteration does not require enough elites for N+1.
         return iteration_completion_reason(path, iteration, target_count, input_count, 0)
@@ -469,3 +474,17 @@ def finish_iteration_timer(path, iteration):
         if row is None:
             raise RuntimeError(f'Iteration {iteration} has no start time')
         return max(0, row[1] - row[0]), row[2] == 'compound_created_at'
+
+
+
+def reference_mmgbsa_completion_reason(path):
+    """All references need a score or terminal failure, independent of top-N."""
+    with connect(path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='compound'").fetchone():
+            return None
+        rows = _iteration_rows(conn, 0)
+    pending = sum(state != State.FAILED and score is None for _, state, _, score in rows)
+    running = sum(state == State.GBSA_RUNNING for _, state, _, _ in rows)
+    if running:
+        return f'reference MM-GBSA still running for {running} compounds'
+    return f'{pending} reference compounds await MM-GBSA results' if pending else None

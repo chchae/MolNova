@@ -99,7 +99,7 @@ def test_restart_resumes_oldest_unfinished_iteration_and_never_requires_elites(t
         conn.execute('DELETE FROM compound WHERE iteration=3')
     assert driver.choose_iteration(args) is None
     with pytest.raises(ValueError):
-        driver.choose_iteration(args, 0)
+        driver.choose_iteration(args, -1)
 
 
 def test_terminal_failures_are_processed_and_top_n_excludes_others(tmp_path):

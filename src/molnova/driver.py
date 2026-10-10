@@ -123,9 +123,12 @@ class StopFlag:
 def choose_iteration(args, requested=None):
     """Select once; every worker receives the same explicit iteration."""
     if requested is not None:
-        if not 1 <= requested <= args.max_iteration:
-            raise ValueError(f"Iteration must be between 1 and {args.max_iteration}.")
+        if not 0 <= requested <= args.max_iteration:
+            raise ValueError(f"Iteration must be between 0 and {args.max_iteration}.")
         return requested
+    if (database.reference_mmgbsa_completion_reason(args.db_path) is not None
+            or (args.output / 'iter0/mmgbsa/prime_job.json').exists()):
+        return 0
     with database.connect(args.db_path) as conn:
         iterations = [row[0] for row in conn.execute(
             "SELECT DISTINCT iteration FROM compound WHERE iteration>0 ORDER BY iteration"
@@ -254,7 +257,8 @@ def main(argv=None):
         if iteration is None:
             print("[driver  ] All configured iterations are complete.")
             return
-        stages = build_stages(args.synthetic_feasibility_enabled, args.fep_enabled)
+        stages = ([('mmgbsa', 'molnova.stages.mmgbsa')] if iteration == 0 else
+                  build_stages(args.synthetic_feasibility_enabled, args.fep_enabled))
         print("=" * 70)
         print("SEQUENTIAL SINGLE-ITERATION DRIVER")
         print(f"Project        : {args.project}")
@@ -274,6 +278,16 @@ def main(argv=None):
 
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.signal(signum, request_stop)
+        # References use their supplied poses, without generation/LigPrep/Glide.
+        if iteration > 0 and (database.reference_mmgbsa_completion_reason(args.db_path) is not None
+                or (args.output / 'iter0/mmgbsa/prime_job.json').exists()):
+            references_done = supervise_iteration(
+                args, project_toml, 0, [('mmgbsa', 'molnova.stages.mmgbsa')],
+                ns.poll_interval, stop, ns.once,
+            )
+            if not references_done:
+                print('[driver  ] reference MM-GBSA paused; restart to resume.', flush=True)
+                return
         database.start_iteration_timer(args.db_path, iteration)
         completed = supervise_iteration(
             args, project_toml, iteration, stages, ns.poll_interval, stop, ns.once,
