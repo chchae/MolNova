@@ -3,13 +3,12 @@ import json
 import sqlite3
 import subprocess
 import sys
-import threading
 from types import SimpleNamespace
 
 import pytest
 
 from molnova import _core
-from molnova.driver import build_stages, worker_loop
+from molnova.driver import build_stages
 from molnova.stages import synthetic_feasibility
 from molnova.chemistry.sa_score import calculate_sa_score
 
@@ -159,98 +158,6 @@ def test_driver_places_synthetic_stage_after_generation():
     names = [stage for stage, _ in stages]
 
     assert names == ["generate", "synthetic", "ligprep", "glide", "mmgbsa"]
-
-
-def test_once_evaluates_compounds_after_generate_finishes(monkeypatch, tmp_path):
-    args = _project(tmp_path)
-    with sqlite3.connect(args.db_path) as conn:
-        conn.execute("DELETE FROM compound")
-    waiting = threading.Event()
-    observed = []
-
-    class WakeEvent(threading.Event):
-        def wait(self, timeout=None):
-            waiting.set()
-            return super().wait(timeout)
-
-    wake = WakeEvent()
-    stop = threading.Event()
-
-    def process(stage, *unused):
-        with sqlite3.connect(args.db_path) as conn:
-            if stage == "generate":
-                conn.execute(
-                    "INSERT INTO compound(name, smiles, iteration, state) "
-                    "VALUES ('NEW', 'C', 1, 'generated')"
-                )
-            else:
-                observed.extend(conn.execute("SELECT name FROM compound").fetchall())
-        return 0
-
-    monkeypatch.setattr("molnova.driver.stream_process", process)
-    synthetic = threading.Thread(
-        target=worker_loop,
-        args=("synthetic", "synthetic", tmp_path / "project.toml", tmp_path, 30, stop, True),
-        kwargs={"wake_event": wake},
-    )
-    synthetic.start()
-    try:
-        assert waiting.wait(2)
-        assert observed == []
-        worker_loop(
-            "generate", "generate", tmp_path / "project.toml", tmp_path,
-            30, stop, True, after_run_event=wake,
-        )
-        synthetic.join(2)
-        assert not synthetic.is_alive()
-        assert observed == [("NEW",)]
-    finally:
-        stop.set()
-        wake.set()
-        synthetic.join(2)
-
-
-def test_generation_completion_wakes_idle_synthetic_worker(monkeypatch, tmp_path):
-    idle = threading.Event()
-    processed = threading.Event()
-    stop = threading.Event()
-    calls = []
-
-    class WakeEvent(threading.Event):
-        def wait(self, timeout=None):
-            idle.set()
-            return super().wait(timeout)
-
-    wake = WakeEvent()
-
-    def process(stage, *unused):
-        if stage == "synthetic":
-            calls.append(stage)
-            if len(calls) == 2:
-                processed.set()
-                stop.set()
-        return 0
-
-    monkeypatch.setattr("molnova.driver.stream_process", process)
-    synthetic = threading.Thread(
-        target=worker_loop,
-        args=("synthetic", "synthetic", tmp_path / "project.toml", tmp_path, 60, stop, False),
-        kwargs={"wake_event": wake},
-    )
-    synthetic.start()
-    try:
-        assert idle.wait(2)
-        worker_loop(
-            "generate", "generate", tmp_path / "project.toml", tmp_path,
-            60, stop, True, after_run_event=wake,
-        )
-        assert processed.wait(2), "Synthetic worker waited for the 60-second polling timeout"
-        synthetic.join(2)
-        assert calls == ["synthetic", "synthetic"]
-    finally:
-        stop.set()
-        wake.set()
-        synthetic.join(2)
 
 
 @pytest.mark.parametrize("flag, enabled", [("", True), ("true", True), ("false", False)])

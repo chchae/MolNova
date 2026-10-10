@@ -35,12 +35,24 @@ def _run_stage(args, requested_iteration):
                         """,
                         (iteration, int(args.synthetic_feasibility_enabled)),
         ).fetchall()
+    outdir = args.output / f"iter{iteration}" / "ligprep"
+    active = load_job(outdir)
     if not rows:
+        # A crash may follow the state commit but precede record removal.
+        # Retire only a known terminal job whose original claims all survived.
+        if active is not None and active.get("job_id"):
+            with c.open_sqlite(args.db_path) as conn:
+                completed = {cid for cid, state in conn.execute(
+                    "SELECT id,state FROM compound WHERE iteration=?", (iteration,)
+                ) if state not in {State.GENERATED, State.SYNTHETIC_RUNNING, State.LIGPREP_RUNNING}}
+            if active.get("compound_ids") and set(active["compound_ids"]) <= completed:
+                from molnova.schrodinger_guard import job_details, TERMINAL
+                jobs = job_details(args.schrodinger, active["job_id"], outdir)
+                if all(job.get("status") in TERMINAL for job in jobs):
+                    job_file(outdir).unlink(missing_ok=True)
         print(f"Iteration {iteration}: no LigPrep-pending compounds.")
         return
 
-    outdir = args.output / f"iter{iteration}" / "ligprep"
-    active = load_job(outdir)
     if active is not None:
         rows = [row for row in rows if row[0] in active["compound_ids"]]
 

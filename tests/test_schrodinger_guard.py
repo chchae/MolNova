@@ -53,3 +53,17 @@ def test_native_lookup_error_is_not_mistaken_for_empty_queue(monkeypatch):
                         subprocess.CompletedProcess(cmd, 1, '', 'JobServer connection refused'))
     with pytest.raises(guard.SubmissionBlocked, match='Cannot verify'):
         with guard.submission_guard('/suite','mmgbsa'):pytest.fail('Unverified empty queue')
+
+
+def test_parent_details_avoid_duplicate_child_queries(monkeypatch):
+    import subprocess
+    calls = []
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[1] == 'list':
+            return subprocess.CompletedProcess(cmd, 0, 'parent\nchild\n')
+        return subprocess.CompletedProcess(cmd, 0, '\n'.join(json.dumps(job) for job in [
+            {'jobId':'parent','status':'DONE'}, {'jobId':'child','status':'RUNNING'}]))
+    monkeypatch.setattr(guard.subprocess, 'run', run)
+    assert guard.active_jobs('/suite') == [{'jobId':'child','status':'RUNNING'}]
+    assert len(calls) == 2

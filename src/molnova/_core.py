@@ -150,7 +150,7 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout
     return {
         **gbsa_license_retry_settings(config),
         **schrodinger_cpu_settings(config),
@@ -169,6 +169,7 @@ def load_project_toml(filename):
         "max_iteration": int(config["max-iteration"]),
         "host": str(config["host"]),
         "tail_timeout": int(config.get("tail-timeout", 300)),
+        "glide_job_timeout": glide_job_timeout(config),
         "elite_count": int(config.get("elite-count", 30)),
         "elite_best_count": int(config.get("elite-best-count", 10)),
         "elite_diverse_count": int(config.get("elite-diverse-count", 20)),

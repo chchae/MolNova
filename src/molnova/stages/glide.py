@@ -90,6 +90,13 @@ def mark_group(db_path, compounds, state, failed_stage=None, message=None):
     )
 
 
+def failure_reason(directory, status):
+    record = load_record(directory) or {}
+    if record.get('timeout_requested_at'):
+        return f"Glide job exceeded {record['timeout_seconds']}s; parent and children terminated"
+    return f'Glide job ended with {status}'
+
+
 def merge_current_best(args, glide_root, merger):
     files = sorted(glide_root.glob("ref_*/best_poses.maegz"))
     if files:
@@ -211,7 +218,8 @@ def _run_stage(args, ns):
                    output_file=output_file, log_file=log_file,
                    input_count=len(compounds), compounds=compounds)
 
-        status = group_status(args.schrodinger, gdir, log_file, output_file, live)
+        status = group_status(args.schrodinger, gdir, log_file, output_file, live,
+                              timeout_seconds=getattr(args, 'glide_job_timeout', 1800))
         if status in ('RUNNING', 'UNKNOWN'):
             mark_group(args.db_path, compounds, State.GLIDE_RUNNING)
             jobs.append(job)
@@ -225,7 +233,7 @@ def _run_stage(args, ns):
             continue
         if status is not None:
             mark_group(args.db_path, compounds, State.FAILED, failed_stage='glide',
-                       message=f'Glide job ended with {status}')
+                       message=failure_reason(gdir, status))
             continue
 
         c.extract_reference_pose(
@@ -267,7 +275,8 @@ def _run_stage(args, ns):
         live = active_jobs(args.schrodinger)
         rest = []
         for job in pending:
-            status = group_status(args.schrodinger, job['group_dir'], job['log_file'], job['output_file'], live)
+            status = group_status(args.schrodinger, job['group_dir'], job['log_file'], job['output_file'], live,
+                                  timeout_seconds=getattr(args, 'glide_job_timeout', 1800))
             if status == 'DONE':
                 if job['output_file'].exists() and job['output_file'].stat().st_size:
                     process_completed_job(iteration, args, job, score_extractor, merger, glide_root)
@@ -276,7 +285,7 @@ def _run_stage(args, ns):
                 terminal += 1
                 continue
             if status is not None and status not in ('RUNNING', 'UNKNOWN'):
-                mark_group(args.db_path, job['compounds'], State.FAILED, failed_stage='glide', message=f'Glide job ended with {status}')
+                mark_group(args.db_path, job['compounds'], State.FAILED, failed_stage='glide', message=failure_reason(job['group_dir'], status))
                 terminal += 1
                 continue
             rest.append(job)

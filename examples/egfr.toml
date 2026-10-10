@@ -17,6 +17,7 @@ glide-cpus = 64
 # MM-GBSA runs up to 7 single-compound jobs with -HOST t41-cpu -NJOBS 1.
 
 tail-timeout = 300
+glide-job-timeout = 1800 # Stop each Glide group after 30 minutes; 0 disables.
 
 elite-tl-epochs = 3
 gbsa-input-count = 100

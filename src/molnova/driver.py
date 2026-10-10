@@ -4,14 +4,14 @@ import fcntl
 import os
 import signal
 import subprocess
+import select
 import sys
-import threading
 import time
 from pathlib import Path
 
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import WORK_STARTED
+from molnova.stages._logging import WORK_STARTED, format_elapsed
 
 BASE_STAGES = [
     ("generate", "molnova.stages.generate"),
@@ -41,25 +41,41 @@ def stream_process(stage, cmd, cwd, stop_event):
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        bufsize=0,
         env=env,
     )
 
     pending = []
     active = False
+
+    def emit(line):
+        nonlocal active
+        if line.strip() == WORK_STARTED:
+            active = True
+            pending.clear()
+        elif active:
+            print(f"[{stage:<8}] {line}", end="", flush=True)
+        else:
+            pending.append(line)
+
     try:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            if line.strip() == WORK_STARTED:
-                active = True
-                pending.clear()
-            elif active:
-                print(f"[{stage:<8}] {line}", end="", flush=True)
-            else:
-                pending.append(line)
-            if stop_event.is_set():
+        # Read bytes so buffered readline cannot hide output or block shutdown.
+        buffer = b""
+        while not stop_event.is_set():
+            ready, _, _ = select.select([proc.stdout], [], [], 0.2)
+            if not ready:
+                continue
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
                 break
+            buffer += chunk
+            lines = buffer.split(b"\n")
+            buffer = lines.pop()
+            for line in lines:
+                emit(line.decode("utf-8", errors="replace") + "\n")
+        if buffer:
+            emit(buffer.decode("utf-8", errors="replace"))
     finally:
         if stop_event.is_set() and proc.poll() is None:
             proc.terminate()
@@ -67,8 +83,11 @@ def stream_process(stage, cmd, cwd, stop_event):
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()
         else:
             proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
 
     if proc.returncode != 0:
         for line in pending:
@@ -80,58 +99,118 @@ def stream_process(stage, cmd, cwd, stop_event):
     return proc.returncode
 
 
-def worker_loop(
-    stage, module, project_toml, work_dir, poll_interval, stop_event, once,
-    wake_event=None, after_run_event=None,
-):
-    cmd = [sys.executable, "-m", module, str(project_toml)]
-    # Refill individual GBSA slots promptly; other workers keep their interval.
-    if stage == "mmgbsa":
-        poll_interval = min(poll_interval, 5)
+class StopFlag:
+    """Signal-controlled cancellation for the single-thread supervisor."""
 
-    # In one-shot mode, evaluate the compounds persisted by this generation
-    # attempt. The supervisor schedules subprocesses; workers still use SQLite.
-    if once and wake_event is not None:
-        wake_event.wait()
+    def __init__(self):
+        self.stopped = False
 
-    while not stop_event.is_set():
-        if wake_event is not None:
-            wake_event.clear()
-        try:
-            rc = stream_process(stage, cmd, work_dir, stop_event)
-        finally:
-            if after_run_event is not None:
-                after_run_event.set()
-        if stop_event.is_set():
-            return
+    def set(self):
+        self.stopped = True
 
-        if rc != 0:
-            if once:
-                print(
-                    f"[driver  ] {stage} exited with status {rc}; "
-                    "stopping because --once was specified.",
-                    flush=True,
-                )
-                return
-            print(
-                f"[driver  ] {stage} exited with status {rc}; "
-                f"retrying after {poll_interval}s.",
-                flush=True,
+    def is_set(self):
+        return self.stopped
+
+    def wait(self, seconds):
+        deadline = time.monotonic() + seconds
+        while not self.stopped:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, 0.2))
+
+
+def choose_iteration(args, requested=None):
+    """Select once; every worker receives the same explicit iteration."""
+    if requested is not None:
+        if not 1 <= requested <= args.max_iteration:
+            raise ValueError(f"Iteration must be between 1 and {args.max_iteration}.")
+        return requested
+    with database.connect(args.db_path) as conn:
+        iterations = [row[0] for row in conn.execute(
+            "SELECT DISTINCT iteration FROM compound WHERE iteration>0 ORDER BY iteration"
+        )]
+    for iteration in iterations:
+        if database.iteration_completion_reason(
+            args.db_path, iteration, args.target_count, args.gbsa_input_count, 0
+        ) is not None:
+            return iteration
+    following = max(iterations, default=0) + 1
+    return following if following <= args.max_iteration else None
+
+
+def external_completion_reason(args, iteration, stage):
+    """Do not advance past live or uncertain native work, even with stale scores."""
+    if stage not in {"ligprep", "glide", "mmgbsa"}:
+        return None
+    from molnova import schrodinger_guard as guard
+    from molnova.ligprep_recovery import load_job as load_ligprep
+    from molnova.prime_async import load_job as load_prime
+
+    directory = args.output / f"iter{iteration}"
+    try:
+        if stage == "ligprep" and load_ligprep(directory / "ligprep") is not None:
+            return "LigPrep submission still requires recovery"
+        if stage == "mmgbsa" and load_prime(directory / "mmgbsa") is not None:
+            return "MM-GBSA queue still requires recovery"
+        if stage == "glide":
+            from molnova.glide_recovery import load_record
+            for record_path in (directory / "glide").glob("*/glide_job.json"):
+                record = load_record(record_path.parent)
+                if not record.get("job_id"):
+                    return "Glide launch identity remains uncertain"
+                # Already downloaded records were verified terminal by the worker.
+                if not record.get("downloaded"):
+                    details = guard.job_details(args.schrodinger, record["job_id"])
+                    if any(job.get("status") not in guard.TERMINAL for job in details):
+                        return f"saved Glide job still active: {record['job_id']}"
+        jobs = guard.active_jobs(args.schrodinger)
+    except Exception as exc:
+        return f"cannot verify JobServer completion: {exc}"
+    directory = directory.resolve()
+    for job in jobs:
+        launch = job.get("spec", {}).get("launchParams", {}).get("launchDirectory")
+        belongs = (launch and Path(launch).resolve().is_relative_to(directory)) or (
+            str(directory) + "/" in job.get("commandLine", "")
+        )
+        if belongs:
+            return f"external job still active: {job['jobId']}"
+    return None
+
+
+def supervise_iteration(args, project_toml, iteration, stages, poll_interval, stop, once=False):
+    """Run one worker at a time; exit only after this iteration's final stage."""
+    for stage, module in stages:
+        started = time.monotonic()
+        interval = min(poll_interval, 5) if stage == "mmgbsa" else poll_interval
+        cmd = [sys.executable, "-m", module, str(project_toml), "--iteration", str(iteration)]
+        while not stop.is_set():
+            rc = stream_process(stage, cmd, project_toml.parent, stop)
+            if stop.is_set():
+                return False
+            reason = f"worker exited with status {rc}" if rc else database.stage_completion_reason(
+                args.db_path, iteration, stage, args.target_count, args.gbsa_input_count,
+                args.synthetic_feasibility_enabled,
             )
-        elif once:
-            return
-
-        if wake_event is None:
-            stop_event.wait(poll_interval)
-        else:
-            wake_event.wait(poll_interval)
+            if reason is None:
+                reason = external_completion_reason(args, iteration, stage)
+            if reason is None:
+                print(f"[driver  ] iteration {iteration}: {stage} complete "
+                      f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
+                break
+            print(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
+            if once:
+                return False
+            stop.wait(interval)
+    return not stop.is_set()
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="Concurrent supervisor for REINVENT/LigPrep/Glide/MM-GBSA/FEP workers"
+        description="Single-thread supervisor for one iteration of sequential stage workers"
     )
     p.add_argument("project_toml", type=Path)
+    p.add_argument("--iteration", type=int, help="Iteration to run; default: oldest unfinished, or next new iteration")
     p.add_argument(
         "--poll-interval",
         type=int,
@@ -141,7 +220,7 @@ def main(argv=None):
     p.add_argument(
         "--once",
         action="store_true",
-        help="Run every stage worker once, then exit",
+        help="Attempt each stage once in order; stop at the first unfinished stage",
     )
     ns = p.parse_args(argv)
 
@@ -149,7 +228,6 @@ def main(argv=None):
         raise ValueError("--poll-interval must be >= 1")
 
     project_toml = ns.project_toml.expanduser().resolve()
-    work_dir = project_toml.parent
 
     # Configure once so the DB exists and project name is known.
     args = c.configure_project(project_toml)
@@ -170,68 +248,48 @@ def main(argv=None):
     lock_file.write(str(os.getpid()))
     lock_file.flush()
 
-    print("=" * 70)
-    print("MODULAR LEAD-OPTIMIZATION DRIVER")
-    print("=" * 70)
-    print(f"Project        : {args.project}")
-    print(f"TOML           : {project_toml}")
-    print(f"SQLite DB      : {args.db_path}")
-    print(f"Output         : {args.output}")
-    print(f"Worker poll    : {ns.poll_interval} s")
-    stages = build_stages(
-        args.synthetic_feasibility_enabled,
-        args.fep_enabled,
-    )
-
-    print("Stages         : " + ", ".join(stage for stage, _ in stages))
-    print("Stop           : Ctrl-C")
-    print()
-
-    stop_event = threading.Event()
-    synthetic_wake = threading.Event()
-
-    def request_stop(signum=None, frame=None):
-        if not stop_event.is_set():
-            print("\n[driver  ] stopping workers...", flush=True)
-            stop_event.set()
-            synthetic_wake.set()
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
-
-    threads = []
-    for stage, module in stages:
-        t = threading.Thread(
-            target=worker_loop,
-            args=(
-                stage,
-                module,
-                project_toml,
-                work_dir,
-                ns.poll_interval,
-                stop_event,
-                ns.once,
-                synthetic_wake if stage == "synthetic" else None,
-                synthetic_wake if stage == "generate" else None,
-            ),
-            name=stage,
-            daemon=False,
-        )
-        t.start()
-        threads.append(t)
-
+    previous_handlers = {}
     try:
-        for t in threads:
-            t.join()
-    except KeyboardInterrupt:
-        request_stop()
-        for t in threads:
-            t.join()
+        iteration = choose_iteration(args, ns.iteration)
+        if iteration is None:
+            print("[driver  ] All configured iterations are complete.")
+            return
+        stages = build_stages(args.synthetic_feasibility_enabled, args.fep_enabled)
+        print("=" * 70)
+        print("SEQUENTIAL SINGLE-ITERATION DRIVER")
+        print(f"Project        : {args.project}")
+        print(f"TOML           : {project_toml}")
+        print(f"SQLite DB      : {args.db_path}")
+        print(f"Output         : {args.output}")
+        print(f"Iteration      : {iteration}")
+        print(f"Worker poll    : {ns.poll_interval} s (MM-GBSA: at most 5 s)")
+        print("Stages         : " + " -> ".join(stage for stage, _ in stages))
+        print("Stop           : Ctrl-C", flush=True)
+        stop = StopFlag()
+
+        def request_stop(signum=None, frame=None):
+            if not stop.is_set():
+                print("\n[driver  ] stopping current worker...", flush=True)
+                stop.set()
+
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, request_stop)
+        database.start_iteration_timer(args.db_path, iteration)
+        completed = supervise_iteration(
+            args, project_toml, iteration, stages, ns.poll_interval, stop, ns.once,
+        )
+        if completed:
+            elapsed, estimated = database.finish_iteration_timer(args.db_path, iteration)
+            qualifier = ' (estimated from first compound creation)' if estimated else ''
+            print(f"[driver  ] iteration {iteration}: finished; "
+                  f"total elapsed={format_elapsed(elapsed)}{qualifier}.", flush=True)
+        else:
+            print(f"[driver  ] iteration {iteration}: paused; restart to resume.", flush=True)
     finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
-
-    print("[driver  ] finished.")
 
 
 if __name__ == "__main__":

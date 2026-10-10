@@ -118,6 +118,7 @@ def test_driver_lock_is_created_in_output(tmp_path, monkeypatch):
     config = _core.load_project_toml(project)
     monkeypatch.setattr(driver.c, "configure_project", lambda _: SimpleNamespace(**config))
     monkeypatch.setattr(driver, "build_stages", lambda *args: [])
+    monkeypatch.setattr(driver, "choose_iteration", lambda *args: 1)
     monkeypatch.setattr(driver.signal, "signal", lambda *args: None)
     driver.main([str(project), "--once"])
     assert (tmp_path / "output" / "egfr.sqlite.driver.lock").read_text().isdigit()
@@ -133,3 +134,17 @@ def test_aizynth_nproc_rejects_invalid_values(value):
 @pytest.mark.parametrize("value", [1, 4, 8])
 def test_aizynth_nproc_configurable(value):
     assert aizynth_process_count({"aizynth-nproc": value}) == value
+
+
+@pytest.mark.parametrize('value', [0, 600, 1800])
+def test_glide_job_timeout_config(tmp_path, value):
+    project = tmp_path / 'egfr.toml'
+    project.write_text(PROJECT_TOML + f'glide-job-timeout = {value}\n')
+    assert _core.load_project_toml(project)['glide_job_timeout'] == value
+
+
+@pytest.mark.parametrize('value', [-1, True, 1.5, '1800'])
+def test_glide_job_timeout_rejects_invalid_values(value):
+    from molnova.config import glide_job_timeout
+    with pytest.raises(ValueError, match='glide-job-timeout'):
+        glide_job_timeout({'glide-job-timeout': value})

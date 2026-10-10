@@ -6,6 +6,13 @@ from typing import Any
 from molnova import _core
 
 
+def glide_job_timeout(config: dict[str, Any]) -> int:
+    value = config.get('glide-job-timeout', 1800)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError('glide-job-timeout must be a non-negative integer (seconds)')
+    return value
+
+
 def schrodinger_cpu_settings(config: dict[str, Any]) -> dict[str, int | None]:
     settings = {}
     for stage in ("ligprep", "glide", "mmgbsa"):

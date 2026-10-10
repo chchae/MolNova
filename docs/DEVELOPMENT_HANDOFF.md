@@ -92,31 +92,23 @@ beside the TOML is copied using SQLite backup; the original is retained.
 
 SQLite is the workflow source of truth.
 
-The driver supervises independent stage subprocesses:
+The driver uses one thread to supervise independent stage subprocesses in order:
 
-driver
- ├── generate
- ├── ligprep
- ├── glide
- ├── mmgbsa
- └── fep (optional)
+generate → synthetic (if enabled) → ligprep → glide → mmgbsa → fep export (if enabled)
 
-Workers do not invoke each other.
+Only one stage worker subprocess runs at a time. The driver selects an iteration
+once (explicit `--iteration N`, otherwise oldest unfinished or next new) and
+passes it to every worker. It exits after that iteration, without advancing N+1.
+Workers retain DB inspection, atomic claims, calculation and persistence. Workers
+do not invoke one another and scientific calculation code stays outside the driver.
 
-Each worker:
-
-DB query
-→ claim eligible work
-→ calculation
-→ result persistence
-→ state transition
-→ exit
-
-The driver periodically launches workers again.
-
-Each iteration now enforces generation completion before LigPrep and LigPrep
-completion before Glide. Workers remain independent subprocesses coordinated
-through SQLite. Completed Glide groups still stream results into SQLite.
+A zero subprocess exit is not completion. Check SQLite state and native JobServer
+parent/child completion before advancing; retry only the current incomplete stage.
+Preserve durable submission recovery and the cross-project submission mutex.
+Glide groups still execute in parallel and persist each completed group; MM-GBSA
+retains seven slots, individual refill and immediate score persistence. Poll
+MM-GBSA at most every five seconds. `--once` stops at the first incomplete/failed
+stage; later stages run only after verified completion. FEP remains export/import.
 
 ## 6. SQLite
 
@@ -356,7 +348,11 @@ Default:
 `tail_timeout` must be configurable in TOML.
 
 Do not forcibly terminate external jobs merely because the local
-worker reaches its tail timeout.
+worker reaches its tail timeout. The separate per-group `glide-job-timeout`
+(default 1800 seconds, 0 disables) authorizes native parent/child stopping.
+Persist timeout intent before `jsc stop --force`; retain running claims until
+all jobs terminate, then mark unscored group compounds failed. Native start time
+(submission time fallback) survives worker restarts.
 
 A later Glide worker invocation should recover completed outputs.
 
@@ -562,3 +558,28 @@ outputs from earlier attempts. Parent and children must terminate before result
 import; download that exact completed submission. A failed child log line alone
 must never cause duplicate parent submission. Unknown launches/status queries
 retain work. Never remove live job files when a LigPrep fingerprint changes.
+
+
+## Interrupted Prime launch reconciliation
+
+Checkpoint JobId immediately on each launch-client output line, before waiting
+for the client to exit. Store launch host and start time before spawning. For a
+record with launching=true and no JobId, check surviving submission clients and
+use verified `jsc list --any-status --launch-dir <directory> --id-only` plus
+`jsc info --json` to recover running or terminal native jobs. Recover matching
+new log JobIds as well. Never infer absence from an empty Slurm queue alone.
+Only release a launch for guarded retry when JobServer history lookup succeeds,
+no client or unidentified calculation artifact exists, and a 60-second launch
+registration grace period has passed. Preserve an audit copy and scientific
+scores. Unknown hosts, lookup failures and ambiguous histories remain pending.
+
+
+## Iteration elapsed time
+
+The driver checkpoints iteration start and verified completion in SQLite
+`iteration_timing`. Print total wall time in HH:MM:SS.s after all configured
+stages have completed, including polling, recovery and downtime between
+restarts. Never checkpoint completion on a pause or failed/incomplete stage.
+For existing iterations without a timer, use their earliest compound creation
+UTC timestamp and label the duration as estimated. Preserve the first finish
+on reruns, and preserve scientific results.

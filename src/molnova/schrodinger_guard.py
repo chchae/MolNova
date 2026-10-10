@@ -43,10 +43,13 @@ def active_jobs(suite):
             return []
         result.check_returncode()
     rows = {}
+    inspected = set()
     for job_id in result.stdout.splitlines():
-        if not job_id.strip():
+        job_id = job_id.strip()
+        if not job_id or job_id in inspected:
             continue
-        for job in job_details(suite, job_id.strip()):
+        for job in job_details(suite, job_id):
+            inspected.add(job['jobId'])
             if job.get('status') not in TERMINAL:
                 rows[job['jobId']] = job
     return list(rows.values())

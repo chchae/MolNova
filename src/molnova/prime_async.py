@@ -2,6 +2,8 @@
 import json
 import hashlib
 import re
+import os
+import socket
 import subprocess
 import time
 from contextlib import nullcontext
@@ -143,8 +145,9 @@ def reconcile_saved_job(directory, db_path, iteration):
         raise PrimeReconciliationPending(
             f"Iteration {iteration}: obsolete compound queue retained for job reconciliation.")
     if record.get("job_id"):
-        status = _job_status(record, directory)
-        if status not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
+        jobs = _job_details(record, directory)
+        status = next(job["status"] for job in jobs if job["jobId"] == record["job_id"])
+        if any(job.get("status") not in {"DONE", "FAILED", "CANCELED", "STOPPED"} for job in jobs):
             raise PrimeReconciliationPending(
                 f"Iteration {iteration}: obsolete Prime job {record['job_id']} is {status}; "
                 "waiting for it to end before cleaning files.")
@@ -161,6 +164,106 @@ def reconcile_saved_job(directory, db_path, iteration):
     return None
 
 
+def _launch_process_alive(directory, record):
+    """Inspect the launch host, including surviving submission clients."""
+    if record.get("launch_host", socket.gethostname()) != socket.gethostname():
+        raise PrimeReconciliationPending("Prime launch occurred on another host; local process absence is insufficient")
+    directory = Path(directory).resolve()
+    input_path = directory / Path(record["command"][1]).name
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != os.getuid():
+                continue
+            words = (proc / "cmdline").read_bytes().split(b"\0")
+            for word in words:
+                value = word.decode(errors="replace")
+                if value.startswith("/") and Path(value).resolve() == input_path:
+                    return True
+        except FileNotFoundError:
+            continue  # The process exited during inspection.
+        except PermissionError as exc:
+            raise PrimeReconciliationPending("Cannot inspect a submission process on the launch host") from exc
+    return False
+
+
+def _launch_history(directory, record):
+    """Verified jsc flags include terminal jobs; Slurm alone is insufficient."""
+    from molnova.schrodinger_guard import job_details, job_kind
+    suite = Path(record["command"][0]).parent
+    jobs = {}
+    # Shared filesystem aliases can differ from the native launch directory.
+    for launch in dict.fromkeys([str(Path(directory).absolute()), str(Path(directory).resolve())]):
+        cmd = [str(suite / "jsc"), "list", "--any-status", "--launch-dir", launch, "--id-only"]
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            message = (result.stdout + result.stderr).strip()
+            if result.returncode == 1 and message == "No jobs matching your search criteria were found.":
+                continue
+            result.check_returncode()
+        for job_id in result.stdout.splitlines():
+            job_id = job_id.strip()
+            if job_id and job_id not in jobs:
+                for job in job_details(suite, job_id, directory):
+                    if job_kind(job) == "mmgbsa":
+                        jobs[job["jobId"]] = job
+    return list(jobs.values())
+
+
+def reconcile_interrupted_submission(directory, record):
+    """Recover a missing JobId, or release a positively unsubmitted launch."""
+    directory = Path(directory)
+    if _launch_process_alive(directory, record):
+        raise PrimeReconciliationPending("Prime submission client is still running; waiting for its JobId")
+    # Record every emitted JobId immediately, before the launch client exits.
+    # Legacy logs also carry an authoritative job identity if newly written.
+    ids = set()
+    for path in directory.glob("*.log"):
+        if path.name == "prime_license_retry.log":
+            continue
+        if record.get("log_snapshot", {}).get(path.name) == _log_signature(path):
+            continue
+        ids.update(re.findall(r"^JobId\s*:\s*(\S+)", path.read_text(errors="replace"),
+                              re.MULTILINE | re.IGNORECASE))
+    if len(ids) > 1:
+        raise PrimeReconciliationPending("Multiple Prime JobIds in current launch logs; reconciliation is ambiguous")
+    jobs = _launch_history(directory, record)
+    if ids:
+        job_id = ids.pop()
+        # Verify that a logged job exists before adopting it.
+        from molnova.schrodinger_guard import job_details
+        job_details(Path(record["command"][0]).parent, job_id, directory)
+    else:
+        parents = [job for job in jobs if not job.get("parentJobId")]
+        if len(parents) > 1 or jobs and not parents:
+            raise PrimeReconciliationPending("Prime launch history is ambiguous; submissions withheld")
+        job_id = parents[0]["jobId"] if parents else None
+    if job_id:
+        record.update(job_id=job_id, launching=False)
+        _save(directory, record)
+        print(f"Recovered interrupted Prime submission JobId: {job_id}.", flush=True)
+        return True
+    started = record.get("launch_started_at", job_file(directory).stat().st_mtime)
+    if time.time() - started < 60:
+        raise PrimeReconciliationPending("Prime launch registration grace period has not elapsed")
+    # Unidentified calculation artifacts prevent claiming that nothing launched.
+    if any(directory.glob("*-out.maegz")) or any(
+        path.name != "prime_license_retry.log" and path.stat().st_size
+        and record.get("log_snapshot", {}).get(path.name) != _log_signature(path)
+        for path in directory.glob("*.log")
+    ):
+        raise PrimeReconciliationPending("Unidentified Prime calculation artifacts remain; submissions withheld")
+    archived = directory / f"prime_job.unsubmitted-{time.time_ns()}.json"
+    archived.write_text(json.dumps(record))
+    record.update(launching=False, retry_at=0, attempt=max(0, record.get("attempt", 1) - 1),
+                  recovered_unsubmitted_at=time.time())
+    _save(directory, record)
+    print("Interrupted Prime launch had no client, JobServer job or calculation artifacts; "
+          "released for guarded resubmission.", flush=True)
+    return False
+
+
 def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retries=3,
                    on_completed_subjobs=None, submission_fence=None):
     """Return True only after a terminal job's outputs have been downloaded."""
@@ -172,13 +275,19 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
                   "job_id": None, "retry_at": 0, "launching": False}
     command = record["command"]
     jsc = Path(command[0]).parent / "jsc"
+    if record.get("launching") and not record.get("job_id"):
+        try:
+            if not reconcile_interrupted_submission(directory, record):
+                return False  # Queue releases the slot and refills under its submission fence.
+        except Exception as exc:
+            raise PrimeReconciliationPending(f"Prime submission was interrupted; recovery pending: {exc}") from exc
     if record["job_id"]:
         jobs = _job_details(record, directory)
         parent = next(job for job in jobs if job["jobId"] == record["job_id"])
         status = parent["status"]
         if on_completed_subjobs is not None:
             on_completed_subjobs(record, jobs)
-        if status not in {"DONE", "FAILED", "CANCELED", "STOPPED"}:
+        if any(job.get("status") not in {"DONE", "FAILED", "CANCELED", "STOPPED"} for job in jobs):
             print(f"Prime job {record['job_id']}: {status}; checking on next worker run.")
             return False
         subprocess.run([str(jsc), "download", "--cwd", record["job_id"]],
@@ -219,10 +328,17 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
             record["log_snapshot"] = {path.name: _log_signature(path)
                                       for path in directory.glob("*.log")}
             record["launching"] = True
+            record["launch_host"] = socket.gethostname()
+            record["launch_started_at"] = time.time()
             record["attempt"] += 1
             _save(directory, record)
             print("$", " ".join(command), flush=True)
-            code, output = _run_attempt(command, directory)
+            def checkpoint(line):
+                match = re.search(r"^JobId:\s*(\S+)", line, re.IGNORECASE)
+                if match:
+                    record.update(job_id=match.group(1), launching=False)
+                    _save(directory, record)
+            code, output = _run_attempt(command, directory, checkpoint)
     except SubmissionBlocked as exc:
         print(f'Prime submission waiting: {exc}.', flush=True)
         return False

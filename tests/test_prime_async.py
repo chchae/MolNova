@@ -11,7 +11,7 @@ from molnova.stages import mmgbsa
 
 def test_submit_then_poll_without_resubmission_or_early_result_read(tmp_path, monkeypatch):
     launches = []
-    def launch(command, cwd):
+    def launch(command, cwd, on_line=None):
         launches.append(command)
         assert "-WAIT" not in command
         return 0, "JobId: job-1\n"

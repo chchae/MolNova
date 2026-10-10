@@ -82,10 +82,11 @@ def main(argv=None):
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="Run concurrent stage supervisor")
+    run = sub.add_parser("run", help="Run one iteration with sequential stage workers")
     run.add_argument("project_toml", type=Path)
     run.add_argument("--poll-interval", type=int, default=30)
     run.add_argument("--once", action="store_true")
+    run.add_argument("--iteration", type=int)
 
     for name in ("generate", "ligprep", "glide", "mmgbsa"):
         stage = sub.add_parser(name, help=f"Run {name} stage")
@@ -120,6 +121,8 @@ def main(argv=None):
 
     if ns.command == "run":
         args = [str(ns.project_toml), "--poll-interval", str(ns.poll_interval)]
+        if ns.iteration is not None:
+            args += ["--iteration", str(ns.iteration)]
         if ns.once:
             args.append("--once")
         return driver_main(args)

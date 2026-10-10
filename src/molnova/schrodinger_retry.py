@@ -19,11 +19,13 @@ def _logs(directory):
             for path in directory.rglob("*.log") if path.name != "prime_license_retry.log"}
 
 
-def _run_attempt(command, cwd):
+def _run_attempt(command, cwd, on_line=None):
     lines = []
     with subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
         for line in proc.stdout:
+            if on_line is not None:
+                on_line(line)
             print(line, end="", flush=True)
             lines.append(line)
         return proc.wait(), "".join(lines)

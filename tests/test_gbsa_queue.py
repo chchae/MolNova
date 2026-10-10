@@ -183,8 +183,9 @@ def test_supervisor_refill_interval(stage, interval, expected, tmp_path, monkeyp
             return bool(waits)
         def wait(self, seconds):
             waits.append(seconds)
-    monkeypatch.setattr(driver, 'stream_process', lambda *a: 0)
-    driver.worker_loop(stage, 'module', tmp_path / 'config.toml', tmp_path, interval, Stop(), False)
+    monkeypatch.setattr(driver, 'stream_process', lambda *a: 1)
+    driver.supervise_iteration(None, tmp_path / 'config.toml', 1,
+                               [(stage, 'module')], interval, Stop(), False)
     assert waits == [expected]
 
 

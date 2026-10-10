@@ -1,6 +1,7 @@
 """SQLite workflow-state API."""
 import sqlite3
 import math
+import time
 from contextlib import contextmanager
 from collections.abc import Iterable, Iterator
 import fcntl
@@ -381,3 +382,90 @@ def has_running_mmgbsa(path, iteration):
     with connect(path) as conn:
         return conn.execute('SELECT 1 FROM compound WHERE iteration=? AND state=? LIMIT 1',
                             (iteration, State.GBSA_RUNNING)).fetchone() is not None
+
+
+def stage_completion_reason(path, iteration, stage, target_count, input_count,
+                            synthetic_enabled=False):
+    """Driver readiness from persisted state, never worker exit status alone."""
+    if stage == 'mmgbsa':
+        # Ending a single iteration does not require enough elites for N+1.
+        return iteration_completion_reason(path, iteration, target_count, input_count, 0)
+    if stage == 'fep':
+        # Current FEP stage exports candidates; no automated calculation exists.
+        return None
+    with connect(path) as conn:
+        rows = _iteration_rows(conn, iteration)
+        if len(rows) < target_count:
+            return f'generation incomplete ({len(rows)}/{target_count} compounds)'
+        if stage == 'generate':
+            return None
+        if stage == 'synthetic':
+            pending = conn.execute(
+                'SELECT COUNT(*) FROM compound WHERE iteration=? AND state != ? '
+                'AND (synthetic_feasibility IS NULL OR sa_score IS NULL OR state=?)',
+                (iteration, State.FAILED, State.SYNTHETIC_RUNNING),
+            ).fetchone()[0]
+            return f'{pending} compounds await synthetic assessment' if pending else None
+        if stage == 'ligprep':
+            blocked = {State.GENERATED, State.SYNTHETIC_RUNNING, State.LIGPREP_RUNNING}
+            pending = sum(state in blocked for _, state, _, _ in rows)
+            if pending:
+                return f'{pending} compounds await LigPrep completion'
+            if synthetic_enabled and conn.execute(
+                'SELECT 1 FROM compound WHERE iteration=? AND state != ? '
+                'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED)
+            ).fetchone():
+                return 'synthetic assessment incomplete'
+            return None
+        if stage == 'glide':
+            return _docking_completion_reason(rows, target_count)
+    raise ValueError(f'Unknown stage: {stage}')
+
+
+
+def start_iteration_timer(path, iteration):
+    """Persist the original start across driver restarts; preserve old results."""
+    now = time.time()
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS iteration_timing ("
+            "iteration INTEGER PRIMARY KEY, started_at REAL NOT NULL, "
+            "finished_at REAL, start_source TEXT NOT NULL)"
+        )
+        existing = conn.execute(
+            'SELECT started_at FROM iteration_timing WHERE iteration=?', (iteration,)
+        ).fetchone()
+        if existing:
+            return existing[0]
+        # Existing iterations predate the timer: report an explicitly estimated
+        # duration from their earliest compound creation (SQLite UTC timestamps).
+        earliest = None
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='compound'").fetchone():
+            earliest = conn.execute(
+                "SELECT MIN(CAST(strftime('%s', created_at) AS REAL)) "
+                "FROM compound WHERE iteration=?", (iteration,)
+            ).fetchone()[0]
+        started = min(now, earliest) if earliest is not None else now
+        conn.execute(
+            'INSERT INTO iteration_timing(iteration,started_at,start_source) VALUES (?,?,?)',
+            (iteration, started, 'compound_created_at' if earliest is not None else 'driver'),
+        )
+        return started
+
+
+def finish_iteration_timer(path, iteration):
+    """Checkpoint verified completion once; include wait/recovery/downtime."""
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'UPDATE iteration_timing SET finished_at=COALESCE(finished_at, ?) WHERE iteration=?',
+            (time.time(), iteration),
+        )
+        row = conn.execute(
+            'SELECT started_at,finished_at,start_source FROM iteration_timing WHERE iteration=?',
+            (iteration,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f'Iteration {iteration} has no start time')
+        return max(0, row[1] - row[0]), row[2] == 'compound_created_at'

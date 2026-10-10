@@ -40,7 +40,7 @@ def run_or_recover(command, directory, compound_ids, output):
         parent = next(job for job in jobs if job['jobId'] == record['job_id'])
         status = parent['status']
         elapsed = job_elapsed(parent)
-        if status not in {'DONE', 'FAILED', 'CANCELED', 'STOPPED'}:
+        if any(job.get('status') not in {'DONE', 'FAILED', 'CANCELED', 'STOPPED'} for job in jobs):
             print(f"LigPrep job {record['job_id']}: {status}; checking on next worker run.")
             return False
         subprocess.run([str(jsc), 'download', '--cwd', record['job_id']],

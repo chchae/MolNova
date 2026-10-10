@@ -1,12 +1,11 @@
 import sqlite3
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from molnova import _core
-from molnova.driver import worker_loop
+from molnova.driver import supervise_iteration, StopFlag
 from molnova.stages.fep import import_scores
 
 
@@ -71,14 +70,9 @@ def test_one_shot_worker_does_not_retry_failure(monkeypatch):
         return 1
 
     monkeypatch.setattr("molnova.driver.stream_process", failed_process)
-    worker_loop(
-        "generate",
-        "molnova.stages.generate",
-        Path("project.toml"),
-        Path("."),
-        1,
-        threading.Event(),
-        True,
+    assert not supervise_iteration(
+        SimpleNamespace(), Path("project.toml"), 1,
+        [("generate", "molnova.stages.generate")], 1, StopFlag(), True,
     )
 
     assert len(calls) == 1

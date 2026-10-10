@@ -66,14 +66,15 @@ Remove `reinvent-ssh-host` to use a local `reinvent` executable and local prior.
 ```bash
 molnova input/egfr.toml
 # Equivalent explicit command:
-molnova run input/egfr.toml
+molnova run input/egfr.toml --iteration 1
 ```
 
 Passing a TOML path alone starts the same supervisor as `molnova run` and accepts
 the same options, such as `--once` and `--poll-interval`.
 
-For a 10-iteration EGFR run, set `max-iteration = 10` in `examples/egfr.toml`.
-The example currently uses 1000 compounds per iteration, docking top-200 MM-GBSA,
+To permit iteration numbers up to 10, set `max-iteration = 10` in
+`examples/egfr.toml` and invoke each iteration separately.
+The example currently uses 1000 compounds per iteration, docking top-100 MM-GBSA,
 and 20 GBSA elites. Each next iteration waits until the previous iterations'
 LigPrep/Glide work and MM-GBSA processing of the final docking top-N have
 finished. Terminal failures are processed but cannot supply elites; retryable
@@ -96,11 +97,22 @@ tail -f output/egfr-run.log
 molnova status egfr.toml
 ```
 
-The database and locks are in `examples/output/`. Omit `--once` for repeated
-iterations. `max-iteration` caps the generation iteration number; the supervisor
-continues polling after the cap so remaining calculations can finish. Stop it
-with Ctrl-C after checking iteration 10 results. FEP remains disabled unless
-explicitly configured. Restarting the command resumes work from the existing DB.
+The database and locks are in `examples/output/`. The single-thread driver runs
+one iteration and exits: generate → synthetic assessment (if enabled) → LigPrep
+→ Glide → MM-GBSA → FEP candidate export (if enabled). Set `--iteration N` to
+select it explicitly. Without that option, the driver selects the oldest unfinished
+iteration, or the next new iteration, once at startup. It does not automatically
+advance to another iteration. `max-iteration` bounds explicit and new iteration
+numbers. Restart with the same `--iteration N` to resume from SQLite and saved JobIds.
+
+The driver supervises one independent worker subprocess at a time. It checks
+SQLite completion and live JobServer jobs before advancing; a zero worker exit
+code alone is insufficient. Incomplete stages are polled again, with MM-GBSA at
+most every five seconds. Glide groups still calculate in parallel and stream
+results; MM-GBSA still maintains seven independent jobs and refills completed
+slots. `--once` attempts stages in order but stops at the first unfinished or
+failed stage, without launching downstream stages. Ctrl-C stops the local worker;
+submitted external jobs remain recoverable. FEP remains disabled by default.
 
 Run one stage independently:
 
@@ -246,8 +258,8 @@ active jobs independently, commits each completed score and state, and fills
 only the released slots. It never waits for the slowest compound. The supervisor
 polls MM-GBSA at most every five seconds (or the smaller requested interval);
 status queries, downloads and score extraction add to the observed refill delay.
-Workers still exit between polls. `--once` launches up to seven jobs and exits;
-use `molnova run` or repeat the stage command to continue the queue.
+Workers still exit between polls. When the driver reaches MM-GBSA, `--once`
+launches up to seven jobs and exits if work remains; use `molnova run project.toml --iteration N` or repeat the stage command, to continue the queue.
 
 License backoff without a live/uncertain JobId releases its slot. Transient
 status/download failures and unknown launches retain their slot and submission
@@ -335,10 +347,9 @@ Remote files are retained for diagnosis; local `aizynthfinder.remote-dir.txt`,
 under `iterN/synthetic_feasibility`. Failed remote commands do not import stale
 results, and standard SSH host-key checks remain enabled.
 
-The driver wakes this independent stage immediately after each generate worker
-exits. SQLite determines which generated compounds need evaluation. With
-`--once`, the synthetic feasibility worker waits for the generation attempt to
-finish before inspecting SQLite. When this stage is enabled, LigPrep waits for
+The driver runs this independent stage after generation reaches target-count
+for the selected iteration. SQLite determines which compounds need evaluation.
+With `--once`, unfinished generation stops the driver before this stage. When this stage is enabled, LigPrep waits for
 each compound's feasibility result to be recorded. Both `0` and `1` may proceed
 to LigPrep; this stage records an assessment rather than excluding compounds.
 
@@ -419,3 +430,22 @@ launch directory, replacing older log identities, and download the matching
 completed job before importing scores. Unknown launches retain files and block
 resubmission. Input changes cannot discard live/uncertain job artifacts. Finished
 reference groups still publish scores independently as before.
+
+
+Glide reference groups have a `glide-job-timeout` of 1800 seconds by default.
+Set this TOML value to another number of seconds, or 0 to disable it. The limit
+uses the native parent start time (submission time when no start is available),
+so worker restarts do not restart the clock. The worker sends `jsc stop --force`
+to the live parent and children when the limit expires, and waits until all are
+terminal before marking unscored compounds as failed at the Glide stage. Completed
+groups and their scores remain available for MM-GBSA. The existing `tail-timeout`
+only limits a worker's wait; it does not itself cancel jobs. Already running
+workers load this new setting on their next invocation.
+
+
+Each completed driver iteration reports `total elapsed=HH:MM:SS.s`, including
+worker calculation, polling, recovery and time between restarts. The start and
+verified finish are stored in SQLite's `iteration_timing` table. For iterations
+already started before timing was added, the first compound creation time is
+used and the output labels the duration as estimated. Paused iterations retain
+the original start and are not recorded as completed.

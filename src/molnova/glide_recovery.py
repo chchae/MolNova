@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 from molnova.schrodinger_guard import (active_jobs, belongs_to_directory,
@@ -25,7 +26,42 @@ def save_record(directory, record):
     pending.replace(path)
 
 
-def group_status(suite, directory, log_file, output_file, live=None):
+def enforce_timeout(suite, directory, record, timeout_seconds):
+    """Stop a timed-out native tree; retain claims until every job terminates."""
+    if not record or not record.get('job_id'):
+        return None
+    if timeout_seconds <= 0 and not record.get('timeout_requested_at'):
+        return None
+    jobs = job_details(suite, record['job_id'], directory)
+    parent = next(j for j in jobs if j['jobId'] == record['job_id'])
+    running = [j['jobId'] for j in jobs if j.get('status') not in TERMINAL]
+    if not running:
+        return 'STOPPED' if record.get('timeout_requested_at') else None
+    started = parent.get('timeStarted')
+    try:
+        started = datetime.fromisoformat(started.replace('Z', '+00:00')).timestamp() if started else record.get('submitted_at')
+    except (ValueError, TypeError):
+        started = record.get('submitted_at')
+    now = time.time()
+    if not record.get('timeout_requested_at'):
+        if started is None or now - started < timeout_seconds:
+            return None
+        # Persist intent before stopping; restart must not import partial output.
+        record['timeout_requested_at'] = now
+        record['timeout_seconds'] = timeout_seconds
+        save_record(directory, record)
+    if now - record.get('timeout_stop_sent_at', 0) >= 30:
+        # Include live children even if their parent has already terminated.
+        subprocess.run([str(Path(suite) / 'jsc'), 'stop', '--force', *running],
+                       cwd=directory, check=True, capture_output=True, text=True, timeout=30)
+        record['timeout_stop_sent_at'] = now
+        save_record(directory, record)
+        print(f"Glide {record['job_id']}: {record['timeout_seconds']}s timeout; "
+              'stop requested, waiting for parent/children to terminate.', flush=True)
+    return 'RUNNING'
+
+
+def group_status(suite, directory, log_file, output_file, live=None, timeout_seconds=0):
     """Return a native status, UNKNOWN, or None for an unsubmitted group."""
     directory = Path(directory)
     live = active_jobs(suite) if live is None else live
@@ -40,6 +76,9 @@ def group_status(suite, directory, log_file, output_file, live=None):
             if record is None or record.get('job_id') and record['job_id'] != parent['jobId']:
                 record = {'job_id': parent['jobId'], 'recovered': True, 'downloaded': False}
                 save_record(directory, record)
+        timeout_status = enforce_timeout(suite, directory, record, timeout_seconds)
+        if timeout_status is not None:
+            return timeout_status
         return 'RUNNING'
     if record is None and log_file.exists():
         match = re.search(r'^JobId\s*:\s*(\S+)', log_file.read_text(errors='replace'), re.MULTILINE)
@@ -49,6 +88,9 @@ def group_status(suite, directory, log_file, output_file, live=None):
     if record is not None:
         if not record.get('job_id'):
             return 'UNKNOWN'  # Never repeat an uncertain launch.
+        timeout_status = enforce_timeout(suite, directory, record, timeout_seconds)
+        if timeout_status is not None:
+            return timeout_status
         jobs = job_details(suite, record['job_id'], directory)
         if any(j.get('status') not in TERMINAL for j in jobs):
             return 'RUNNING'
