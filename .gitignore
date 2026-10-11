@@ -10,3 +10,6 @@ build/
 *.sqlite-shm
 *.driver.lock
 output/
+examples/output*
+examples/run.log
+
