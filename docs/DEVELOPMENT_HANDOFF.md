@@ -542,6 +542,12 @@ iterations until retired. Never cancel or reset their live jobs during migration
 Single-compound execution optimizes the free receptor for each job using the
 same Prime settings; unlike a batch, this repeats receptor preparation work.
 
+When the entire queue finishes, print MM-GBSA total wall time in HH:MM:SS.s,
+including waiting, collection and restart downtime. Persist `started_at` and
+`finished_at` in the queue manifest and completed archive. For older queue
+manifests, recover the start from the nanosecond timestamp in `queue-<timestamp>`.
+This total is separate from each native job's calculation duration.
+
 
 ## Glide / MM-GBSA submission exclusion and durable Glide identity
 
@@ -598,3 +604,15 @@ New DB import preserves finite GBSA scores present in reference input properties
 Default driver selects iter0 first; an explicit later iteration completes pending
 reference work first. Iteration 0 runs only the MM-GBSA worker, without generation,
 LigPrep, Glide or FEP. Terminal failures remain terminal and provide no score.
+
+
+## LibInvent TL vocabulary preflight
+
+Before writing training/validation pairs, load the configured original prior's
+vocabulary and REINVENT token pattern on CPU in its local or SSH runtime.
+Check actual scaffold/decoration vocabularies and the installed reader gate.
+Skip unsupported-token elite pairs before splitting; persist IDs and reasons
+in `elite_skipped.tsv` and vocabulary metadata in `elite_vocabulary.json`.
+Preserve original molecular strings, database compounds, and scientific scores.
+Never bypass a failed vocabulary lookup, replace unsupported tokens, or extend
+the prior vocabulary implicitly. At least two compatible pairs remain required.

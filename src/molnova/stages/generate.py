@@ -80,10 +80,15 @@ def _run_stage(args, requested_iteration):
                 f"Need {args.gbsa_elite_count} previous MM-GBSA elites; only {len(elites)} available."
             )
         _, train_file, valid_file, usable = c.write_elite_libinvent_training_files(
-            elites, args.libinvent_scaffold_smiles, run_dir
+            elites, args.libinvent_scaffold_smiles, run_dir,
+            prior_file=args.libinvent_prior,
+            remote=getattr(args, "remote_reinvent", None),
         )
         if usable < 2:
-            raise RuntimeError("Too few usable GBSA elites for LibInvent TL.")
+            raise RuntimeError(
+                f"Too few usable GBSA elites for LibInvent TL ({usable}; need at least 2). "
+                f"See {run_dir / 'elite_skipped.tsv'} for unsupported-token exclusions."
+            )
         model = c.run_libinvent_elite_transfer_learning(
             run_dir=run_dir,
             prior_file=args.libinvent_prior,

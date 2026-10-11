@@ -108,7 +108,9 @@ def test_completed_stage_uses_previous_elites_before_tl_and_sampling(project, mo
     project.elite_tl_epochs = 3
     project.sample_size = 10
     events = []
-    def training(elites, scaffold, directory):
+    def training(elites, scaffold, directory, **kwargs):
+        assert kwargs['prior_file'] == project.libinvent_prior
+        assert kwargs['remote'] is None
         events.append(('elites', [r[1] for r in elites]))
         return None, 'train', 'valid', 2
     def tl(**kwargs):

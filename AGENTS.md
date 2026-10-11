@@ -1,222 +1,38 @@
-# MolNova Development Instructions
-
-## Purpose
-
-MolNova is an iterative molecular lead-optimization pipeline integrating:
-
-REINVENT4 / LibInvent → LigPrep → Glide → MM-GBSA → optional FEP+
-
-SQLite is the workflow source of truth.
-
-Read `docs/DEVELOPMENT_HANDOFF.md` before making architectural or scientific workflow changes.
-
-## Core Architecture
-
-Workers do not coordinate directly.
-
-Each stage must:
-
-1. inspect SQLite,
-2. atomically claim eligible work,
-3. perform its calculation,
-4. persist results,
-5. update compound state,
-6. exit.
-
-The driver only supervises workers. Do not turn it into a sequential monolithic workflow.
-
-Main stages:
-
-- `generate`
-- `ligprep`
-- `glide`
-- `mmgbsa`
-- `fep`
-
-Stages run as separate subprocesses.
-
-## Scientific Code
-
-Preserve validated scientific behavior.
-
-Do not rewrite REINVENT4, RDKit, Schrödinger, docking, MM-GBSA, or scaffold logic unless required by the task.
-
-Prefer small, testable changes over broad refactoring.
-
-Do not invent Schrödinger command-line options or FEP+ protocols. Verify them before implementation.
-
-## Database
-
-One `compound` row represents one original compound, not individual LigPrep states.
-
-Important result fields include:
-
-- `docking_score`
-- `gbsa_score`
-- `fep_score`
-- `similar_to`
-- `similarity`
-- `state`
-- `failed_stage`
-- `failure_message`
-
-Use a single compound state model rather than separate status columns for every stage.
-
-SQLite connections must support concurrent workers with:
-
-- WAL mode
-- busy timeout
-- foreign keys
-
-Work claiming and state transitions should be atomic.
-
-Schema migrations must be non-destructive.
-
-Never discard existing scientific results during migration.
-
-## State Model
-
-Expected progression:
-
-reference
-→ generated
-→ ligprep_running
-→ ligprepped
-→ glide_running
-→ docked
-→ gbsa_running
-→ gbsa_done
-→ fep_running
-→ fep_done
-
-Terminal failure:
-
-`failed`
-
-Store failure details in `failed_stage` and `failure_message`.
-
-Use the state definitions in `states.py`; avoid duplicated raw strings.
-
-## Pipeline Concurrency
-
-Do not require all Glide jobs to finish before processing completed results.
-
-A completed Glide reference group should immediately update SQLite.
-
-MM-GBSA must wait until generation reaches target-count and all LigPrep/Glide
-work in the iteration is processed. Running or retryable upstream work blocks it.
-
-Select the final docking top-N only after docking completion; check readiness,
-rank and claim atomically. Preserve streaming Glide result persistence.
-
-Do not generate iteration N+1 until iteration N contains enough valid GBSA results for elite selection.
-
-## Compound Identity
-
-Use:
-
-`CMPID_<SQLite compound id>`
-
-as the structure title through LigPrep and Glide.
-
-Preserve this identity through all structure-processing steps.
-
-## LibInvent
-
-Iteration 1 uses the original LibInvent prior.
-
-Later iterations use short transfer learning from the original prior using selected previous compounds.
-
-Do not recursively fine-tune the previous iteration's TL model.
-
-Critical LibInvent dummy notation:
-
-- scaffold: `[*]`
-- decoration/R-group: `*`
-
-Do not normalize these to the same representation.
-
-## Glide
-
-For each generated compound:
-
-- compare against MCS-compatible iteration-0 references,
-- use Morgan radius 2 / 2048-bit fingerprints,
-- select the highest Tanimoto reference,
-- store reference ID in `similar_to`,
-- store Tanimoto in `similarity`.
-
-MCS determines the constrained core.
-
-Similarity determines the reference 3D pose.
-
-Across LigPrep states, retain the pose with the lowest Glide docking score for the original compound.
-
-## LigPrep
-
-Current intended settings:
-
-- pH 7.4
-- pH tolerance 1.0
-- Epik maximum states 2
-- maximum stereoisomers 1
-
-For Schrödinger 2026-3, do not pass `-r 1`; in this environment `-r` is interpreted as `-retain`.
-
-## MM-GBSA
-
-MM-GBSA operates on the final docking top-N after docking completion.
-
-Only calculate candidates without an existing GBSA result.
-
-Persist the result in `gbsa_score`.
-
-Elite selection for later LibInvent iterations should use GBSA results.
-
-## FEP
-
-`fep_score` exists in the schema.
-
-FEP is optional and disabled by default.
-
-Until the production FEP+ protocol is explicitly defined, support candidate export and score import rather than inventing an automated FEP+ workflow.
-
-## Configuration
-
-Paths relative to a project TOML file must resolve relative to that TOML file.
-
-Each target/project has its own:
-
-- TOML
-- SQLite database
-- input directory
-- output directory
-
-The installed MolNova source package is shared across projects.
-
-## Engineering Practices
-
-Before changing code:
-
-1. inspect the existing implementation,
-2. identify the smallest affected area,
-3. preserve unrelated behavior.
-
-After changing code:
-
-1. run relevant tests,
-2. run syntax/import checks,
-3. report what changed,
-4. report tests performed,
-5. mention unresolved risks.
-
-Prefer centralizing:
-
-- SQL in `database.py`
-- configuration in `config.py`
-- states in `states.py`
-- stage orchestration in `stages/`
-
-Refactor `_core.py` incrementally rather than rewriting it.
-
-Add tests for important bug fixes and state transitions.
+# MolNova development instructions
+
+Read `docs/SPEC.md` before starting any project work. Before architectural or scientific workflow changes, also read `docs/DEVELOPMENT_HANDOFF.md` and inspect the affected implementation and tests. Respect the evidence and uncertainty labels in SPEC; do not silently promote proposals or implementation details into user-approved requirements.
+
+## Core constraints
+
+- SQLite coordinates the workflow. Independent stage subprocesses inspect it, atomically claim work, calculate, persist results, update state, and exit. Workers never invoke or coordinate directly with other workers; the driver only supervises.
+- Preserve the documented single-iteration sequential supervision baseline pending review of the historical scheduling ambiguity in SPEC. Keep scientific calculations outside the driver. Preserve parallel Glide groups and immediate group-result persistence.
+- One compound row represents one original molecule. Preserve `CMPID_<SQLite id>` through structure processing, and select the lowest Glide score and its corresponding pose across LigPrep states.
+- Use `states.py` for the single compound state model; permanent failures record `failed_stage` and `failure_message`. Use WAL, a 30-second busy timeout, foreign keys, atomic claims, and non-destructive migrations. Never discard scientific results or reset live/uncertain jobs.
+- Start MM-GBSA only after target-count and all upstream processing finish. Check readiness, rank the final docking top-N, and claim unscored eligible compounds in one transaction. Existing scores retain their ranking positions.
+- Preserve durable JobId recovery, the project-wide seven-job MM-GBSA queue, individual refill, and cross-project Glide/Prime submission exclusion. A zero worker exit or cached output alone does not establish completion.
+- Generate the next iteration only after the required preceding work completes and enough finite GBSA elites exist. Use the immediately preceding iteration's elites and restart TL from the original LibInvent prior every time.
+- Keep LibInvent scaffold `[*]` distinct from decoration `*`. Use MCS-compatible references, Morgan radius 2/2048-bit Tanimoto pose selection, constrained SP docking, and no unconstrained fallback.
+- Preserve LigPrep pH 7.4, tolerance 1.0, Epik states 2, stereoisomers 1 as defaults. Never pass `-r 1` in the Schrödinger 2026-3 environment.
+- FEP remains optional and disabled by default; support candidate export and score import until a production protocol is specified. Verify external program options rather than inventing them.
+- Resolve local TOML paths relative to that TOML. Keep remote paths remote and target-specific TOML, inputs, output, and DB separate from the shared installed package.
+
+## Development rules
+
+- Make the smallest necessary change and preserve validated scientific behavior and unrelated functionality. Do not rewrite `_core.py` wholesale; extract stable, tested functionality incrementally.
+- Centralize SQL in `database.py`, configuration in `config.py`, states in `states.py`, and stage orchestration in `stages/`.
+- Add meaningful regression tests for important bugs, state transitions, concurrency, and restart recovery. Do not add unrequested features or abstractions.
+- After changes, run relevant tests and syntax/import checks; report behavioral changes, verification, and unresolved risks. Mock tests do not validate real scientific calculations.
+- Keep SPEC and REBUILD_PROMPT consistent when requirements change. Preserve uncertainty labels unless new evidence resolves them.
+
+## Verification commands
+
+Run from the repository root in a Python >=3.11 environment with RDKit and the test dependencies:
+
+```bash
+python -m pip install -e .
+python -m pytest
+python -m compileall -q src tests
+python -c "import molnova; import molnova.cli"
+```
+
+Use a separate small project for authorized external-program smoke tests. Preserve production databases, submitted jobs, and results.

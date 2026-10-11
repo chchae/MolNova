@@ -8,6 +8,7 @@ from molnova import _core as c, database
 from molnova import prime_async as prime
 from molnova.schrodinger_guard import submission_guard, SubmissionBlocked
 from molnova.states import CompoundState as State
+from molnova.stages._logging import format_elapsed
 
 MAX_ACTIVE = 7
 MODE = 'compound_queue_v1'
@@ -51,8 +52,10 @@ print('Prepared single-compound MM-GBSA inputs:', len(seen))
 
 
 def create_queue(args, directory, compound_ids):
+    started_ns = time.time_ns()
     record = {'mode': MODE, 'compound_ids': list(compound_ids),
-              'run_dir': f'queue-{time.time_ns()}', 'prepared': False,
+              'run_dir': f'queue-{started_ns}', 'started_at': started_ns / 1e9,
+              'prepared': False,
               'entries': {str(cid): 'pending' for cid in compound_ids}}
     # Reserve the entire selected set before preparing inputs or launching jobs.
     prime._save(directory, record)
@@ -80,6 +83,11 @@ def other_active_slots(args, directory):
 def poll_queue(iteration, args, directory, record):
     """Check active jobs, commit each result, then immediately refill free slots."""
     directory = Path(directory)
+    if 'started_at' not in record:
+        # Older queues already encode their creation timestamp in the run directory.
+        # Recover it rather than restarting the timer at this worker invocation.
+        record['started_at'] = int(record['run_dir'].removeprefix('queue-')) / 1e9
+        prime._save(directory, record)
     if not record['prepared']:
         prepare_inputs(args, directory, record)
     updated = 0
@@ -185,5 +193,11 @@ def poll_queue(iteration, args, directory, record):
           f'limit={MAX_ACTIVE}, scores updated={updated}.', flush=True)
     if active or pending:
         return None
+    record.setdefault('finished_at', time.time())
+    prime._save(directory, record)
     prime.job_file(directory).replace(directory / f"{record['run_dir']}.completed.json")
+    elapsed = format_elapsed(record['finished_at'] - record['started_at'])
+    failed = sum(state == 'failed' for state in record['entries'].values())
+    print(f'Iteration {iteration}: MM-GBSA queue completed; total elapsed={elapsed} '
+          f'(including waiting/recovery), failed={failed}.', flush=True)
     return updated

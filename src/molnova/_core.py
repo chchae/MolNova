@@ -6,6 +6,7 @@ import sqlite3
 import tomllib
 import tempfile
 import csv
+import json
 import math
 import os
 import random
@@ -591,11 +592,15 @@ FP_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(
 
 
 def run_command(
-    cmd: Iterable[object], cwd: str | Path | None = None
+    cmd: Iterable[object], cwd: str | Path | None = None,
+    *, log_message: str | None = None,
 ) -> None:
     cmd = [str(x) for x in cmd]
     print()
-    print("$", " ".join(cmd))
+    if log_message is None:
+        print("$", " ".join(cmd))
+    else:
+        print(log_message)
     print()
     subprocess.run(cmd, cwd=cwd, check=True)
 
@@ -1788,8 +1793,19 @@ def write_elite_libinvent_training_files(
     elites,
     scaffold_smiles,
     run_dir,
+    *,
+    prior_file=None,
+    remote=None,
 ):
+    from molnova.libinvent_vocabulary import load_prior_vocabulary, unsupported_pair_tokens
+
+    vocabulary = load_prior_vocabulary(prior_file, remote) if prior_file is not None else None
+    if vocabulary is not None:
+        (run_dir / "elite_vocabulary.json").write_text(
+            json.dumps(vocabulary, indent=2) + "\n", encoding="utf-8"
+        )
     usable = []
+    skipped = []
 
     for row in elites:
         if len(row) == 6:
@@ -1826,6 +1842,14 @@ def write_elite_libinvent_training_files(
 
         scaffold, decorators = pair
 
+        if vocabulary is not None:
+            invalid_tokens = unsupported_pair_tokens(scaffold, decorators, vocabulary)
+            if invalid_tokens:
+                tokens = sorted(invalid_tokens)
+                print(f"Skipping TL elite: id={compound_id}, unsupported tokens={tokens}")
+                skipped.append((compound_id, name, json.dumps(tokens), scaffold, decorators))
+                continue
+
         mol = Chem.MolFromSmiles(smiles)
         heavy_atoms = (
             mol.GetNumHeavyAtoms()
@@ -1857,6 +1881,11 @@ def write_elite_libinvent_training_files(
     metadata = run_dir / "elite_selected.tsv"
     train_file = run_dir / "elite_train.smi"
     valid_file = run_dir / "elite_valid.smi"
+
+    with (run_dir / "elite_skipped.tsv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(["id", "name", "unsupported_tokens", "scaffold", "R-groups"])
+        writer.writerows(skipped)
 
     with metadata.open(
         "w",
@@ -3423,6 +3452,7 @@ def merge_best_pose_files(
             *input_files,
         ],
         cwd=cwd,
+        log_message=f"Merge best poses: {len(input_files)} files -> {output_file.name}",
     )
 
     if not output_file.exists():
@@ -4641,6 +4671,7 @@ def run_iteration(
                 elites=elites,
                 scaffold_smiles=args.libinvent_scaffold_smiles,
                 run_dir=reinvent_dir,
+                prior_file=args.libinvent_prior,
             )
 
             if usable_elites >= 2:

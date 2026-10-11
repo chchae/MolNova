@@ -1,14 +1,14 @@
 while true; do 
 	ssh t41 squeue; echo;
-	sqlite3 output/egfr.sqlite  "select *
+	sqlite3 -cmd ".mode box --quote off" output/egfr.sqlite  "select *
 from (
     select iteration,
-           count(*),
-           count(docking_score) as num_dock,
+           count(*) as count,
+           count(docking_score) as n_dock,
            printf('%6.2f', min(docking_score)) as glide,
-           count(gbsa_score) as num_gbsa,
+           count(gbsa_score) as n_gbsa,
            printf('%6.2f', min(gbsa_score)) as gbsa,
-           min(modified_at)
+           strftime('%m-%d %H:%M', MIN(modified_at), '+9 hours') AS modified
     from compound
     group by iteration
     order by iteration desc

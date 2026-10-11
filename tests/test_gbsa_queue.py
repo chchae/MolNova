@@ -73,6 +73,46 @@ def test_refill_one_free_slot_while_six_jobs_still_running(tmp_path, monkeypatch
     assert all(row[2] == -35 for row in database.mmgbsa_submission_rows(args.db_path, range(1, 11)).values())
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_total_elapsed_survives_worker_restart(tmp_path, monkeypatch, capsys, legacy):
+    monkeypatch.setattr(q.time, 'time_ns', lambda: 1_000_000_000_000)
+    monkeypatch.setattr(q.time, 'time', lambda: 1000.0)
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
+    if legacy:
+        del record['started_at']
+        prime._save(root, record)
+    assert q.poll_queue(1, args, root, prime.load_job(root)) is None
+    assert 'total elapsed=' not in capsys.readouterr().out
+    assert prime.load_job(root)['started_at'] == 1000.0
+
+    monkeypatch.setattr(q.time, 'time', lambda: 4661.2)
+    completed.add(1)
+    assert q.poll_queue(1, args, root, prime.load_job(root)) == 1
+    assert 'MM-GBSA queue completed; total elapsed=01:01:01.2' in capsys.readouterr().out
+    saved = json.loads((root / f"{record['run_dir']}.completed.json").read_text())
+    assert saved['started_at'] == 1000.0
+    assert saved['finished_at'] == 4661.2
+    assert launches == [1]
+
+
+def test_total_elapsed_includes_terminal_failures(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(q.time, 'time_ns', lambda: 1_000_000_000_000)
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
+    q.poll_queue(1, args, root, record)
+    capsys.readouterr()
+
+    def failure(command, folder, ids, **kw):
+        prime.job_file(folder).unlink()
+        raise prime.PrimeAtomTypingError(ids[0])
+
+    monkeypatch.setattr(prime, 'submit_or_poll', failure)
+    monkeypatch.setattr(q.time, 'time', lambda: 1012.5)
+    assert q.poll_queue(1, args, root, prime.load_job(root)) == 0
+    output = capsys.readouterr().out
+    assert 'total elapsed=00:00:12.5' in output
+    assert 'failed=1' in output
+
+
 def test_unknown_status_or_launch_holds_slot_without_duplicates(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
     q.poll_queue(1, args, root, record)
