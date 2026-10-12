@@ -1,42 +1,74 @@
+# EGFR: Glide 전체 결과 → Amber 상위 500개 → Prime 상위 200개
+# 로컬 상대 경로는 이 TOML 파일이 있는 폴더를 기준으로 해석합니다.
+# 원격 환경과 작업 폴더 경로는 해당 SSH host의 절대 경로입니다.
+
+# 1. 프로젝트 입력과 출력
+out-dir = "./output"
+reference-pose = "./input/egfr-ligands-docked.maegz"
+reference-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
+dock-grid = "./input/egfr-grid.zip"
+max-iteration = 100
+
+# 2. Schrödinger 공통 실행 host
+# LigPrep/Glide CPU 수는 아래 각 단계에서 지정합니다.
+# Prime은 이 host에서 프로젝트 전체 최대 7개 개별 작업을 실행합니다.
+host = "t41-cpu:128"
+
+# 3. REINVENT / LibInvent 생성과 transfer learning
+sample-size = 3000                 # 한 번의 샘플링 수
+target-count = 1000               # iteration당 신규 화합물 목표 수
+elite-tl-epochs = 3
+gbsa-elite-count = 20              # 직전 iteration의 Prime 점수로 선택할 TL elite 수
+
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
 reinvent-ssh-host = "tensor"
 reinvent-remote-env = "/home1/astrazeneca/REINVENT/env"
 reinvent-remote-work-dir = "/home1/astrazeneca/REINVENT/molnova-runs"
-reference-pose = "./input/egfr-ligands-docked.maegz"
-reference-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
-dock-grid = "./input/egfr-grid.zip"
-out-dir = "./output"
 
-sample-size = 3000
-target-count = 1000
-max-iteration = 100
-host = "t41-cpu:128"
-# Optional LigPrep/Glide slot overrides (otherwise inherit host :128).
+# 4. 합성 가능성 평가 / AiZynthFinder (현재 비활성화)
+# true로 바꾸면 generation 이후, LigPrep 이전에 평가합니다.
+synthetic-feasibility-enabled = false
+aizynth-nproc = 8
+aizynth-ssh-host = "tensor"
+aizynth-remote-env = "/home1/astrazeneca/AiZynthFinder/env"
+aizynth-remote-work-dir = "/home1/astrazeneca/AiZynthFinder/molnova-runs"
+aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
+
+# 5. LigPrep
 ligprep-cpus = 64
-glide-cpus = 64
-# MM-GBSA runs up to 7 single-compound jobs with -HOST t41-cpu -NJOBS 1.
-
-tail-timeout = 300
-glide-job-timeout = 1800 # Stop each Glide group after 30 minutes; 0 disables.
-
-elite-tl-epochs = 3
-gbsa-input-count = 200
-gbsa-elite-count = 20
-gbsa-license-retry-seconds = 300
-gbsa-license-retries = 3
-
 ligprep-ph = 7.4
 ligprep-pht = 1.0
 ligprep-max-states = 2
 ligprep-max-stereo = 1
 
+# 6. Glide constrained docking
+glide-cpus = 64
+tail-timeout = 300                # worker 대기 제한(초); native job은 취소하지 않음
+glide-job-timeout = 1800          # 그룹별 native job 제한(초); 0이면 비활성화
+
+# 7. AmberTools GBSA screening
+# 전체 docking pose를 계산하고 점수가 낮은 순으로 500개를 선별합니다.
+# 결과: output/iterN/amber_gbsa/, DB: amber_gbsa_score
+amber-gbsa-enabled = true
+amber-cpus = 128                   # 동시 실행할 단일 코어 계산 수
+amber-keep-count = 500
+amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
+amber-charge-method = "bcc"        # AM1-BCC; 지원하는 다른 값은 "abcg2"
+
+amber-ssh-host = "tensor"
+amber-conda-init = "/home1/chchae/anaconda3/etc/profile.d/conda.sh"
+amber-remote-env = "/home1/amber26/envs/AmberTools26"
+amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
+amber-ssh-config = "/home1/chchae/.ssh/config" # 로컬 SSH 설정 파일
+
+# 8. Prime MM-GBSA 정밀 평가
+# Amber shortlist 중 점수가 낮은 200개를 계산합니다.
+# 결과: output/iterN/mmgbsa/, DB: gbsa_score
+# iteration 0은 Amber 선별 없이 미평가 reference 전체를 Prime으로 계산합니다.
+gbsa-input-count = 200
+gbsa-license-retry-seconds = 300
+gbsa-license-retries = 3
+
+# 9. FEP 후보 export / 결과 import (현재 비활성화)
 fep-enabled = false
 fep-input-count = 10
-
-# Enabled by default; policy-model and stock files are required.
-synthetic-feasibility-enabled = false
-aizynth-nproc = 8
-aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
-aizynth-ssh-host = "tensor"
-aizynth-remote-env = "/home1/astrazeneca/AiZynthFinder/env"
-aizynth-remote-work-dir = "/home1/astrazeneca/AiZynthFinder/molnova-runs"

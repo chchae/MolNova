@@ -94,7 +94,7 @@ SQLite is the workflow source of truth.
 
 The driver uses one thread to supervise independent stage subprocesses in order:
 
-generate → synthetic (if enabled) → ligprep → glide → mmgbsa → fep export (if enabled)
+generate → synthetic (if enabled) → ligprep → glide → amber-gbsa (if enabled) → mmgbsa → fep export (if enabled)
 
 Only one stage worker subprocess runs at a time. The driver selects an iteration
 once (explicit `--iteration N`, otherwise oldest unfinished or next new) and
@@ -358,7 +358,8 @@ A later Glide worker invocation should recover completed outputs.
 
 ## 15. MM-GBSA
 
-MM-GBSA works on the final docking top-N after the entire iteration finishes docking.
+Prime MM-GBSA works on the final top-N after the entire iteration finishes docking
+and enabled Amber screening. Rank by Amber score when enabled, docking otherwise.
 
 Typical configuration:
 
@@ -369,7 +370,7 @@ The worker should:
 
 1. wait for `target-count` generated compounds and no upstream states
    (`generated`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`),
-2. rank final docking scores ascending, breaking ties by compound ID,
+2. rank final Amber scores when enabled (docking otherwise), using stable ties,
 3. take the first `gbsa-input-count` compounds, including already scored compounds,
 4. atomically claim only eligible candidates without `gbsa_score`,
 5. calculate those and persist `gbsa_score`.
@@ -387,7 +388,7 @@ Lower GBSA score is considered better for ranking.
 
 Do not generate N+1 until generation and LigPrep/Glide in iteration N
 have finished, no compound remains `gbsa_running`, and every compound in
-the final docking top-N has a GBSA score or a terminal failure. Retryable
+the final selected top-N has a Prime GBSA score or a terminal failure. Retryable
 failures and missing scores must finish before advancing. Docked compounds
 outside the top-N do not require MM-GBSA.
 
@@ -631,3 +632,17 @@ retains the queue and committed scores for retry without calculation resubmissio
 Missing successful native output is an error, not a reason to use docking/input
 coordinates. Legacy completed batches copy their native output atomically to the
 same final filename. This postprocessing does not launch new calculations.
+
+## AmberTools prescreen before Prime
+
+The 2026-10-12 user change adds optional Amber screening after completed Glide
+and before Prime. See SPEC section 15 for confirmed scope and scientific choices.
+When enabled: score all docked poses on tensor, export Amber top 500, and claim
+Prime top 200 by Amber score. Store `amber_gbsa_score` separately; keep Prime
+`gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/mmgbsa/` intact. The example
+EGFR config enables it; default omission preserves Prime-only compatibility.
+Iteration 0 remains Prime-only. Existing Prime submissions are recovered first.
+Maintain inherited remote locks, durable submission identity and source fingerprints;
+never reset uncertain remote work or promote cached output into completion.
+The synthetic real-calculator smoke test is not validation of target ranking or
+128-core production throughput.

@@ -227,30 +227,163 @@ def reset_unsubmitted_mmgbsa(path, iteration, protected_ids=()):
         return ids
 
 
-def _mmgbsa_candidates(conn, iteration, count, target_count):
+def amber_keep_count(args):
+    return getattr(args, 'amber_keep_count', 500) if getattr(args, 'amber_gbsa_enabled', False) else None
+
+
+def _amber_rows(conn, iteration):
+    return conn.execute(
+        'SELECT id,name,state,docking_score,amber_gbsa_score,gbsa_score,fep_score,failed_stage '
+        'FROM compound WHERE iteration=? AND docking_score IS NOT NULL ORDER BY id',
+        (iteration,),
+    ).fetchall()
+
+
+def _amber_completion_reason(conn, iteration, target_count):
+    reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count)
+    if reason:
+        return reason
+    rows = _amber_rows(conn, iteration)
+    pending = sum(
+        state == State.AMBER_RUNNING or
+        (state != State.FAILED and failed_stage != 'amber_gbsa' and (score is None or not math.isfinite(score)))
+        for _, _, state, _, score, _, _, failed_stage in rows
+    )
+    return f'{pending} compounds await Amber GBSA screening' if pending else None
+
+
+def amber_completion_reason(path, iteration, target_count):
+    with connect(path) as conn:
+        return _amber_completion_reason(conn, iteration, target_count)
+
+
+def _prime_ranked_rows(conn, iteration, rows, amber_keep_count):
+    if amber_keep_count is None or iteration == 0:
+        return sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
+    scores = {r[0]: r[4] for r in _amber_rows(conn, iteration)
+              if r[4] is not None and math.isfinite(r[4])}
+    return sorted((r for r in rows if r[0] in scores),
+                  key=lambda r: (scores[r[0]], r[2], r[0]))[:amber_keep_count]
+
+
+def prime_selection_rows(path, iteration, count, amber_keep_count=None):
+    with connect(path) as conn:
+        ranked = _prime_ranked_rows(conn, iteration, _iteration_rows(conn, iteration), amber_keep_count)
+        names = dict(conn.execute('SELECT id,name FROM compound WHERE iteration=?', (iteration,)))
+        return [(r[0], names[r[0]], r[2]) for r in ranked[:count]]
+
+
+def claim_amber_candidates(path, iteration, target_count):
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if _docking_completion_reason(_iteration_rows(conn, iteration), target_count):
+            return []
+        rows = [r for r in _amber_rows(conn, iteration)
+                if r[2] in (State.DOCKED, State.GBSA_DONE, State.FEP_DONE) and r[4] is None
+                and r[7] != 'amber_gbsa']
+        for cid, *_ in rows:
+            conn.execute('UPDATE compound SET state=?,modified_at=CURRENT_TIMESTAMP WHERE id=?',
+                         (State.AMBER_RUNNING, cid))
+        return [r[0] for r in rows]
+
+
+def reset_unsubmitted_amber(path, iteration):
+    """Only call with the Amber stage lock and no durable local submission."""
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'UPDATE compound SET state=CASE WHEN fep_score IS NOT NULL THEN ? '
+            'WHEN gbsa_score IS NOT NULL THEN ? ELSE ? END,modified_at=CURRENT_TIMESTAMP '
+            'WHERE iteration=? AND state=?',
+            (State.FEP_DONE, State.GBSA_DONE, State.DOCKED, iteration, State.AMBER_RUNNING))
+
+
+def amber_rankings(path, iteration):
+    with connect(path) as conn:
+        return [r for r in conn.execute(
+            'SELECT id,name,docking_score,amber_gbsa_score,gbsa_score FROM compound '
+            'WHERE iteration=? AND docking_score IS NOT NULL AND amber_gbsa_score IS NOT NULL '
+            'ORDER BY amber_gbsa_score,docking_score,id', (iteration,)) if math.isfinite(r[3])]
+
+
+def amber_identity_rows(path, iteration, ids):
+    wanted = set(ids)
+    with connect(path) as conn:
+        return [tuple(r) for r in conn.execute(
+            'SELECT id,name,smiles FROM compound WHERE iteration=? ORDER BY id', (iteration,)) if r[0] in wanted]
+
+
+def store_amber_results(path, iteration, results, allowed_ids):
+    """Validate the whole batch before committing; never overwrite Prime/FEP scores."""
+    allowed = set(allowed_ids)
+    if len({r['id'] for r in results}) != len(results):
+        raise ValueError('Duplicate Amber result IDs')
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        updated = 0
+        for result in results:
+            cid = result['id']
+            if isinstance(cid, bool) or not isinstance(cid, int) or cid < 1:
+                raise ValueError(f'Invalid Amber compound ID: {cid}')
+            row = conn.execute(
+                'SELECT amber_gbsa_score,state,gbsa_score,fep_score FROM compound WHERE id=? AND iteration=?',
+                (cid, iteration),
+            ).fetchone()
+            if cid not in allowed or row is None:
+                raise ValueError(f'Unsubmitted Amber compound: {cid}')
+            score = result.get('score')
+            error = result.get('error')
+            if ((score is None) == (error is None)
+                    or (score is not None and (isinstance(score, bool)
+                        or not isinstance(score, (float, int)) or not math.isfinite(score)))
+                    or (error is not None and (not isinstance(error, str) or not error.strip()))):
+                raise ValueError(f'Invalid Amber result: {cid}')
+            if row[0] is not None and score is not None and row[0] != score:
+                raise ValueError(f'Conflicting Amber score: {cid}')
+            if row[0] is not None:
+                continue
+            state = State.FEP_DONE if row[3] is not None else State.GBSA_DONE if row[2] is not None else State.DOCKED
+            if score is not None:
+                updated += conn.execute(
+                    'UPDATE compound SET amber_gbsa_score=?,state=CASE WHEN state=? THEN ? ELSE state END,'
+                    'modified_at=CURRENT_TIMESTAMP WHERE id=?',
+                    (score, State.AMBER_RUNNING, state, cid),
+                ).rowcount
+            else:
+                # Terminal parameterization/calculation failures cannot supply a ranking score.
+                conn.execute('UPDATE compound SET state=?,failed_stage=?,failure_message=?,'
+                             'modified_at=CURRENT_TIMESTAMP WHERE id=? AND state=?',
+                             (state if row[2] is not None else State.FAILED, 'amber_gbsa', error,
+                              cid, State.AMBER_RUNNING))
+        return updated
+
+
+def _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count=None):
     rows = _iteration_rows(conn, iteration)
     if iteration == 0:
         return [cid for cid, state, _, score in rows
                 if score is None and state in (State.REFERENCE, State.DOCKED)]
     if iteration < 0 or _docking_completion_reason(rows, target_count) is not None:
         return []
-    docked = sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
+    if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count):
+        return []
+    docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
     return [cid for cid, state, _, score in docked[:count]
             if score is None and state == State.DOCKED]
 
 
 def mmgbsa_candidates(path: str | Path, iteration: int, count: int,
-                      target_count: int = 1) -> list[int]:
+                      target_count: int = 1, amber_keep_count=None) -> list[int]:
     """Select unscored final top-N only after all upstream work has finished."""
     with connect(path) as conn:
-        return _mmgbsa_candidates(conn, iteration, count, target_count)
+        return _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count)
 
 
-def claim_mmgbsa_candidates(path, iteration, count, target_count):
+def claim_mmgbsa_candidates(path, iteration, count, target_count, amber_keep_count=None):
     """Check completion, rank and claim in one SQLite write transaction."""
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        ids = _mmgbsa_candidates(conn, iteration, count, target_count)
+        ids = _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count)
         for start in range(0, len(ids), 500):
             batch = ids[start:start + 500]
             marks = ",".join("?" for _ in batch)
@@ -262,7 +395,7 @@ def claim_mmgbsa_candidates(path, iteration, count, target_count):
         return ids
 
 
-def iteration_completion_reason(path, iteration, target_count, input_count, elite_count):
+def iteration_completion_reason(path, iteration, target_count, input_count, elite_count, amber_keep_count=None):
     """Return a blocking reason until docking and all selected GBSA work finish.
 
     Terminal failures count as processed, but cannot supply an elite. Docked
@@ -271,19 +404,24 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
     """
     with connect(path) as conn:
         rows = _iteration_rows(conn, iteration)
+        if amber_keep_count is not None:
+            reason = _amber_completion_reason(conn, iteration, target_count)
+            if reason:
+                return reason
+        docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
     reason = _docking_completion_reason(rows, target_count)
     if reason is not None:
         return reason
     running = sum(state == State.GBSA_RUNNING for _, state, _, _ in rows)
     if running:
         return f"MM-GBSA still running for {running} compounds"
-    docked = sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
     pending = sum(
         state != State.FAILED and (score is None or not math.isfinite(score))
         for _, state, _, score in docked[:input_count]
     )
     if pending:
-        return f"final docking top-{input_count} has {pending} unfinished MM-GBSA results"
+        ranking = 'Amber' if amber_keep_count is not None else 'docking'
+        return f"final {ranking} top-{input_count} has {pending} unfinished MM-GBSA results"
     valid = sum(score is not None and math.isfinite(score) for _, _, _, score in rows)
     if valid < elite_count:
         return f"only {valid}/{elite_count} valid MM-GBSA results for elite selection"
@@ -388,13 +526,17 @@ def has_running_mmgbsa(path, iteration):
 
 
 def stage_completion_reason(path, iteration, stage, target_count, input_count,
-                            synthetic_enabled=False):
+                            synthetic_enabled=False, amber_keep_count=None):
     """Driver readiness from persisted state, never worker exit status alone."""
+    if stage == 'mmgbsa-recovery':
+        return 'Existing Prime claims still running' if has_running_mmgbsa(path, iteration) else None
+    if stage == 'amber-gbsa':
+        return amber_completion_reason(path, iteration, target_count)
     if stage == 'mmgbsa' and iteration == 0:
         return reference_mmgbsa_completion_reason(path)
     if stage == 'mmgbsa':
         # Ending a single iteration does not require enough elites for N+1.
-        return iteration_completion_reason(path, iteration, target_count, input_count, 0)
+        return iteration_completion_reason(path, iteration, target_count, input_count, 0, amber_keep_count)
     if stage == 'fep':
         # Current FEP stage exports candidates; no automated calculation exists.
         return None

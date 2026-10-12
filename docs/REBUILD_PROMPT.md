@@ -24,7 +24,7 @@ The following distinction applies throughout:
 - **Documented baseline:** behavior specified by the current handoff and corroborated by code/tests, described in sections 2–12. Preserve it for compatibility, but its historical user adoption is not independently verified. An implementation detail is not automatically a scientific requirement.
 - **Unresolved or proposed:** listed in section 14. Do not treat these as approved additions or silently resolve conflicts.
 
-Explicit later user decisions supersede this document. When evidence conflicts and no later user decision is available, record the conflict and preserve the documented baseline while seeking clarification for work that depends on it. This document does not authorize new production calculations.
+The Amber screening change in section 15 supersedes docking-based Prime selection when enabled; other projects retain the documented Prime-only baseline. Explicit later user decisions supersede this document. When evidence conflicts and no later user decision is available, record the conflict and preserve the documented baseline while seeking clarification for work that depends on it. This document does not authorize new production calculations.
 
 ## 1. Confirmed purpose and constraints
 
@@ -38,7 +38,7 @@ Iteration 1 samples the original LibInvent prior. Later iterations perform short
 
 Select the reference pose with highest Morgan radius-2/2048-bit Tanimoto among MCS-compatible iteration-0 references. MCS determines the constrained core; similarity determines the reference pose. Across LigPrep states, retain the minimum Glide score and its corresponding pose. Preserve validated scientific behavior and never invent external program options.
 
-Persist completed Glide reference groups immediately. MM-GBSA waits for target-count and all LigPrep/Glide processing, including retryable upstream work. Select the final docking top-N and atomically check readiness/rank/claim. Calculate only compounds without existing GBSA results. Later LibInvent elite selection uses GBSA results; sufficient valid results are required before generating the next iteration.
+Persist completed Glide reference groups immediately. MM-GBSA waits for target-count and all LigPrep/Glide processing, including retryable upstream work. Select the final docking top-N (or Amber-ranked top-N when section 15 screening is enabled) and atomically check readiness/rank/claim. Calculate only compounds without existing GBSA results. Later LibInvent elite selection uses GBSA results; sufficient valid results are required before generating the next iteration.
 
 LigPrep defaults: pH 7.4, tolerance 1.0, Epik maximum states 2, maximum stereoisomers 1. Do not pass `-r 1` to Schrödinger 2026-3; it is interpreted as `-retain` in this environment.
 
@@ -85,6 +85,16 @@ glide-cpus = 64
 tail-timeout = 300
 glide-job-timeout = 1800
 elite-tl-epochs = 3
+amber-gbsa-enabled = true
+amber-cpus = 128
+amber-keep-count = 500
+amber-ssh-host = "tensor"
+amber-remote-env = "/home1/amber26/envs/AmberTools26"
+amber-conda-init = "/home1/chchae/anaconda3/etc/profile.d/conda.sh"
+amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
+amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
+amber-charge-method = "bcc"
+amber-ssh-config = "/home1/chchae/.ssh/config"
 gbsa-input-count = 200
 gbsa-elite-count = 20
 gbsa-license-retry-seconds = 300
@@ -124,9 +134,9 @@ Synthetic assessment requires `aizynth-config` when enabled. CPU overrides and `
 
 Connection settings: `journal_mode=WAL`, `busy_timeout=30000`, `foreign_keys=ON`.
 
-`compound`: `id INTEGER PRIMARY KEY AUTOINCREMENT`; unique non-null `name`; non-null `smiles`; integer `iteration` default 0; nullable real `dG_exp`, `docking_score`, `gbsa_score`, `fep_score`, `sa_score`, `similarity`; nullable `synthetic_feasibility` restricted to 0/1; non-null `state`; nullable `failed_stage`, `failure_message`; nullable `similar_to` referencing `compound(id)`; creation/modification timestamps. Index iteration, state, and similar_to. The application ensures reference selection points to iteration 0.
+`compound`: `id INTEGER PRIMARY KEY AUTOINCREMENT`; unique non-null `name`; non-null `smiles`; integer `iteration` default 0; nullable real `dG_exp`, `docking_score`, `gbsa_score`, `amber_gbsa_score`, `fep_score`, `sa_score`, `similarity`; nullable `synthetic_feasibility` restricted to 0/1; non-null `state`; nullable `failed_stage`, `failure_message`; nullable `similar_to` referencing `compound(id)`; creation/modification timestamps. Index iteration, state, and similar_to. The application ensures reference selection points to iteration 0.
 
-States: `reference`, `generated`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `gbsa_running`, `gbsa_done`, `fep_running`, `fep_done`, `failed`.
+States: `reference`, `generated`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `amber_running`, `gbsa_running`, `gbsa_done`, `fep_running`, `fep_done`, `failed`.
 
 Generated compounds start at `generated`; references start at `reference`, not through generation. Synthetic evaluation temporarily uses `synthetic_running`, normally returning to `generated` with assessment fields populated. Reference GBSA can use `gbsa_running`/`gbsa_done`. Export alone does not mean FEP completion. Permanent GBSA failures use `failed_stage="gbsa"`; command name `mmgbsa` is distinct.
 
@@ -136,7 +146,7 @@ Use write transactions such as `BEGIN IMMEDIATE` for claims. Schema upgrades pre
 
 Current handoff, driver, and tests specify a single-thread, single-iteration supervisor. Select the iteration once and pass it explicitly to every worker. One stage subprocess runs at a time:
 
-`generate → synthetic (enabled) → ligprep → glide → mmgbsa → fep export (enabled)`.
+`generate → synthetic (enabled) → ligprep → glide → amber-gbsa (enabled) → mmgbsa → fep export (enabled)`.
 
 Exit after that iteration; do not automatically advance N+1. Default selection prioritizes missing/recoverable iteration-0 GBSA, otherwise oldest unfinished generated iteration, otherwise next new iteration. Explicit later iterations first process pending reference GBSA. Iteration 0 runs MM-GBSA only.
 
@@ -144,7 +154,7 @@ Driver/stage locks prevent duplicate local workers. Exit status 0 is insufficien
 
 LigPrep requires target-count, finished generation worker, and enabled synthetic assessment. Glide waits for all LigPrep work, including retryable work, and upstream worker exit. MM-GBSA requires finished upstream processing. Terminal failures count as processed; retryable work and Glide tail timeouts do not.
 
-N+1 generation requires all preceding iterations to satisfy completion: target-count; no unfinished upstream work; no `gbsa_running`; each final docking top-N compound has a finite GBSA score or terminal failure; at least `gbsa-elite-count` finite GBSA results. Explicit generation cannot bypass the gate. Top-N-excluded compounds need no GBSA. Ending an individual driver iteration does not itself require enough elites for a next generation.
+N+1 generation requires all preceding iterations to satisfy completion: target-count; no unfinished upstream work; no `gbsa_running`; each final selected top-N compound (Amber-ranked when enabled) has a finite Prime GBSA score or terminal failure; at least `gbsa-elite-count` finite GBSA results. Explicit generation cannot bypass the gate. Top-N-excluded compounds need no GBSA. Ending an individual driver iteration does not itself require enough elites for a next generation.
 
 ## 6. References, MCS, scaffold, and generation — documented baseline
 
@@ -195,7 +205,7 @@ Completion fraction defaults to 0.95. Tail timeout 300 seconds limits worker wai
 
 ## 9. MM-GBSA — documented baseline
 
-For generated iterations, check target-count and absence of all upstream states; rank final docking scores ascending, ties by ID; select top `gbsa-input-count`, including already scored rows; atomically claim only unscored `docked` rows. Never claim `gbsa_running` as new work. Preserve top-N ranking positions of existing scores.
+For generated iterations, check target-count and absence of all upstream states; rank by final Amber scores when section 15 is enabled, otherwise final docking scores, with stable ties; select top `gbsa-input-count`, including already scored rows; atomically claim only unscored `docked` rows. Never claim `gbsa_running` as new work. Preserve top-N ranking positions of existing scores.
 
 Receptor comes from `mmgbsa-receptor` when configured, otherwise from the grid archive. Input is receptor-first followed by corresponding best ligand poses. Preserve structure titles, properties, and coordinates when splitting.
 
@@ -319,7 +329,7 @@ Completion means required behavior passes relevant automated checks, scientific 
 
 ### Observed differences and incomplete engineering requirements
 
-- README still describes EGFR top-100; current project TOML is top-200. Loader omission default is 20. These are distinct, and no silent numeric reconciliation is authorized.
+- Earlier README top-100 wording has been updated by the explicit Amber prescreen change: the EGFR example uses Amber top-500 then Prime top-200. Loader omission default for Prime-only projects remains 20.
 - Old architecture concurrency text and state-chain diagrams omit later supervisor/synthetic/reference behavior; they are not sufficient specifications.
 - SQL/configuration logic and raw state strings still exist in `_core.py` and some stages despite centralization guidance. Full centralization and enum-only use are incomplete; preserve behavior while addressing relevant work, not through a wholesale rewrite.
 - Version pinning and an executable end-to-end scientific validation record were not established by this review. Tests were inspected, not run; compliance of all code paths is not proven.
@@ -335,3 +345,110 @@ Completion means required behavior passes relevant automated checks, scientific 
 - If enabling synthetic evaluation: AiZynthFinder YAML, compatible models/stock and runtime, representative JSON/JSON.gz results.
 - If resuming/migrating: safe DB backup and representative saved manifests/native logs/job-status responses, plus explicit treatment of live submissions.
 - If using FEP score import: eligible ID/score TSV and externally defined score meaning. Automated FEP requires a separate approved protocol.
+
+## 15. AmberTools prescreen before Prime — 2026-10-12 user change
+
+**Confirmed user change:** use AmberTools on tensor with a 128-core CPU to screen
+Glide results for approximately 1,000 compounds, retain approximately 500, then
+calculate Prime MM-GBSA for the 200 lowest Amber scores. Add a separate
+`compound.amber_gbsa_score REAL` column; preserve Prime `gbsa_score` and all
+existing results/jobs. Use the prepared receptor at
+`output/iter0/mmgbsa/receptor.maegz` and each iteration's
+`iterN/glide/best_poses.maegz`. Keep `CMPID_<id>` identity and use the separate
+`iterN/amber_gbsa/` directory, leaving Prime `iterN/mmgbsa/` intact. Iteration 0
+continues to use Prime directly.
+
+**Implementation choices pending scientific evaluation:** score all finite-score
+docked poses, rank by finite Amber score ascending, then docking score and ID,
+export top 500 and send its top 200 to Prime. The 500-compound reduction is a
+ranked shortlist, not a separate prefilter before Amber. Smaller successful sets
+produce smaller shortlists; terminal Amber failures are diagnosed and excluded,
+never given invented scores. The user did not specify a separate criterion for
+reducing 1,000 to 500. No speedup factor or target-level validation is established.
+
+The fast protocol uses one docking snapshot, ff14SB protein parameters,
+GAFF2 ligand parameters, AM1-BCC charges (`amber-charge-method="bcc"`, optional
+`"abcg2"`), igb=5, mbondi2 radii and saltcon=0.15 M. No MD, complex minimization
+or entropy estimate is performed. AM1-BCC parameterization can relax coordinates;
+restore the original atom-matched Glide coordinates before scoring and verify
+LEaP preserves ligand identity/positions. Obtain integer net charge from the
+actual docked LigPrep state rather than original generation SMILES. Translate
+prepared histidine protonation and explicit cysteine disulfide/thiolate states
+into Amber names/bonds. Unsupported receptor residues/cofactors or receptor
+preparation errors stop the entire batch; do not silently remove them. Amber and
+Prime numerical scores represent different protocols and are not interchangeable.
+
+Configuration is flat TOML. `amber-gbsa-enabled` defaults false for compatibility;
+`examples/egfr.toml` enables it. `amber-cpus=128`, `amber-keep-count=500`;
+keep-count must be >= `gbsa-input-count`. CPU/count settings are positive integers
+and reject bool. SSH host defaults tensor, environment defaults
+`/home1/amber26/envs/AmberTools26`, conda initialization defaults
+`/home1/chchae/anaconda3/etc/profile.d/conda.sh`, and remote work defaults
+`/home1/chchae/molnova-amber-runs`. The initialization script was located on tensor
+and these commands were checked in that runtime:
+
+```bash
+source /home1/chchae/anaconda3/etc/profile.d/conda.sh
+conda activate /home1/amber26/envs/AmberTools26
+source "$CONDA_PREFIX/amber.sh"
+```
+
+`amber-receptor` defaults to `<out-dir>/iter0/mmgbsa/receptor.maegz` and resolves
+relative to TOML; SSH environment/work/init paths remain remote absolute paths.
+Optional `amber-ssh-config` is a local SSH configuration file; normal host-key
+checks and BatchMode remain enabled. Each remote invocation uses a unique run
+folder. Up to 128 independent single-core calculations run within the Amber
+worker, with OMP/OpenBLAS/MKL/NumExpr threads set to one. Another saved iteration
+in the same project blocks a new batch; this is not a cluster resource allocator
+or a host-wide limit across independent projects.
+
+SQLite atomically claims eligible unscored compounds into `amber_running` only
+after target-count and all upstream work finish. Successful results restore
+`docked` or the prior score-bearing GBSA/FEP state; preserve existing scientific
+scores. A native ligand failure records `failed_stage="amber_gbsa"` and its
+message, marking unscored compounds failed while preserving completed Prime/FEP
+state. Commit successful results on each poll, validating all IDs and finite
+scores atomically. Existing results are idempotent; conflicting reimports fail.
+Save `amber_job.json` before transport or launch. Remote inherited file locks
+cover the coordinator and native children: reconnecting to the same run cannot
+duplicate a still-running calculation, even after the coordinator dies. Unknown
+SSH status preserves claims/submissions. Completion requires all submitted
+results, a terminal remote marker, and a released lock. Archive the local record
+only after result commits and artifact downloads. Changing compound identity,
+receptor/pose fingerprints or saved runtime settings blocks recovery and retains
+work for explicit reconciliation. Cached native output alone is never completion.
+
+Before enabling Amber on an iteration with existing Prime submissions, the
+supervisor recovers those exact jobs in a preliminary Prime recovery stage.
+Standalone Amber waits for them, while standalone Prime can recover saved work
+before the Amber gate; new Prime submissions wait for all Amber results and its
+remote record retirement. Prime ranking and claiming, supervisor completion,
+and next-generation eligibility use the same Amber-ranked top-N. Existing Prime
+scores retain their positions in that ranking. Transfer-learning elites remain
+finite Prime results from exactly the preceding iteration.
+
+Commands:
+
+```bash
+molnova run egfr.toml --iteration 1
+molnova amber-gbsa egfr.toml --iteration 1
+molnova mmgbsa egfr.toml --iteration 1
+```
+
+Standalone Amber performs one submission/recovery pass; the supervisor polls it.
+Local artifacts: run input/protocol manifest, receptor PDB and ligand MOL2 files,
+per-compound native calculation logs and `FINAL_RESULTS_MMPBSA.dat`, remote
+snapshots, completed records, `amber_scores.tsv`, `amber_top.tsv`, and
+`prime_candidates.tsv`. TSVs include both DB names and CMPID titles. Full Amber
+topologies/intermediates remain in the recorded remote run folder. `status`
+reports Amber scored counts and minimum separately from Prime.
+
+Verification: regression tests cover non-destructive migrations, disjoint claims,
+1,000→500→200 ranking, scored positions/ties, atomic result validation, recovery,
+native lock inheritance, state/score preservation and standalone stage gates.
+An isolated synthetic ACE–ALA–NME/ethanol smoke test exercised real Schrödinger
+MAEGZ export, remote environment activation, Antechamber, parmchk2, LEaP,
+MMPBSA.py, result download and SQLite persistence. This proves adapter operation
+on that small fixture; it does not validate EGFR scores, 128-core throughput,
+complex cofactors or production ranking quality. Production jobs/DBs were not run
+or modified during verification.

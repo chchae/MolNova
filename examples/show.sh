@@ -1,5 +1,7 @@
 num_limit=10;
 while true; do 
+        echo "--------------------------------------------------------------"
+        date;
 	ssh -n t41 squeue; echo;
 	sqlite3 -cmd ".mode box --quote off" output/egfr.sqlite  "select *
 from (
@@ -16,8 +18,6 @@ from (
     limit $num_limit
 )
 order by iteration;"; 
-        date;
-        echo "--------------------------------------------------------------"
 
         if IFS= read -r -s -n 1 -t 1 key; then
             case "$key" in
@@ -32,6 +32,8 @@ order by iteration;";
             num_limit=10;
 	    sleep 5s;
         fi
+
+        echo; echo;
 
 done 
 

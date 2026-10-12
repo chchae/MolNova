@@ -62,9 +62,16 @@ def _run_stage(args, requested_iteration):
         # Also check earlier iterations when recovering a DB created by the old
         # early-generation policy. Explicit --iteration cannot bypass this gate.
         for completed_iteration in range(1, iteration):
+            if database.amber_keep_count(args) is not None:
+                from molnova.amber_gbsa import load_job as load_amber
+                if (load_amber(args.output / f'iter{completed_iteration}/amber_gbsa') is not None
+                        or database.stage_is_running(args.db_path, 'amber_gbsa')):
+                    print(f'Iteration {iteration} not ready: preceding Amber work still requires recovery.')
+                    return
             reason = database.iteration_completion_reason(
                 args.db_path, completed_iteration, args.target_count,
                 args.gbsa_input_count, args.gbsa_elite_count,
+                database.amber_keep_count(args),
             )
             if reason is not None:
                 print(f"Iteration {iteration} not ready: iteration "

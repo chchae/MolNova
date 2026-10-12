@@ -151,8 +151,9 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings
     return {
+        **amber_settings(config, base),
         **gbsa_license_retry_settings(config),
         **schrodinger_cpu_settings(config),
         "toml_file": filename,
@@ -209,6 +210,7 @@ def create_sqlite_schema(conn: sqlite3.Connection) -> None:
             dG_exp REAL,
             docking_score REAL,
             gbsa_score REAL,
+            amber_gbsa_score REAL,
             fep_score REAL,
             sa_score REAL,
             synthetic_feasibility INTEGER
@@ -249,6 +251,7 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
     state_added = "state" not in cols
 
     additions = {
+        "amber_gbsa_score": "REAL",
         "gbsa_score": "REAL",
         "fep_score": "REAL",
         "sa_score": "REAL",
@@ -4230,10 +4233,9 @@ def run_iteration_mmgbsa(
                 'SELECT id,name,docking_score FROM compound WHERE iteration=0 ORDER BY id'
             ).fetchall()
     else:
-        top_rows = select_iteration_docking_top(
-            iteration=iteration,
-            limit_count=args.gbsa_input_count,
-            db_path=args.db_path,
+        from molnova import database
+        top_rows = database.prime_selection_rows(
+            args.db_path, iteration, args.gbsa_input_count, database.amber_keep_count(args),
         )
 
     if compound_ids is not None:

@@ -6,6 +6,43 @@ from typing import Any
 from molnova import _core
 
 
+def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
+    enabled = config.get('amber-gbsa-enabled', False)
+    if not isinstance(enabled, bool):
+        raise ValueError('amber-gbsa-enabled must be a boolean')
+    settings = {'amber_gbsa_enabled': enabled}
+    for key, default in [('amber-cpus', 128), ('amber-keep-count', 500)]:
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f'{key} must be a positive integer')
+        settings[key.replace('-', '_')] = value
+    if enabled and settings['amber_keep_count'] < int(config.get('gbsa-input-count', 20)):
+        raise ValueError('amber-keep-count must be >= gbsa-input-count')
+    host = str(config.get('amber-ssh-host', 'tensor'))
+    if not host or host.startswith('-') or any(c.isspace() for c in host):
+        raise ValueError('Invalid amber-ssh-host')
+    settings['amber_remote'] = {'host': host}
+    for key, default in [
+        ('amber-remote-env', '/home1/amber26/envs/AmberTools26'),
+        ('amber-conda-init', '/home1/chchae/anaconda3/etc/profile.d/conda.sh'),
+        ('amber-remote-work-dir', '/home1/chchae/molnova-amber-runs'),
+    ]:
+        value = str(config.get(key, default))
+        if not value.startswith('/') or '\n' in value:
+            raise ValueError(f'{key} must be an absolute remote path')
+        settings['amber_remote'][key.removeprefix('amber-').replace('-', '_')] = value
+    ssh_config = config.get('amber-ssh-config')
+    if ssh_config:
+        settings['amber_remote']['ssh_config'] = str((base / Path(ssh_config).expanduser()).resolve())
+    receptor = Path(config.get('amber-receptor', Path(config['out-dir']) / 'iter0/mmgbsa/receptor.maegz')).expanduser()
+    settings['amber_receptor'] = (base / receptor).resolve()
+    charge = config.get('amber-charge-method', 'bcc')
+    if charge not in ('bcc', 'abcg2'):
+        raise ValueError('amber-charge-method must be bcc or abcg2')
+    settings['amber_charge_method'] = charge
+    return settings
+
+
 def glide_job_timeout(config: dict[str, Any]) -> int:
     value = config.get('glide-job-timeout', 1800)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:

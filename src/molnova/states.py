@@ -9,6 +9,7 @@ class CompoundState(StrEnum):
     LIGPREPPED = "ligprepped"
     GLIDE_RUNNING = "glide_running"
     DOCKED = "docked"
+    AMBER_RUNNING = "amber_running"
     GBSA_RUNNING = "gbsa_running"
     GBSA_DONE = "gbsa_done"
     FEP_RUNNING = "fep_running"

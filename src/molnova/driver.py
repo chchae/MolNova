@@ -21,11 +21,13 @@ BASE_STAGES = [
 ]
 
 
-def build_stages(synthetic_feasibility_enabled, fep_enabled):
+def build_stages(synthetic_feasibility_enabled, fep_enabled, amber_gbsa_enabled=False):
     stages = [BASE_STAGES[0]]
     if synthetic_feasibility_enabled:
         stages.append(("synthetic", "molnova.stages.synthetic_feasibility"))
     stages.extend(BASE_STAGES[1:])
+    if amber_gbsa_enabled:
+        stages.insert(stages.index(BASE_STAGES[-1]), ('amber-gbsa', 'molnova.stages.amber_gbsa'))
     if fep_enabled:
         stages.append(("fep", "molnova.stages.fep"))
     return stages
@@ -134,8 +136,12 @@ def choose_iteration(args, requested=None):
             "SELECT DISTINCT iteration FROM compound WHERE iteration>0 ORDER BY iteration"
         )]
     for iteration in iterations:
+        if getattr(args, 'amber_gbsa_enabled', False):
+            from molnova.amber_gbsa import load_job
+            if load_job(args.output / f'iter{iteration}/amber_gbsa') is not None:
+                return iteration
         if database.iteration_completion_reason(
-            args.db_path, iteration, args.target_count, args.gbsa_input_count, 0
+            args.db_path, iteration, args.target_count, args.gbsa_input_count, 0, database.amber_keep_count(args)
         ) is not None:
             return iteration
     following = max(iterations, default=0) + 1
@@ -144,6 +150,13 @@ def choose_iteration(args, requested=None):
 
 def external_completion_reason(args, iteration, stage):
     """Do not advance past live or uncertain native work, even with stale scores."""
+    if stage == 'mmgbsa-recovery':
+        stage = 'mmgbsa'
+    if stage == 'amber-gbsa':
+        from molnova.amber_gbsa import load_job
+        if load_job(args.output / f'iter{iteration}/amber_gbsa') is not None:
+            return 'Amber remote submission still requires recovery'
+        return None
     if stage not in {"ligprep", "glide", "mmgbsa"}:
         return None
     from molnova import schrodinger_guard as guard
@@ -185,7 +198,7 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
     """Run one worker at a time; exit only after this iteration's final stage."""
     for stage, module in stages:
         started = time.monotonic()
-        interval = min(poll_interval, 5) if stage == "mmgbsa" else poll_interval
+        interval = min(poll_interval, 5) if stage in {"mmgbsa", "mmgbsa-recovery"} else poll_interval
         cmd = [sys.executable, "-m", module, str(project_toml), "--iteration", str(iteration)]
         while not stop.is_set():
             rc = stream_process(stage, cmd, project_toml.parent, stop)
@@ -193,7 +206,7 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                 return False
             reason = f"worker exited with status {rc}" if rc else database.stage_completion_reason(
                 args.db_path, iteration, stage, args.target_count, args.gbsa_input_count,
-                args.synthetic_feasibility_enabled,
+                args.synthetic_feasibility_enabled, database.amber_keep_count(args),
             )
             if reason is None:
                 reason = external_completion_reason(args, iteration, stage)
@@ -258,7 +271,13 @@ def main(argv=None):
             print("[driver  ] All configured iterations are complete.")
             return
         stages = ([('mmgbsa', 'molnova.stages.mmgbsa')] if iteration == 0 else
-                  build_stages(args.synthetic_feasibility_enabled, args.fep_enabled))
+                  build_stages(args.synthetic_feasibility_enabled, args.fep_enabled,
+                               getattr(args, 'amber_gbsa_enabled', False)))
+        if iteration > 0 and getattr(args, 'amber_gbsa_enabled', False):
+            from molnova.prime_async import load_job
+            if (load_job(args.output / f'iter{iteration}/mmgbsa') is not None
+                    or database.has_running_mmgbsa(args.db_path, iteration)):
+                stages.insert(0, ('mmgbsa-recovery', 'molnova.stages.mmgbsa'))
         print("=" * 70)
         print("SEQUENTIAL SINGLE-ITERATION DRIVER")
         print(f"Project        : {args.project}")

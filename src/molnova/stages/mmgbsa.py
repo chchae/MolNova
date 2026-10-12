@@ -20,7 +20,7 @@ def eligible_iteration(args):
     for iteration in iterations:
         if (database.has_running_mmgbsa(args.db_path, iteration)
                 or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
-                                              getattr(args, "target_count", 1))):
+                                              getattr(args, "target_count", 1), database.amber_keep_count(args))):
             return iteration
     return None
 
@@ -38,7 +38,7 @@ def _run_stage(args, requested_iteration):
             if (load_job(args.output / f"iter{iteration}" / "mmgbsa") is not None
                     or database.has_running_mmgbsa(args.db_path, iteration)
                     or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
-                                                  getattr(args, "target_count", 1))
+                                                  getattr(args, "target_count", 1), database.amber_keep_count(args))
                     or (iteration > 0 and database.docking_completion_reason(
                         args.db_path, iteration, getattr(args, "target_count", 1)) is not None)):
                 processed = True
@@ -74,15 +74,22 @@ def _run_stage(args, requested_iteration):
             claimed_state=State.GBSA_RUNNING,
         )
     else:
+        if database.amber_keep_count(args) is not None and iteration > 0:
+            from molnova.amber_gbsa import load_job as load_amber
+            if (load_amber(args.output / f'iter{iteration}/amber_gbsa') is not None
+                    or database.stage_is_running(args.db_path, 'amber_gbsa')):
+                print(f'Iteration {iteration}: Prime waiting for Amber remote work to retire.')
+                return
         pending = database.claim_mmgbsa_candidates(
-            args.db_path, iteration, args.gbsa_input_count, target_count,
+            args.db_path, iteration, args.gbsa_input_count, target_count, database.amber_keep_count(args),
         )
     if not pending and active is not None:
         # A crash may occur after score commit but before job-record deletion.
         # Finish recovery/cleanup even when all submitted IDs are already scored.
         pending = active["compound_ids"]
     if not pending:
-        print(f"Iteration {iteration}: no unscored final docking top-{args.gbsa_input_count} "
+        ranking = 'Amber' if database.amber_keep_count(args) is not None and iteration > 0 else 'docking'
+        print(f"Iteration {iteration}: no unscored final {ranking} top-{args.gbsa_input_count} "
               "compounds ready to claim; checking on the next poll.")
         return
     action = "recovering saved MM-GBSA job" if active else "starting MM-GBSA"

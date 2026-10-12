@@ -74,9 +74,9 @@ the same options, such as `--once` and `--poll-interval`.
 
 To permit iteration numbers up to 10, set `max-iteration = 10` in
 `examples/egfr.toml` and invoke each iteration separately.
-The example currently uses 1000 compounds per iteration, docking top-100 MM-GBSA,
-and 20 GBSA elites. Each next iteration waits until the previous iterations'
-LigPrep/Glide work and MM-GBSA processing of the final docking top-N have
+The example uses 1000 compounds per iteration, an Amber top-500 shortlist,
+Prime MM-GBSA for the Amber top-200, and 20 Prime GBSA elites. Each next iteration waits until the previous iterations'
+LigPrep/Glide work, optional Amber screening and Prime processing of the final selected top-N have
 finished. Terminal failures are processed but cannot supply elites; retryable
 or running calculations continue to block generation. The next LibInvent TL
 cycle uses the 20 lowest GBSA scores from the immediately previous iteration.
@@ -174,7 +174,7 @@ the lock when its file handle closes.
 
 `generate → synthetic feasibility → LigPrep → Glide → MM-GBSA → FEP(optional)`
 
-The driver supervises independent subprocess workers. SQLite is the source of truth. Completed Glide groups are written immediately; MM-GBSA waits until all upstream work in the iteration finishes, then selects the final docking top-N.
+The driver supervises independent subprocess workers. SQLite is the source of truth. Completed Glide groups are written immediately; MM-GBSA waits until all upstream work in the iteration finishes, then selects the final top-N by Amber score when screening is enabled, or by docking score otherwise.
 
 During supervised runs, each successful idle poll prints one line such as
 `[ligprep ] skip: No iteration requires LigPrep.` Generate, synthetic feasibility,
@@ -199,10 +199,10 @@ SQLite. MM-GBSA waits until generation reaches `target-count` and no compounds
 remain in generation, synthetic screening, LigPrep or Glide states. A tail
 timeout leaves Glide work pending and does not release MM-GBSA. Terminal
 failures count as processed; retryable upstream failures continue to block it.
-Once docking finishes, the worker ranks all docking results by ascending score
-(with compound ID breaking ties), selects the final `gbsa-input-count` compounds,
+Once docking and enabled Amber screening finish, the worker ranks by Amber score
+(or by docking score when Amber is disabled), selects the final `gbsa-input-count` compounds,
 and calculates only eligible compounds without an existing GBSA score. Completed
-GBSA compounds still occupy their docking rank. Readiness, selection and claiming
+GBSA compounds still occupy their positions in the selected ranking. Readiness, selection and claiming
 use one SQLite write transaction; explicit `--iteration` obeys the same gate.
 
 Prime MM-GBSA receives a receptor-first structure file containing the selected
@@ -393,8 +393,8 @@ Within each iteration, LigPrep waits for generation to reach `target-count`
 and the generation worker to exit (and for optional synthetic screening).
 Glide waits for all LigPrep work, including retryable work, to finish. Completed
 Glide reference groups still persist results immediately; MM-GBSA starts only
-once docking finishes, using the final `gbsa-input-count` ranking (100 in the
-EGFR example). New GBSA claims exclude `gbsa_running`, so concurrent claimers
+once docking and enabled Amber screening finish, using the final `gbsa-input-count`
+ranking (200 by Amber score in the EGFR example). New GBSA claims exclude `gbsa_running`, so concurrent claimers
 cannot submit the same compound again.
 
 On restart, stage locks prevent overlapping local workers. Saved Prime and
@@ -463,3 +463,45 @@ iterations complete missing reference GBSA first. To run reference calculations:
 Or poll once with `molnova mmgbsa project.toml --iteration 0`. Reference titles and
 source poses remain unchanged; calculation inputs use `CMPID_<id>`. Terminal
 reference failures are recorded and do not cause endless resubmission.
+
+### AmberTools screening before Prime
+
+`examples/egfr.toml` enables `Glide → AmberTools → Prime` screening on tensor.
+Amber scores all completed docking poses with up to 128 independent single-core
+jobs, exports the lowest 500, and sends its lowest 200 to Prime. The 500 is a
+ranked shortlist; all docking poses are scored by Amber first. Other project
+configs retain Prime-only behavior unless `amber-gbsa-enabled=true` is set.
+
+```toml
+amber-gbsa-enabled = true
+amber-cpus = 128
+amber-keep-count = 500
+gbsa-input-count = 200
+amber-ssh-host = "tensor"
+amber-remote-env = "/home1/amber26/envs/AmberTools26"
+amber-conda-init = "/home1/chchae/anaconda3/etc/profile.d/conda.sh"
+amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
+amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
+amber-charge-method = "bcc"
+```
+
+Run `molnova run egfr.toml --iteration 1` to supervise the full iteration, or
+`molnova amber-gbsa egfr.toml --iteration 1` for one Amber submit/recovery pass.
+The receptor path is local and relative to TOML; environment/work/init paths
+belong to tensor. Optional `amber-ssh-config` points to a local SSH config.
+
+Amber results go to `output/iterN/amber_gbsa/`; Prime keeps
+`output/iterN/mmgbsa/`. SQLite migrates non-destructively to add
+`amber_gbsa_score`; `gbsa_score` remains Prime's score. `amber_scores.tsv`,
+`amber_top.tsv`, and `prime_candidates.tsv` link names such as `GEN_I07_000481`
+to calculation titles `CMPID_<id>`. Native logs and final score reports are
+retrieved locally; full topologies remain in the recorded remote run folder.
+
+The fast protocol scores the docking snapshot without MD or complex minimization:
+ff14SB/GAFF2, AM1-BCC (optional ABCG2), igb=5/mbondi2, 0.15 M salt, no entropy.
+Ligand net charge comes from the selected docked state, and original docking
+coordinates are restored after charge parameterization. Receptor preparation
+errors stop the batch; native ligand failures receive diagnostics and no score.
+Amber and Prime scores are separate protocols. A small synthetic real-calculator
+smoke test passed; target scoring quality and 128-core throughput remain unverified.
+See [SPEC section 15](docs/SPEC.md#15-ambertools-prescreen-before-prime--2026-10-12-user-change).
