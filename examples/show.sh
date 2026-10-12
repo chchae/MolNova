@@ -1,5 +1,6 @@
+num_limit=10;
 while true; do 
-	ssh t41 squeue; echo;
+	ssh -n t41 squeue; echo;
 	sqlite3 -cmd ".mode box --quote off" output/egfr.sqlite  "select *
 from (
     select iteration,
@@ -12,10 +13,25 @@ from (
     from compound
     group by iteration
     order by iteration desc
-    limit 10
+    limit $num_limit
 )
 order by iteration;"; 
         date;
-	sleep 5s; 
+        echo "--------------------------------------------------------------"
+
+        if IFS= read -r -s -n 1 -t 1 key; then
+            case "$key" in
+                " ")
+                    num_limit=10000;
+                    continue;;
+                "")
+                    num_limit=10000;
+                    continue;;
+            esac
+        else
+            num_limit=10;
+	    sleep 5s;
+        fi
+
 done 
 
