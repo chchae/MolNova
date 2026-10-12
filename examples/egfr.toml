@@ -50,7 +50,7 @@ glide-job-timeout = 1800          # 그룹별 native job 제한(초); 0이면 �
 # 전체 docking pose를 계산하고 점수가 낮은 순으로 500개를 선별합니다.
 # 결과: output/iterN/amber_gbsa/, DB: amber_gbsa_score
 amber-gbsa-enabled = true
-amber-cpus = 128                   # 동시 실행할 단일 코어 계산 수
+amber-cpus = 16                   # 동시 실행할 단일 코어 계산 수
 amber-keep-count = 500
 amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
 amber-charge-method = "bcc"        # AM1-BCC; 지원하는 다른 값은 "abcg2"

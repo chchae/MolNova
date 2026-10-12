@@ -451,8 +451,8 @@ used and the output labels the duration as estimated. Paused iterations retain
 the original start and are not recorded as completed.
 
 
-Iteration 0 references without a GBSA score are calculated from `reference-pose`
-using the same receptor and seven-slot MM-GBSA queue. All unscored references are
+Iteration 0 references use Amber GBSA first when `amber-gbsa-enabled=true`, then Prime for references without a Prime score. Both use `reference-pose`
+and the same prepared receptor; Prime retains its seven-slot MM-GBSA queue. All unscored references are
 eligible, even without docking scores; `target-count` and `gbsa-input-count` apply
 to generated iterations only. Existing GBSA scores are preserved. Default `run`
 selects iteration 0 first when it needs calculation or recovery; explicit later
@@ -460,7 +460,8 @@ iterations complete missing reference GBSA first. To run reference calculations:
 
     molnova run project.toml --iteration 0
 
-Or poll once with `molnova mmgbsa project.toml --iteration 0`. Reference titles and
+To poll Amber separately, use `molnova amber-gbsa project.toml --iteration 0`;
+then poll Prime with `molnova mmgbsa project.toml --iteration 0`. Reference titles and
 source poses remain unchanged; calculation inputs use `CMPID_<id>`. Terminal
 reference failures are recorded and do not cause endless resubmission.
 

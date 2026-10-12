@@ -13,6 +13,11 @@ import subprocess
 import sys
 import tarfile
 
+if __package__:
+    from .receptor_pdb import CAP_TEMPLATE_NAMES, NORMALIZATION_VERSION, normalize_receptor_pdb
+else:
+    from receptor_pdb import CAP_TEMPLATE_NAMES, NORMALIZATION_VERSION, normalize_receptor_pdb
+
 
 def save(path, value):
     pending = path.with_suffix(path.suffix + '.pending')
@@ -23,8 +28,28 @@ def save(path, value):
 def run(command, folder, lock_fd):
     with (folder / 'calculation.log').open('ab') as log:
         log.write(('\n$ ' + ' '.join(command) + '\n').encode())
+        log.flush()
         subprocess.run(command, cwd=folder, stdout=log, stderr=subprocess.STDOUT,
                        check=True, pass_fds=(lock_fd,))
+
+
+def run_leap(script, folder, lock_fd, products):
+    """A zero LEaP exit is insufficient: reject reported errors and missing outputs."""
+    for name in products:
+        (folder / name).unlink(missing_ok=True)
+    log_path = folder / 'calculation.log'
+    offset = log_path.stat().st_size if log_path.exists() else 0
+    run(['tleap', '-f', script], folder, lock_fd)
+    with log_path.open('rb') as log:
+        log.seek(offset)
+        output = log.read().decode('utf-8', errors='replace')
+    if (re.search(r'FATAL|\bError\b|Failed to generate parameters', output, re.IGNORECASE)
+            or re.search(r'Errors\s*=\s*[1-9]\d*', output)):
+        raise RuntimeError('LEaP reported errors; see calculation.log')
+    for name in products:
+        path = folder / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f'LEaP did not create a complete {name}; see calculation.log')
 
 
 def mol2_sections(path):
@@ -87,13 +112,16 @@ def calculate(root, entry, charge_method, lock_fd):
         (folder / 'leap.in').write_text(
             'source leaprc.protein.ff14SB\nsource leaprc.gaff2\n'
             'source leaprc.water.tip3p\nset default PBRadii mbondi2\n'
-            'loadamberparams ligand.frcmod\nrec = loadpdb ../receptor.pdb\n'
+            'loadamberparams ligand.frcmod\n' + CAP_TEMPLATE_NAMES +
+            'rec = loadpdb ../receptor.normalized.pdb\n'
             + (root / 'receptor_bonds.in').read_text() +
             'lig = loadmol2 ligand.mol2\ncom = combine {rec lig}\n'
             'saveamberparm rec receptor.prmtop receptor.inpcrd\n'
             'saveamberparm lig ligand.prmtop ligand.inpcrd\n'
             'saveamberparm com complex.prmtop complex.inpcrd\nquit\n')
-        run(['tleap', '-f', 'leap.in'], folder, lock_fd)
+        run_leap('leap.in', folder, lock_fd,
+                 ('receptor.prmtop', 'receptor.inpcrd', 'ligand.prmtop', 'ligand.inpcrd',
+                  'complex.prmtop', 'complex.inpcrd'))
         # LEaP can exit zero with fatal topology errors. Validate its actual products.
         import parmed
         complex_structure = parmed.load_file(str(folder / 'complex.prmtop'),
@@ -122,8 +150,6 @@ def calculate(root, entry, charge_method, lock_fd):
 def execute(root):
     with (root / 'run.lock').open('a') as lock:
         try:
-            for name in ('receptor.prmtop', 'receptor.inpcrd'):
-                (root / name).unlink(missing_ok=True)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
@@ -134,15 +160,23 @@ def execute(root):
         save(root / 'status.json', {'status': 'running'})
         # Common receptor errors must stop the batch, not fail every ligand.
         try:
+            version = config.get('receptor_normalization_version')
+            if version is not None and version != NORMALIZATION_VERSION:
+                raise RuntimeError(f'Unsupported receptor normalization version: {version}')
+            normalize_receptor_pdb(root / 'receptor.pdb', root / 'receptor.normalized.pdb',
+                                  root / 'calculation.log')
             (root / 'receptor_leap.in').write_text(
                 'source leaprc.protein.ff14SB\nsource leaprc.water.tip3p\n'
-                'set default PBRadii mbondi2\nrec = loadpdb receptor.pdb\n'
+                'set default PBRadii mbondi2\n' + CAP_TEMPLATE_NAMES +
+                'rec = loadpdb receptor.normalized.pdb\n'
                 + (root / 'receptor_bonds.in').read_text() +
                 'saveamberparm rec receptor.prmtop receptor.inpcrd\nquit\n')
-            run(['tleap', '-f', 'receptor_leap.in'], root, lock.fileno())
+            run_leap('receptor_leap.in', root, lock.fileno(), ('receptor.prmtop', 'receptor.inpcrd'))
             import parmed
             parmed.load_file(str(root / 'receptor.prmtop'), xyz=str(root / 'receptor.inpcrd'))
         except Exception as exc:
+            with (root / 'calculation.log').open('a') as log:
+                log.write(f'\nReceptor preparation failed: {type(exc).__name__}: {exc}\n')
             save(root / 'status.json', {'status': 'failed', 'error': f'Receptor preparation: {exc}; see calculation.log'})
             return
         with concurrent.futures.ThreadPoolExecutor(max_workers=config['cpus']) as pool:

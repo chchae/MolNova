@@ -234,13 +234,13 @@ def amber_keep_count(args):
 def _amber_rows(conn, iteration):
     return conn.execute(
         'SELECT id,name,state,docking_score,amber_gbsa_score,gbsa_score,fep_score,failed_stage '
-        'FROM compound WHERE iteration=? AND docking_score IS NOT NULL ORDER BY id',
+        'FROM compound WHERE iteration=? AND (iteration=0 OR docking_score IS NOT NULL) ORDER BY id',
         (iteration,),
     ).fetchall()
 
 
 def _amber_completion_reason(conn, iteration, target_count):
-    reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count)
+    reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count) if iteration > 0 else None
     if reason:
         return reason
     rows = _amber_rows(conn, iteration)
@@ -276,10 +276,11 @@ def prime_selection_rows(path, iteration, count, amber_keep_count=None):
 def claim_amber_candidates(path, iteration, target_count):
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if _docking_completion_reason(_iteration_rows(conn, iteration), target_count):
+        if iteration > 0 and _docking_completion_reason(_iteration_rows(conn, iteration), target_count):
             return []
         rows = [r for r in _amber_rows(conn, iteration)
-                if r[2] in (State.DOCKED, State.GBSA_DONE, State.FEP_DONE) and r[4] is None
+                if r[2] in ((State.REFERENCE, State.DOCKED, State.GBSA_DONE, State.FEP_DONE) if iteration == 0
+                            else (State.DOCKED, State.GBSA_DONE, State.FEP_DONE)) and r[4] is None
                 and r[7] != 'amber_gbsa']
         for cid, *_ in rows:
             conn.execute('UPDATE compound SET state=?,modified_at=CURRENT_TIMESTAMP WHERE id=?',
@@ -295,14 +296,14 @@ def reset_unsubmitted_amber(path, iteration):
             'UPDATE compound SET state=CASE WHEN fep_score IS NOT NULL THEN ? '
             'WHEN gbsa_score IS NOT NULL THEN ? ELSE ? END,modified_at=CURRENT_TIMESTAMP '
             'WHERE iteration=? AND state=?',
-            (State.FEP_DONE, State.GBSA_DONE, State.DOCKED, iteration, State.AMBER_RUNNING))
+            (State.FEP_DONE, State.GBSA_DONE, State.REFERENCE if iteration == 0 else State.DOCKED, iteration, State.AMBER_RUNNING))
 
 
 def amber_rankings(path, iteration):
     with connect(path) as conn:
         return [r for r in conn.execute(
             'SELECT id,name,docking_score,amber_gbsa_score,gbsa_score FROM compound '
-            'WHERE iteration=? AND docking_score IS NOT NULL AND amber_gbsa_score IS NOT NULL '
+            'WHERE iteration=? AND (iteration=0 OR docking_score IS NOT NULL) AND amber_gbsa_score IS NOT NULL '
             'ORDER BY amber_gbsa_score,docking_score,id', (iteration,)) if math.isfinite(r[3])]
 
 
@@ -342,7 +343,7 @@ def store_amber_results(path, iteration, results, allowed_ids):
                 raise ValueError(f'Conflicting Amber score: {cid}')
             if row[0] is not None:
                 continue
-            state = State.FEP_DONE if row[3] is not None else State.GBSA_DONE if row[2] is not None else State.DOCKED
+            state = State.FEP_DONE if row[3] is not None else State.GBSA_DONE if row[2] is not None else State.REFERENCE if iteration == 0 else State.DOCKED
             if score is not None:
                 updated += conn.execute(
                     'UPDATE compound SET amber_gbsa_score=?,state=CASE WHEN state=? THEN ? ELSE state END,'
@@ -361,6 +362,8 @@ def store_amber_results(path, iteration, results, allowed_ids):
 def _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count=None):
     rows = _iteration_rows(conn, iteration)
     if iteration == 0:
+        if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count):
+            return []
         return [cid for cid, state, _, score in rows
                 if score is None and state in (State.REFERENCE, State.DOCKED)]
     if iteration < 0 or _docking_completion_reason(rows, target_count) is not None:

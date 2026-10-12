@@ -74,7 +74,7 @@ def _run_stage(args, requested_iteration):
             claimed_state=State.GBSA_RUNNING,
         )
     else:
-        if database.amber_keep_count(args) is not None and iteration > 0:
+        if database.amber_keep_count(args) is not None:
             from molnova.amber_gbsa import load_job as load_amber
             if (load_amber(args.output / f'iter{iteration}/amber_gbsa') is not None
                     or database.stage_is_running(args.db_path, 'amber_gbsa')):

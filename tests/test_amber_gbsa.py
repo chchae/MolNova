@@ -282,3 +282,170 @@ os._exit(0)
     assert json.loads(subprocess.check_output(command))['active']
     time.sleep(1.6)
     assert not json.loads(subprocess.check_output(command))['active']
+
+
+@pytest.fixture
+def references(project):
+    with database.connect(project.db_path) as conn:
+        conn.execute("UPDATE compound SET iteration=0,state='reference',docking_score=NULL")
+        conn.execute("UPDATE compound SET state='gbsa_done',gbsa_score=-40 WHERE id=4")
+    project.reference_poses = project.output / 'references.maegz'
+    project.reference_poses.write_bytes(b'reference poses')
+    return project
+
+
+def test_reference_amber_precedes_prime_without_counts_or_docking(references):
+    args = references
+    assert database.mmgbsa_candidates(args.db_path, 0, 1, 1000, 1) == []
+    assert database.claim_amber_candidates(args.db_path, 0, 1000) == [1, 2, 3, 4]
+    assert database.claim_amber_candidates(args.db_path, 0, 1000) == []
+    database.store_amber_results(args.db_path, 0, [{'id':1,'score':-10}], range(1,5))
+    assert database.claim_mmgbsa_candidates(args.db_path, 0, 1, 1000, 1) == []
+    database.store_amber_results(args.db_path, 0,
+        [{'id':i,'score':-i} for i in (2,3,4)], range(1,5))
+    assert database.amber_completion_reason(args.db_path, 0, 1000) is None
+    with database.connect(args.db_path) as conn:
+        assert conn.execute('SELECT state,gbsa_score FROM compound ORDER BY id').fetchall() == [
+            ('reference',None), ('reference',None), ('reference',None), ('gbsa_done',-40)]
+    assert database.claim_mmgbsa_candidates(args.db_path, 0, 1, 1000, 1) == [1,2,3]
+
+
+def test_reference_orphan_claims_and_terminal_failures(references):
+    args = references
+    database.claim_amber_candidates(args.db_path, 0, 1000)
+    database.reset_unsubmitted_amber(args.db_path, 0)
+    with database.connect(args.db_path) as conn:
+        assert conn.execute('SELECT state FROM compound ORDER BY id').fetchall() == [
+            ('reference',), ('reference',), ('reference',), ('gbsa_done',)]
+    ids = database.claim_amber_candidates(args.db_path, 0, 1000)
+    database.store_amber_results(args.db_path, 0,
+        [{'id':i,'error':'unsupported atom'} for i in ids], ids)
+    assert database.amber_completion_reason(args.db_path, 0, 1000) is None
+    assert database.reference_mmgbsa_completion_reason(args.db_path) is None
+    assert database.claim_amber_candidates(args.db_path, 0, 1000) == []
+
+
+def test_reference_driver_selects_missing_amber_and_recovers_prime_first(references):
+    args = references
+    with database.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET gbsa_score=-40,state='gbsa_done'")
+    assert driver.choose_iteration(args) == 0
+    assert [s for s,_ in driver.reference_stages(args)] == ['amber-gbsa','mmgbsa']
+    directory = args.output / 'iter0/mmgbsa'
+    directory.mkdir(parents=True)
+    (directory / 'prime_job.json').write_text(json.dumps({'compound_ids':[1]}))
+    assert [s for s,_ in driver.reference_stages(args)] == ['mmgbsa-recovery','amber-gbsa','mmgbsa']
+
+
+def test_reference_prime_waits_for_saved_amber_after_score_commit(references, monkeypatch, capsys):
+    args = references
+    ids = database.claim_amber_candidates(args.db_path, 0, 1000)
+    directory = args.output / 'iter0/amber_gbsa'
+    directory.mkdir(parents=True)
+    amber_gbsa.new_record(args, 0, directory, ids)
+    database.store_amber_results(args.db_path, 0, [{'id':i,'score':-i} for i in ids], ids)
+    monkeypatch.setattr(mmgbsa, 'reconcile_saved_job', lambda *a:None)
+    monkeypatch.setattr(_core, 'run_iteration_mmgbsa', lambda **kw:pytest.fail('Prime started'))
+    mmgbsa._run_stage(args, 0)
+    assert 'Amber remote work' in capsys.readouterr().out
+    assert driver.choose_iteration(args) == 0
+
+
+def test_reference_worker_and_rankings_use_all_references(references, monkeypatch):
+    args = references
+    args.target_count = 1000
+    args.amber_keep_count = args.gbsa_input_count = 1
+    def poll(args, iteration, directory, record):
+        assert iteration == 0 and record['compound_ids'] == [1,2,3,4]
+        database.store_amber_results(args.db_path, 0,
+            [{'id':i,'score':-i} for i in record['compound_ids']], record['compound_ids'])
+        (directory / 'amber_job.json').unlink()
+        return True
+    monkeypatch.setattr(amber_gbsa, 'poll', poll)
+    stage._run_stage(args, 0)
+    assert len((args.output / 'iter0/amber_gbsa/prime_candidates.tsv').read_text().splitlines()) == 5
+    assert str(args.reference_poses.resolve()) in amber_gbsa.source_fingerprints(args, 0)
+
+
+def test_reference_receptor_bootstrap_uses_existing_grid_extractor(references, monkeypatch):
+    args = references
+    args.amber_receptor = args.output / 'iter0/mmgbsa/receptor.maegz'
+    args.schrodinger = Path('/suite')
+    args.grid = args.output / 'grid.zip'
+    calls = []
+    def run(command, cwd):
+        calls.append(command)
+        Path(command[-1]).write_bytes(b'prepared receptor')
+    monkeypatch.setattr(_core, 'run_command', run)
+    amber_gbsa.prepare_reference_receptor(args)
+    assert args.amber_receptor.read_bytes() == b'prepared receptor'
+    assert calls[0][2] == args.grid
+    assert calls[0][1].name == '_extract_receptor_from_grid.py'
+    amber_gbsa.prepare_reference_receptor(args)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('duplicate', [False, True])
+def test_reference_export_maps_titles_and_preserves_source(references, monkeypatch, duplicate):
+    import runpy
+    args = references
+    args.schrodinger = Path('/suite')
+    folder = args.output / 'export'
+    folder.mkdir()
+    receptor = SimpleNamespace(residue=[], bond=[], write=lambda path:Path(path).write_text(
+        'ATOM      1  C   ALA A   1       0.000   0.000   0.000  1.00  0.00           C  \n'))
+    atom = SimpleNamespace(formal_charge=0, element='C', index=1)
+    class Ligand:
+        def __init__(self, title):
+            self.title = title
+            self.atom = [atom]
+        def write(self, path):
+            assert self.title.startswith('CMPID_')
+            Path(path).write_text('@<TRIPOS>ATOM\n1 C1 1 2 3 C.3 1 LIG 0\n@<TRIPOS>BOND\n')
+    original = [Ligand('GEN_I01_000001'), Ligand('GEN_I01_000002')]
+    if duplicate:
+        original.append(Ligand('GEN_I01_000001'))
+    def reader(path):
+        return [receptor] if Path(path) == args.amber_receptor else [Ligand(ligand.title) for ligand in original]
+    monkeypatch.setitem(sys.modules, 'schrodinger', SimpleNamespace(structure=SimpleNamespace(StructureReader=reader)))
+    def run(command, cwd):
+        assert command[4] == args.reference_poses
+        monkeypatch.setattr(sys, 'argv', [str(command[1]), *map(str, command[2:])])
+        runpy.run_path(str(command[1]), run_name='__main__')
+    monkeypatch.setattr(_core, 'run_command', run)
+    if duplicate:
+        with pytest.raises(ValueError, match='Multiple input poses'):
+            amber_gbsa.export_inputs(args, 0, folder, [1,2])
+    else:
+        assert amber_gbsa.export_inputs(args, 0, folder, [1,2]) == [{'id':1,'charge':0},{'id':2,'charge':0}]
+        assert (folder / 'CMPID_1/input.mol2').exists()
+        assert [ligand.title for ligand in original] == ['GEN_I01_000001','GEN_I01_000002']
+        assert args.reference_poses.read_bytes() == b'reference poses'
+
+
+def test_new_remote_run_bundles_normalizer_and_records_version(references, monkeypatch):
+    import tarfile
+    from molnova.receptor_pdb import NORMALIZATION_VERSION
+    args = references
+    directory = args.output / 'iter0/amber_gbsa'
+    directory.mkdir(parents=True)
+    record = amber_gbsa.new_record(args, 0, directory, [1])
+    def export(args, iteration, folder, ids):
+        (folder / 'receptor.pdb').write_text('raw PDB')
+        (folder / 'receptor.normalized.pdb').write_text('normalized PDB')
+        (folder / 'receptor_bonds.in').write_text('')
+        ligand = folder / 'CMPID_1'
+        ligand.mkdir()
+        (ligand / 'input.mol2').write_text('MOL2')
+        return [{'id':1, 'charge':0}]
+    def ssh(settings, command, **kwargs):
+        if 'stdin' in kwargs:
+            with tarfile.open(fileobj=kwargs['stdin']) as archive:
+                assert {'receptor.pdb','receptor.normalized.pdb','receptor_pdb.py','worker.py','input.json'} <= set(archive.getnames())
+                config = json.load(archive.extractfile('input.json'))
+                assert config['receptor_normalization_version'] == NORMALIZATION_VERSION
+                assert archive.extractfile('receptor_pdb.py').read() == Path(amber_gbsa.__file__).with_name('receptor_pdb.py').read_bytes()
+    monkeypatch.setattr(amber_gbsa, 'export_inputs', export)
+    monkeypatch.setattr(amber_gbsa, 'ssh', ssh)
+    amber_gbsa.prepare_remote(args, 0, directory, record)
+    assert record['prepared'] and record['input_sha256']

@@ -12,11 +12,11 @@ def _run_stage(args, iteration):
     if not args.amber_gbsa_enabled:
         print('Amber GBSA disabled; set amber-gbsa-enabled=true in the project TOML.')
         return
-    if iteration < 1:
-        raise ValueError('Amber screening uses generated iterations >= 1; iteration 0 retains Prime')
+    if iteration < 0:
+        raise ValueError('Amber GBSA requires iteration >= 0')
     directory = args.output / f'iter{iteration}/amber_gbsa'
     directory.mkdir(parents=True, exist_ok=True)
-    reason = database.docking_completion_reason(args.db_path, iteration, args.target_count)
+    reason = database.docking_completion_reason(args.db_path, iteration, args.target_count) if iteration > 0 else None
     if reason or any(database.stage_is_running(args.db_path, stage) for stage in ('generate', 'synthetic_feasibility', 'ligprep', 'glide', 'mmgbsa')):
         print(f'Amber GBSA waiting: {reason or "upstream/Prime worker still running"}.')
         return
@@ -46,6 +46,8 @@ def _run_stage(args, iteration):
             print(f'Amber GBSA waiting for another saved iteration: {other_records[0]}')
             return
         database.reset_unsubmitted_amber(args.db_path, iteration)
+        if iteration == 0:
+            amber_gbsa.prepare_reference_receptor(args)
         if not args.amber_receptor.is_file():
             raise FileNotFoundError(f'Amber receptor not found: {args.amber_receptor}')
         ids = database.claim_amber_candidates(args.db_path, iteration, args.target_count)

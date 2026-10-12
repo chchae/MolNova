@@ -23,8 +23,31 @@ def load_job(directory):
     return json.loads(path.read_text()) if path.exists() else None
 
 
+def poses_path(args, iteration):
+    return args.reference_poses if iteration == 0 else args.output / f'iter{iteration}/glide/best_poses.maegz'
+
+
+def prepare_reference_receptor(args):
+    """Bootstrap the default receptor using the existing Prime grid extractor."""
+    if args.amber_receptor.is_file():
+        return
+    default = args.output / 'iter0/mmgbsa/receptor.maegz'
+    if args.amber_receptor != default:
+        raise FileNotFoundError(f'Amber receptor not found: {args.amber_receptor}')
+    default.parent.mkdir(parents=True, exist_ok=True)
+    pending = default.with_name('receptor.pending.maegz')
+    source = getattr(args, 'mmgbsa_receptor', None)
+    if source is not None:
+        import shutil
+        shutil.copy2(source, pending)
+    else:
+        extractor = c.create_grid_receptor_extractor(default.parent)
+        c.run_command([args.schrodinger / 'run', extractor, args.grid, pending], cwd=default.parent)
+    pending.replace(default)
+
+
 def source_fingerprints(args, iteration):
-    paths = [args.amber_receptor, args.output / f'iter{iteration}/glide/best_poses.maegz']
+    paths = [args.amber_receptor, poses_path(args, iteration)]
     result = {}
     for path in paths:
         digest = hashlib.sha256()
@@ -69,11 +92,12 @@ from pathlib import Path
 from schrodinger import structure
 root, receptor_file, poses_file = map(Path, sys.argv[1:4])
 wanted = set(json.loads(sys.argv[4]))
+reference_ids = json.loads(sys.argv[5])
 receptors = list(structure.StructureReader(str(receptor_file)))
 if len(receptors) != 1:
     raise ValueError('Amber receptor MAEGZ must contain exactly one prepared receptor')
 receptor = receptors[0]
-# Preserve prepared histidine protonation when translating HIS to Amber names.
+# Preserve source histidines; fixed-column PDB normalization resolves ring hydrogens.
 residues = list(receptor.residue)
 residue_index = {a.index: i for i, residue in enumerate(residues, 1) for a in residue.atom}
 bonds = []
@@ -86,23 +110,21 @@ for bond in receptor.bond:
         residues[ia-1].pdbres = residues[ib-1].pdbres = 'CYX'
         bonds.append('bond rec.%s.SG rec.%s.SG\n' % (ia, ib))
 for residue in residues:
-    if residue.pdbres.strip() == 'HIS':
-        names = {a.pdbname.strip() for a in residue.atom}
-        residue.pdbres = 'HIP' if {'HD1','HE2'} <= names else 'HID' if 'HD1' in names else 'HIE' if 'HE2' in names else 'HIS'
     if residue.pdbres.strip() == 'CYS' and sum(a.formal_charge for a in residue.atom) == -1:
         residue.pdbres = 'CYM'
 receptor.write(str(root / 'receptor.pdb'))
 (root / 'receptor_bonds.in').write_text(''.join(bonds))
 entries = []
 seen = set()
-for ligand in structure.StructureReader(str(poses_file)):
+for index, ligand in enumerate(structure.StructureReader(str(poses_file)), 1):
     match = re.fullmatch(r'CMPID_(\d+)', ligand.title or '')
-    cid = int(match.group(1)) if match else None
+    cid = reference_ids.get((ligand.title or '').strip() or f'REF_{index:04d}') if reference_ids is not None else int(match.group(1)) if match else None
     if cid not in wanted:
         continue
     if cid in seen:
-        raise ValueError('Multiple best Glide poses for CMPID_%s' % cid)
+        raise ValueError('Multiple input poses for CMPID_%s' % cid)
     seen.add(cid)
+    ligand.title = f'CMPID_{cid}'
     folder = root / ('CMPID_%s' % cid)
     folder.mkdir(exist_ok=True)
     charge = sum(atom.formal_charge for atom in ligand.atom)
@@ -114,12 +136,16 @@ for ligand in structure.StructureReader(str(poses_file)):
     ligand.write(str(folder / 'input.mol2'))
     entries.append({'id': cid, 'charge': charge})
 if seen != wanted:
-    raise ValueError('Missing Glide poses: %s' % sorted(wanted-seen))
+    raise ValueError('Missing input poses: %s' % sorted(wanted-seen))
 (root / 'entries.json').write_text(json.dumps(entries))
 '''.lstrip())
-    poses = args.output / f'iter{iteration}/glide/best_poses.maegz'
+    poses = poses_path(args, iteration)
+    reference_ids = {name: cid for cid, name, _ in database.amber_identity_rows(args.db_path, 0, ids)} if iteration == 0 else None
     c.run_command([args.schrodinger / 'run', script, folder, args.amber_receptor,
-                   poses, json.dumps(ids)], cwd=folder)
+                   poses, json.dumps(ids), json.dumps(reference_ids)], cwd=folder)
+    from molnova.receptor_pdb import normalize_receptor_pdb
+    normalize_receptor_pdb(folder / 'receptor.pdb', folder / 'receptor.normalized.pdb',
+                          folder / 'calculation.log')
     entries = json.loads((folder / 'entries.json').read_text())
     # Unique stable MOL2 names are necessary for coordinate restoration after SQM.
     from molnova.amber_runner import mol2_sections
@@ -142,15 +168,19 @@ def prepare_remote(args, iteration, directory, record):
     if fingerprints != source_fingerprints(args, iteration):
         raise RuntimeError('Amber input structures changed during export')
     identities = database.amber_identity_rows(args.db_path, iteration, record['compound_ids'])
-    config = {'entries': entries, 'cpus': args.amber_cpus, 'charge_method': args.amber_charge_method,
+    from molnova.receptor_pdb import NORMALIZATION_VERSION
+    config = {'receptor_normalization_version': NORMALIZATION_VERSION, 'entries': entries, 'cpus': args.amber_cpus, 'charge_method': args.amber_charge_method,
               'protocol': 'single_pose_ff14SB_GAFF2_igb5_mbondi2_salt0.15_no_entropy',
               'identities': identities}
     save(folder / 'input.json', config)
     worker = Path(__file__).with_name('amber_runner.py')
     (folder / 'worker.py').write_bytes(worker.read_bytes())
+    normalizer = Path(__file__).with_name('receptor_pdb.py')
+    (folder / normalizer.name).write_bytes(normalizer.read_bytes())
     archive = folder / 'inputs.tar'
     with tarfile.open(archive, 'w') as stream:
-        for path in [folder / 'receptor.pdb', folder / 'receptor_bonds.in', folder / 'input.json', folder / 'worker.py',
+        for path in [folder / 'receptor.pdb', folder / 'receptor.normalized.pdb', folder / 'receptor_pdb.py',
+                     folder / 'receptor_bonds.in', folder / 'input.json', folder / 'worker.py',
                      *(folder / f"CMPID_{e['id']}/input.mol2" for e in entries)]:
             stream.add(path, arcname=str(path.relative_to(folder)))
     remote = shlex.quote(record['remote_dir'])
@@ -235,8 +265,10 @@ def download_logs(directory, record):
 
 def write_rankings(args, iteration, directory):
     rows = database.amber_rankings(args.db_path, iteration)
-    selections = [('amber_scores.tsv', rows), ('amber_top.tsv', rows[:args.amber_keep_count]),
-                  ('prime_candidates.tsv', rows[:args.amber_keep_count][:args.gbsa_input_count])]
+    retained = rows if iteration == 0 else rows[:args.amber_keep_count]
+    candidates = rows if iteration == 0 else retained[:args.gbsa_input_count]
+    selections = [('amber_scores.tsv', rows), ('amber_top.tsv', retained),
+                  ('prime_candidates.tsv', candidates)]
     for name, selected in selections:
         pending = directory / (name + '.pending')
         with pending.open('w', newline='') as stream:
@@ -245,8 +277,8 @@ def write_rankings(args, iteration, directory):
             writer.writerows((cid, f'CMPID_{cid}', name, dock, amber, prime)
                              for cid, name, dock, amber, prime in selected)
         os.replace(pending, directory / name)
-    print(f'Iteration {iteration}: Amber finite scores={len(rows)}, retained={min(len(rows), args.amber_keep_count)}, '
-          f'Prime candidates={min(len(rows), args.gbsa_input_count)}.')
+    print(f'Iteration {iteration}: Amber finite scores={len(rows)}, retained={len(retained)}, '
+          f'Prime candidates={len(candidates)}.')
 
 
 def new_record(args, iteration, directory, ids):

@@ -122,14 +122,35 @@ class StopFlag:
             time.sleep(min(remaining, 0.2))
 
 
+def reference_work_pending(args):
+    if (database.reference_mmgbsa_completion_reason(args.db_path) is not None
+            or (args.output / 'iter0/mmgbsa/prime_job.json').exists()):
+        return True
+    if getattr(args, 'amber_gbsa_enabled', False):
+        from molnova.amber_gbsa import load_job
+        return (database.amber_completion_reason(args.db_path, 0, args.target_count) is not None
+                or load_job(args.output / 'iter0/amber_gbsa') is not None)
+    return False
+
+
+def reference_stages(args):
+    stages = [('mmgbsa', 'molnova.stages.mmgbsa')]
+    if getattr(args, 'amber_gbsa_enabled', False):
+        stages.insert(0, ('amber-gbsa', 'molnova.stages.amber_gbsa'))
+        from molnova.prime_async import load_job
+        if (load_job(args.output / 'iter0/mmgbsa') is not None
+                or database.has_running_mmgbsa(args.db_path, 0)):
+            stages.insert(0, ('mmgbsa-recovery', 'molnova.stages.mmgbsa'))
+    return stages
+
+
 def choose_iteration(args, requested=None):
     """Select once; every worker receives the same explicit iteration."""
     if requested is not None:
         if not 0 <= requested <= args.max_iteration:
             raise ValueError(f"Iteration must be between 0 and {args.max_iteration}.")
         return requested
-    if (database.reference_mmgbsa_completion_reason(args.db_path) is not None
-            or (args.output / 'iter0/mmgbsa/prime_job.json').exists()):
+    if reference_work_pending(args):
         return 0
     with database.connect(args.db_path) as conn:
         iterations = [row[0] for row in conn.execute(
@@ -270,7 +291,7 @@ def main(argv=None):
         if iteration is None:
             print("[driver  ] All configured iterations are complete.")
             return
-        stages = ([('mmgbsa', 'molnova.stages.mmgbsa')] if iteration == 0 else
+        stages = (reference_stages(args) if iteration == 0 else
                   build_stages(args.synthetic_feasibility_enabled, args.fep_enabled,
                                getattr(args, 'amber_gbsa_enabled', False)))
         if iteration > 0 and getattr(args, 'amber_gbsa_enabled', False):
@@ -298,10 +319,9 @@ def main(argv=None):
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.signal(signum, request_stop)
         # References use their supplied poses, without generation/LigPrep/Glide.
-        if iteration > 0 and (database.reference_mmgbsa_completion_reason(args.db_path) is not None
-                or (args.output / 'iter0/mmgbsa/prime_job.json').exists()):
+        if iteration > 0 and reference_work_pending(args):
             references_done = supervise_iteration(
-                args, project_toml, 0, [('mmgbsa', 'molnova.stages.mmgbsa')],
+                args, project_toml, 0, reference_stages(args),
                 ns.poll_interval, stop, ns.once,
             )
             if not references_done:

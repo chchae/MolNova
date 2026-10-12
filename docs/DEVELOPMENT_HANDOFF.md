@@ -603,7 +603,7 @@ PV and rename only calculation inputs to CMPID_<id>. Existing scores, reference
 names, coordinates, experimental values and reference selection remain intact.
 New DB import preserves finite GBSA scores present in reference input properties.
 Default driver selects iter0 first; an explicit later iteration completes pending
-reference work first. Iteration 0 runs only the MM-GBSA worker, without generation,
+reference work first. Iteration 0 runs Amber GBSA (when enabled) before the MM-GBSA worker, without generation,
 LigPrep, Glide or FEP. Terminal failures remain terminal and provide no score.
 
 
@@ -641,8 +641,23 @@ When enabled: score all docked poses on tensor, export Amber top 500, and claim
 Prime top 200 by Amber score. Store `amber_gbsa_score` separately; keep Prime
 `gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/mmgbsa/` intact. The example
 EGFR config enables it; default omission preserves Prime-only compatibility.
-Iteration 0 remains Prime-only. Existing Prime submissions are recovered first.
+Iteration 0 also runs Amber before new Prime calculations when enabled, using all eligible supplied reference poses without docking-score/top-N filtering. Map source titles to CMPID in calculation copies. Bootstrap the default receptor with the existing grid extractor when absent. Existing Prime submissions are recovered first.
 Maintain inherited remote locks, durable submission identity and source fingerprints;
 never reset uncertain remote work or promote cached output into completion.
 The synthetic real-calculator smoke test is not validation of target ranking or
 128-core production throughput.
+
+
+## Amber receptor PDB normalization
+
+After every Maestro PDB export, retain `receptor.pdb` and normalize a separate
+`receptor.normalized.pdb` using `receptor_pdb.py`. The standalone remote worker
+bundles the same module and revalidates before receptor LEaP; all ligand LEaP
+inputs also use the normalized PDB. Fixed-width changes preserve source identities,
+coordinates and TER boundaries. NMA/ACE methyl names and ACE-connected H1 are
+normalized; HIS ring hydrogens determine HID/HIE/HIP, and explicit states must agree.
+Missing protonation, unexpected caps or unresolved conformers stop preparation.
+Changes/errors are logged. LEaP cap template names are aligned to the normalized
+PDB without changing parameters. `receptor-pdb-v1` is recorded in new inputs;
+there is no topology cache. Stale products are removed only after locking, and
+LEaP errors/missing or unreadable products prevent MM-GBSA. Keep saved runs intact.

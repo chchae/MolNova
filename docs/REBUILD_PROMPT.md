@@ -148,7 +148,7 @@ Current handoff, driver, and tests specify a single-thread, single-iteration sup
 
 `generate → synthetic (enabled) → ligprep → glide → amber-gbsa (enabled) → mmgbsa → fep export (enabled)`.
 
-Exit after that iteration; do not automatically advance N+1. Default selection prioritizes missing/recoverable iteration-0 GBSA, otherwise oldest unfinished generated iteration, otherwise next new iteration. Explicit later iterations first process pending reference GBSA. Iteration 0 runs MM-GBSA only.
+Exit after that iteration; do not automatically advance N+1. Default selection prioritizes missing/recoverable iteration-0 GBSA, otherwise oldest unfinished generated iteration, otherwise next new iteration. Explicit later iterations first process pending reference GBSA. Iteration 0 runs Amber GBSA (when enabled) before Prime MM-GBSA, using supplied reference poses without generation/LigPrep/Glide.
 
 Driver/stage locks prevent duplicate local workers. Exit status 0 is insufficient: check DB completion, saved submissions, and native parent/child terminal state. Retry only the incomplete stage. `--once` stops at the first failed/incomplete stage. Default poll delay is 30 seconds; MM-GBSA delay is capped at 5 seconds. Native queries/download/extraction add to observed refill delay. Ctrl-C/SIGTERM stops local supervision responsively while preserving external submission recovery.
 
@@ -356,7 +356,7 @@ existing results/jobs. Use the prepared receptor at
 `output/iter0/mmgbsa/receptor.maegz` and each iteration's
 `iterN/glide/best_poses.maegz`. Keep `CMPID_<id>` identity and use the separate
 `iterN/amber_gbsa/` directory, leaving Prime `iterN/mmgbsa/` intact. Iteration 0
-continues to use Prime directly.
+also calculates Amber GBSA before new Prime calculations when enabled. All eligible reference poses are scored regardless of docking score or top-N counts; supplied reference titles map to SQLite IDs in calculation copies. Existing Prime/FEP scores and active submissions are preserved; active Prime work is recovered first. The default receptor can be extracted from the docking grid with the existing Prime extractor before Amber runs.
 
 **Implementation choices pending scientific evaluation:** score all finite-score
 docked poses, rank by finite Amber score ascending, then docking score and ID,
@@ -377,6 +377,28 @@ prepared histidine protonation and explicit cysteine disulfide/thiolate states
 into Amber names/bonds. Unsupported receptor residues/cofactors or receptor
 preparation errors stop the entire batch; do not silently remove them. Amber and
 Prime numerical scores represent different protocols and are not interchangeable.
+
+**Confirmed receptor normalization change:** immediately after Maestro-to-PDB export,
+preserve `receptor.pdb` and write a separate `receptor.normalized.pdb` for every
+receptor/complex LEaP input. Change only fixed-column atom/residue names; preserve
+coordinates, atom order, chain/residue/insertion identifiers, other fields and TER
+boundaries. Normalize NMA to NME (`CA` to `CH3`, methyl hydrogens to
+`HH31/HH32/HH33`), ACE methyl hydrogens to the same names, and backbone H1 to H
+only on the amino acid connected to ACE. Determine HIS from HD1/HE2 (HID/HIE/HIP);
+validate explicit states, and fail if neither ring hydrogen exists. Validate cap
+atom sets/geometry, diagnose unsupported input without deleting atoms, make the
+operation idempotent, and record name changes in `calculation.log`.
+
+**Implementation choices:** ACE connection requires adjacent residues in the same
+chain/TER segment and a C–N distance of 1.0–1.8 Å. Unresolved alternate conformers,
+duplicate atom names and multiple PDB models fail explicitly. ff14SB's loaded
+ACE/NME templates use different names; rename their atoms in LEaP to match the
+normalized PDB, retaining force-field types, charges and connectivity. Bundle the
+normalizer with each remote worker and record `receptor-pdb-v1` in input metadata.
+No receptor topology cache is used: remove stale outputs under the acquired run
+lock, reject LEaP errors even with exit zero, require nonempty topology/coordinate
+products and parse them with ParmEd before any MM-GBSA calculation. Saved jobs and
+scientific scores remain intact; this does not authorize resubmitting production work.
 
 Configuration is flat TOML. `amber-gbsa-enabled` defaults false for compatibility;
 `examples/egfr.toml` enables it. `amber-cpus=128`, `amber-keep-count=500`;
