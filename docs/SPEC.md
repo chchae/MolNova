@@ -71,7 +71,7 @@ glide-cpus = 96
 tail-timeout = 300
 glide-job-timeout = 1800
 elite-tl-epochs = 3
-amber-gbsa-enabled = true
+amber_gbsa = false
 amber-cpus = 124
 amber-keep-count = 200
 amber-ssh-host = "t41"
@@ -81,7 +81,7 @@ amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
 amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
 amber-charge-method = "bcc"
 amber-ssh-config = "/home1/chchae/.ssh/config"
-gbsa-input-count = 50
+# gbsa-input-count omitted: 200 without Amber, 50 with Amber
 gbsa-elite-count = 20
 gbsa-license-retry-seconds = 300
 gbsa-license-retries = 3
@@ -106,7 +106,7 @@ These are environment-specific values, not proof that the paths/hosts are access
 | `tail-timeout` | 300 seconds |
 | `glide-job-timeout` | 1800 seconds; 0 disables |
 | `elite-tl-epochs` | 3 |
-| `gbsa-input-count` | 20 |
+| `gbsa-input-count` | 200 without Amber; 50 with Amber |
 | `gbsa-elite-count` | 10 |
 | `fep-enabled`, `fep-input-count` | false, 10 |
 | `synthetic-feasibility-enabled` | true |
@@ -328,7 +328,7 @@ Completion means required behavior passes relevant automated checks, scientific 
 
 ### Observed differences and incomplete engineering requirements
 
-- Earlier README top-100 wording has been updated by the explicit Amber prescreen change: the EGFR example uses Glide top-200, restrained Amber minimization/scoring, then Prime top-50 by Amber score. Loader omission default for Prime-only projects remains 20.
+- Earlier README top-100 wording has been updated by the explicit Amber prescreen change: the EGFR example uses Glide top-200, restrained Amber minimization/scoring, then Prime top-50 by Amber score. Loader omission default for Prime-only projects is now 200.
 - Old architecture concurrency text and state-chain diagrams omit later supervisor/synthetic/reference behavior; they are not sufficient specifications.
 - SQL/configuration logic and raw state strings still exist in `_core.py` and some stages despite centralization guidance. Full centralization and enum-only use are incomplete; preserve behavior while addressing relevant work, not through a wholesale rewrite.
 - Version pinning and an executable end-to-end scientific validation record were not established by this review. Tests were inspected, not run; compliance of all code paths is not proven.
@@ -347,15 +347,21 @@ Completion means required behavior passes relevant automated checks, scientific 
 
 ## 15. AmberTools prescreen before Prime — 2026-10-12 user change
 
-**Confirmed later user change:** the EGFR configuration now selects Glide top-200
-for Amber and Amber top-50 for Prime. The configurable loader defaults remain
-unchanged; preserve existing scores and recover saved submissions intact.
+**Confirmed latest user change (2026-10-13):** Amber is optional and disabled
+by default, including in the EGFR example. Without Amber, send the final Glide
+top-200 directly to Prime. Setting `amber_gbsa = true` selects Glide top-200 for
+Amber, then Amber top-50 for Prime. The legacy `amber-gbsa-enabled` key remains
+supported; conflicting switches are rejected. The omitted `amber-keep-count`
+default is 200; omitted `gbsa-input-count` is 200 without Amber and 50 with Amber.
+Explicit count settings override these defaults. Iteration 0 still processes all
+eligible references, with Amber only when enabled. Preserve existing scores and
+saved submissions; changing the option does not cancel or reset running jobs.
 
 **Confirmed user change (latest selection/minimization policy):** after the entire
 generated iteration's Glide work finishes, select only the 200 original compounds
 with the lowest finite Glide scores. Run Amber GBSA for this selected set, then
 send its 50 lowest finite Amber scores to Prime MM-GBSA. `amber-keep-count`
-(default 500) now means the Glide-ranked Amber input count, and
+(default 200) now means the Glide-ranked Amber input count, and
 `gbsa-input-count` sets the Prime count. This supersedes the former all-docked-pose
 Amber calculation and Amber-based top-500 reduction. Keep the current EGFR host
 on t41 and 124 parallel single-core calculations; omission defaults remain unchanged.
@@ -438,8 +444,8 @@ lock, reject LEaP errors even with exit zero, require nonempty topology/coordina
 products and parse them with ParmEd before any MM-GBSA calculation. Saved jobs and
 scientific scores remain intact; this does not authorize resubmitting production work.
 
-Configuration is flat TOML. `amber-gbsa-enabled` defaults false for compatibility;
-`examples/egfr.toml` enables it with `amber-cpus=124`, `amber-keep-count=200`;
+Configuration is flat TOML. `amber_gbsa` defaults false;
+`examples/egfr.toml` disables it and retains `amber-cpus=124`, `amber-keep-count=200`;
 the loader CPU default remains 128 for omitted settings.
 keep-count must be >= `gbsa-input-count`. CPU/count settings are positive integers
 and reject bool. SSH host defaults tensor, environment defaults

@@ -10,7 +10,7 @@ from molnova.stages._logging import timed_stage, work_started
 @timed_stage('Amber GBSA worker')
 def _run_stage(args, iteration):
     if not args.amber_gbsa_enabled:
-        print('Amber GBSA disabled; set amber-gbsa-enabled=true in the project TOML.')
+        print('Amber GBSA disabled; set amber_gbsa=true in the project TOML.')
         return
     if iteration < 0:
         raise ValueError('Amber GBSA requires iteration >= 0')

@@ -25,6 +25,39 @@ aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 '''
 
 
+@pytest.mark.parametrize('extra, enabled, prime_count', [
+    ('', False, 200),
+    ('amber_gbsa = false\n', False, 200),
+    ('amber_gbsa = true\n', True, 50),
+    ('amber-gbsa-enabled = true\n', True, 50),
+    ('amber_gbsa = true\ngbsa-input-count = 30\n', True, 30),
+    ('gbsa-input-count = 100\n', False, 100),
+])
+def test_optional_amber_mode_defaults_and_stage_order(tmp_path, extra, enabled, prime_count):
+    project = tmp_path / 'egfr.toml'
+    project.write_text(PROJECT_TOML + extra)
+    settings = _core.load_project_toml(project)
+    assert settings['amber_gbsa_enabled'] is enabled
+    assert settings['amber_keep_count'] == 200
+    assert settings['gbsa_input_count'] == prime_count
+    stages = [stage for stage, _ in driver.build_stages(False, False, enabled)]
+    assert stages == (['generate', 'ligprep', 'glide', 'amber-gbsa', 'mmgbsa'] if enabled
+                      else ['generate', 'ligprep', 'glide', 'mmgbsa'])
+
+
+@pytest.mark.parametrize('extra', [
+    'amber_gbsa = "true"\n',
+    'amber_gbsa = true\namber-gbsa-enabled = false\n',
+    'gbsa-input-count = true\n',
+    'gbsa-input-count = 0\n',
+])
+def test_invalid_amber_mode_configuration(tmp_path, extra):
+    project = tmp_path / 'egfr.toml'
+    project.write_text(PROJECT_TOML + extra)
+    with pytest.raises(ValueError):
+        _core.load_project_toml(project)
+
+
 def test_project_name_inferred_from_filename_and_remote_paths_preserved(tmp_path):
     project = tmp_path / "egfr.toml"
     project.write_text(PROJECT_TOML)

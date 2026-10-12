@@ -24,6 +24,27 @@ def finish(db, ids):
         [{'id':i, 'score':-(1001-i)} for i in ids], ids)
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_mode_defaults_select_prime_200_or_amber_200_then_prime_50(population, tmp_path, enabled):
+    from molnova.config import amber_settings
+    settings = amber_settings({'out-dir': 'output', 'amber_gbsa': enabled}, tmp_path)
+    args = SimpleNamespace(**settings)
+    keep = database.amber_keep_count(args)
+    if enabled:
+        ids = database.claim_amber_candidates(population, 1, 1000, keep)
+        assert ids == list(range(1000, 800, -1))
+        assert database.claim_mmgbsa_candidates(population, 1, args.gbsa_input_count, 1000, keep) == []
+        finish(population, ids)
+        expected = list(range(801, 851))
+    else:
+        expected = list(range(1000, 800, -1))
+    assert database.claim_mmgbsa_candidates(
+        population, 1, args.gbsa_input_count, 1000, keep
+    ) == expected
+    with database.connect(population) as conn:
+        assert conn.execute('SELECT COUNT(amber_gbsa_score) FROM compound').fetchone()[0] == (200 if enabled else 0)
+
+
 def test_only_glide_500_are_claimed_and_amber_200_go_to_prime(population):
     db = population
     assert database.claim_amber_candidates(db, 1, 1001, 500) == []

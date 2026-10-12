@@ -74,8 +74,9 @@ the same options, such as `--once` and `--poll-interval`.
 
 To permit iteration numbers up to 10, set `max-iteration = 10` in
 `examples/egfr.toml` and invoke each iteration separately.
-The example uses 1000 compounds per iteration, a Glide top-200 selection for restrained Amber GBSA,
-Prime MM-GBSA for the Amber top-50, and 20 Prime GBSA elites. Each next iteration waits until the previous iterations'
+The example uses 1000 compounds per iteration, sends the Glide top-200 directly to
+Prime MM-GBSA by default, and selects 20 Prime GBSA elites. Setting `amber_gbsa = true`
+runs restrained Amber GBSA on the Glide top-200 and sends the Amber top-50 to Prime. Each next iteration waits until the previous iterations'
 LigPrep/Glide work, optional Amber screening and Prime processing of the final selected top-N have
 finished. Terminal failures are processed but cannot supply elites; retryable
 or running calculations continue to block generation. The next LibInvent TL
@@ -394,7 +395,7 @@ and the generation worker to exit (and for optional synthetic screening).
 Glide waits for all LigPrep work, including retryable work, to finish. Completed
 Glide reference groups still persist results immediately; MM-GBSA starts only
 once docking and enabled Amber screening finish, using the final `gbsa-input-count`
-ranking (50 by Amber score in the EGFR example). New GBSA claims exclude `gbsa_running`, so concurrent claimers
+ranking (200 by Glide score by default, 50 by Amber score when enabled). New GBSA claims exclude `gbsa_running`, so concurrent claimers
 cannot submit the same compound again.
 
 On restart, stage locks prevent overlapping local workers. Saved Prime and
@@ -474,17 +475,20 @@ reference failures are recorded and do not cause endless resubmission.
 
 ### AmberTools screening before Prime
 
-`examples/egfr.toml` enables `Glide → AmberTools → Prime` screening on t41.
+`examples/egfr.toml` skips Amber by default and sends the Glide top-200 directly to Prime.
+Set `amber_gbsa = true` to enable `Glide → AmberTools → Prime` screening on t41.
 Amber selects only the 200 lowest finite Glide scores after docking completes,
 then minimizes/scores those compounds with up to 124 independent single-core jobs.
 Its 50 lowest finite Amber scores go to Prime. Other project
-configs retain Prime-only behavior unless `amber-gbsa-enabled=true` is set.
+configs also skip Amber by default. The legacy `amber-gbsa-enabled` key is supported;
+conflicting switches are rejected. Omit `gbsa-input-count` to select 200 without Amber
+or 50 with Amber automatically; an explicit count overrides this selection.
 
 ```toml
-amber-gbsa-enabled = true
+amber_gbsa = true
 amber-cpus = 124
 amber-keep-count = 200  # Glide-ranked Amber input count
-gbsa-input-count = 50
+# gbsa-input-count omitted: automatically 50 when Amber is enabled
 amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"

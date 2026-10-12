@@ -7,17 +7,24 @@ from molnova import _core
 
 
 def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
-    enabled = config.get('amber-gbsa-enabled', False)
-    if not isinstance(enabled, bool):
-        raise ValueError('amber-gbsa-enabled must be a boolean')
-    settings = {'amber_gbsa_enabled': enabled}
+    for key in ('amber_gbsa', 'amber-gbsa-enabled'):
+        if key in config and not isinstance(config[key], bool):
+            raise ValueError(f'{key} must be a boolean')
+    if ('amber_gbsa' in config and 'amber-gbsa-enabled' in config
+            and config['amber_gbsa'] != config['amber-gbsa-enabled']):
+        raise ValueError('amber_gbsa and amber-gbsa-enabled must agree')
+    enabled = config.get('amber_gbsa', config.get('amber-gbsa-enabled', False))
+    prime_count = config.get('gbsa-input-count', 50 if enabled else 200)
+    if isinstance(prime_count, bool) or not isinstance(prime_count, int) or prime_count < 1:
+        raise ValueError('gbsa-input-count must be a positive integer')
+    settings = {'amber_gbsa_enabled': enabled, 'gbsa_input_count': prime_count}
     # amber-keep-count now limits the Glide-ranked population before Amber.
-    for key, default in [('amber-cpus', 128), ('amber-keep-count', 500)]:
+    for key, default in [('amber-cpus', 128), ('amber-keep-count', 200)]:
         value = config.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f'{key} must be a positive integer')
         settings[key.replace('-', '_')] = value
-    if enabled and settings['amber_keep_count'] < int(config.get('gbsa-input-count', 20)):
+    if enabled and settings['amber_keep_count'] < prime_count:
         raise ValueError('amber-keep-count must be >= gbsa-input-count')
     host = str(config.get('amber-ssh-host', 'tensor'))
     if not host or host.startswith('-') or any(c.isspace() for c in host):

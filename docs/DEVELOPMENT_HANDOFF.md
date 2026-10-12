@@ -640,7 +640,10 @@ and before Prime. See SPEC section 15 for confirmed scope and scientific choices
 When enabled: select final Glide top 200, minimize/score only those compounds
 with Amber on the configured host (EGFR: t41), and claim its Prime top 50 by Amber score. Store `amber_gbsa_score` separately; keep Prime
 `gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/mmgbsa/` intact. The example
-EGFR config enables it; default omission preserves Prime-only compatibility.
+EGFR config disables it. Set `amber_gbsa = true` to enable it; the legacy
+`amber-gbsa-enabled` key remains supported. Omitted Prime count is 200 without
+Amber and 50 with Amber, and omitted Amber input count is 200. Explicit counts
+override these defaults. Conflicting switches are rejected.
 Iteration 0 also runs Amber before new Prime calculations when enabled, using all eligible supplied reference poses without docking-score/top-N filtering. Map source titles to CMPID in calculation copies. Bootstrap the default receptor with the existing grid extractor when absent. Existing Prime submissions are recovered first.
 Maintain inherited remote locks, durable submission identity and source fingerprints;
 never reset uncertain remote work or promote cached output into completion.
@@ -717,3 +720,12 @@ Failure/pause leaves the finish unset; retain the first verified finish on rerun
 Prime recovery starts its timer but does not finish the final Prime stage. Keep
 worker-pass/native-job timings separate. Older pre-timer execution cannot be
 reconstructed; measure from the first newly recorded supervisor pass.
+
+
+## Optional Amber mode — 2026-10-13
+
+Amber is disabled by default, including in examples/egfr.toml. Default flow is
+Glide top-200 directly to Prime. With `amber_gbsa = true`, use Glide top-200
+for Amber and Amber top-50 for Prime. Omit `gbsa-input-count` for mode-dependent
+defaults; explicit counts and the legacy switch remain supported. Preserve
+existing results and submitted work when changing configuration.

@@ -177,7 +177,6 @@ def load_project_toml(filename):
         "elite_diverse_count": int(config.get("elite-diverse-count", 20)),
         "elite_candidate_pool": int(config.get("elite-candidate-pool", 200)),
         "elite_tl_epochs": int(config.get("elite-tl-epochs", 3)),
-        "gbsa_input_count": int(config.get("gbsa-input-count", 20)),
         "gbsa_elite_count": int(config.get("gbsa-elite-count", 10)),
         "fep_enabled": bool(config.get("fep-enabled", False)),
         "fep_input_count": int(config.get("fep-input-count", 10)),

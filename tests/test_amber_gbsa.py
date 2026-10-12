@@ -337,13 +337,15 @@ def test_reference_driver_selects_missing_amber_and_recovers_prime_first(referen
     assert [s for s,_ in driver.reference_stages(args)] == ['mmgbsa-recovery','amber-gbsa','mmgbsa']
 
 
-def test_reference_prime_waits_for_saved_amber_after_score_commit(references, monkeypatch, capsys):
+@pytest.mark.parametrize('enabled', [False, True])
+def test_reference_prime_waits_for_saved_amber_after_score_commit(references, monkeypatch, capsys, enabled):
     args = references
     ids = database.claim_amber_candidates(args.db_path, 0, 1000)
     directory = args.output / 'iter0/amber_gbsa'
     directory.mkdir(parents=True)
     amber_gbsa.new_record(args, 0, directory, ids)
     database.store_amber_results(args.db_path, 0, [{'id':i,'score':-i} for i in ids], ids)
+    args.amber_gbsa_enabled = enabled
     monkeypatch.setattr(mmgbsa, 'reconcile_saved_job', lambda *a:None)
     monkeypatch.setattr(_core, 'run_iteration_mmgbsa', lambda **kw:pytest.fail('Prime started'))
     mmgbsa._run_stage(args, 0)
