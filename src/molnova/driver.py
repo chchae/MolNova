@@ -20,6 +20,13 @@ BASE_STAGES = [
     ("mmgbsa", "molnova.stages.mmgbsa"),
 ]
 
+CALCULATION_LABELS = {
+    'ligprep': 'LigPrep',
+    'glide': 'Glide docking',
+    'amber-gbsa': 'Amber MM-GBSA',
+    'mmgbsa': 'Prime MM-GBSA',
+}
+
 
 def build_stages(synthetic_feasibility_enabled, fep_enabled, amber_gbsa_enabled=False):
     stages = [BASE_STAGES[0]]
@@ -218,7 +225,12 @@ def external_completion_reason(args, iteration, stage):
 def supervise_iteration(args, project_toml, iteration, stages, poll_interval, stop, once=False):
     """Run one worker at a time; exit only after this iteration's final stage."""
     for stage, module in stages:
+        if stop.is_set():
+            return False
         started = time.monotonic()
+        timed_stage = 'mmgbsa' if stage == 'mmgbsa-recovery' else stage
+        if timed_stage in CALCULATION_LABELS:
+            database.start_stage_timer(args.db_path, iteration, timed_stage)
         interval = min(poll_interval, 5) if stage in {"mmgbsa", "mmgbsa-recovery"} else poll_interval
         cmd = [sys.executable, "-m", module, str(project_toml), "--iteration", str(iteration)]
         while not stop.is_set():
@@ -232,8 +244,15 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
             if reason is None:
                 reason = external_completion_reason(args, iteration, stage)
             if reason is None:
-                print(f"[driver  ] iteration {iteration}: {stage} complete "
-                      f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
+                if stage in CALCULATION_LABELS:
+                    elapsed = database.finish_stage_timer(args.db_path, iteration, stage)
+                    print(f"[driver  ] iteration {iteration}: {CALCULATION_LABELS[stage]} stage complete; "
+                          f"total elapsed={format_elapsed(elapsed)} "
+                          "(including waiting, polling and restart recovery).", flush=True)
+                else:
+                    # Recovery alone does not finish the final Prime candidate set.
+                    print(f"[driver  ] iteration {iteration}: {stage} complete "
+                          f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
                 break
             print(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
             if once:

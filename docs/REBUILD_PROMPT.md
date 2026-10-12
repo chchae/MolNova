@@ -81,12 +81,12 @@ target-count = 1000
 max-iteration = 100
 host = "t41-cpu:128"
 ligprep-cpus = 64
-glide-cpus = 64
+glide-cpus = 96
 tail-timeout = 300
 glide-job-timeout = 1800
 elite-tl-epochs = 3
 amber-gbsa-enabled = true
-amber-cpus = 96
+amber-cpus = 124
 amber-keep-count = 500
 amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
@@ -149,6 +149,19 @@ Current handoff, driver, and tests specify a single-thread, single-iteration sup
 `generate → synthetic (enabled) → ligprep → glide → amber-gbsa (enabled) → mmgbsa → fep export (enabled)`.
 
 Exit after that iteration; do not automatically advance N+1. Default selection prioritizes missing/recoverable iteration-0 GBSA, otherwise oldest unfinished generated iteration, otherwise next new iteration. Explicit later iterations first process pending reference GBSA. Iteration 0 runs Amber GBSA (when enabled) before Prime MM-GBSA, using supplied reference poses without generation/LigPrep/Glide.
+
+**Confirmed stage timing display:** after a supervised LigPrep, Glide docking,
+Amber MM-GBSA or Prime MM-GBSA stage fully completes, print its total wall time in
+`HH:MM:SS.s`. Persist per-iteration/per-stage start and verified finish in SQLite
+`stage_timing`. Include queue waits, polling, recovery and downtime between
+supervisor restarts. Worker exit zero alone cannot finish a timer: the existing
+DB and external-submission completion checks must both pass. Failed, paused or
+interrupted attempts retain the first start without a finish. Preserve the first
+verified finish on reruns, and never modify scientific state/results for timing.
+Prime recovery starts the Prime timer but cannot finish the final Prime stage.
+The start is the first supervised pass recorded by this implementation; work
+before timing was introduced cannot be reconstructed from compound timestamps.
+Per-worker invocation and per-native-job timings remain distinct from this total.
 
 Driver/stage locks prevent duplicate local workers. Exit status 0 is insufficient: check DB completion, saved submissions, and native parent/child terminal state. Retry only the incomplete stage. `--once` stops at the first failed/incomplete stage. Default poll delay is 30 seconds; MM-GBSA delay is capped at 5 seconds. Native queries/download/extraction add to observed refill delay. Ctrl-C/SIGTERM stops local supervision responsively while preserving external submission recovery.
 
@@ -355,7 +368,7 @@ send its 200 lowest finite Amber scores to Prime MM-GBSA. `amber-keep-count`
 (default 500) now means the Glide-ranked Amber input count, and
 `gbsa-input-count` sets the Prime count. This supersedes the former all-docked-pose
 Amber calculation and Amber-based top-500 reduction. Keep the current EGFR host
-on t41 and 96 parallel single-core calculations; omission defaults remain unchanged.
+on t41 and 124 parallel single-core calculations; omission defaults remain unchanged.
 Store `compound.amber_gbsa_score` separately from Prime `gbsa_score`, and preserve
 all scientific results and saved jobs. Use the prepared receptor at
 `output/iter0/mmgbsa/receptor.maegz`, each iteration's
@@ -436,7 +449,7 @@ products and parse them with ParmEd before any MM-GBSA calculation. Saved jobs a
 scientific scores remain intact; this does not authorize resubmitting production work.
 
 Configuration is flat TOML. `amber-gbsa-enabled` defaults false for compatibility;
-`examples/egfr.toml` enables it with `amber-cpus=96`, `amber-keep-count=500`;
+`examples/egfr.toml` enables it with `amber-cpus=124`, `amber-keep-count=500`;
 the loader CPU default remains 128 for omitted settings.
 keep-count must be >= `gbsa-input-count`. CPU/count settings are positive integers
 and reject bool. SSH host defaults tensor, environment defaults
@@ -455,7 +468,7 @@ source "$CONDA_PREFIX/amber.sh"
 using `/home1/amber26/miniforge3/etc/profile.d/conda.sh`, then activating
 `/home1/amber26/envs/AmberTools26` and sourcing `$CONDA_PREFIX/amber.sh`.
 The existing configurable SSH adapter supports this sequence; other-project
-loader defaults remain unchanged. Preserve the example's 96 concurrent single-core
+loader defaults remain unchanged. Preserve the example's 124 concurrent single-core
 calculations. REINVENT and AiZynthFinder stay on tensor. Saved runs retain their
 original host/settings and must not be relocated or resubmitted implicitly.
 A noninteractive SSH probe on t41 verified Python 3.12, ParmEd 4.3.1 and all
@@ -463,7 +476,7 @@ required Amber executables under that environment. A separate one-ligand EGFR
 smoke run completed receptor normalization/LEaP, AM1-BCC, parmchk2, ligand/complex
 LEaP and MMPBSA.py; finite results/logs were downloaded and the terminal marker
 and released remote lock were verified. No production SQLite results/jobs were
-modified. This verifies execution for one compound, not 96-way throughput or
+modified. This verifies execution for one compound, not 124-way throughput or
 scientific ranking quality.
 
 `amber-receptor` defaults to `<out-dir>/iter0/mmgbsa/receptor.maegz` and resolves
@@ -535,5 +548,5 @@ completed the 500-cycle restrained complex minimization and evaluated MMPBSA.py
 from `complex.minimized.rst7`. The requested mask selected all 2,286 receptor and
 26 ligand heavy atoms, with finite relaxed coordinates and a finite GBSA score.
 The smoke run reached its cycle limit before convergence; it validates runtime
-integration, not convergence, target ranking or 96-way throughput. Original poses,
+integration, not convergence, target ranking or 124-way throughput. Original poses,
 production SQLite results and submitted jobs were preserved.

@@ -451,6 +451,13 @@ used and the output labels the duration as estimated. Paused iterations retain
 the original start and are not recorded as completed.
 
 
+The supervisor prints each fully completed LigPrep, Glide docking, Amber MM-GBSA
+and Prime MM-GBSA stage's total elapsed time as `HH:MM:SS.s`. The stage totals
+include waiting, polling, recovery and downtime between restarts; start/finish
+checkpoints are preserved in SQLite. A pending or interrupted worker does not
+finish the stage timer. For work started before stage timing was introduced,
+measurement begins at its first recorded supervisor pass.
+
 Iteration 0 references use Amber GBSA first when `amber-gbsa-enabled=true`, then Prime for references without a Prime score. Both use `reference-pose`
 and the same prepared receptor; Prime retains its seven-slot MM-GBSA queue. All unscored references are
 eligible, even without docking scores; `target-count` and `gbsa-input-count` apply
@@ -469,13 +476,13 @@ reference failures are recorded and do not cause endless resubmission.
 
 `examples/egfr.toml` enables `Glide → AmberTools → Prime` screening on t41.
 Amber selects only the 500 lowest finite Glide scores after docking completes,
-then minimizes/scores those compounds with up to 96 independent single-core jobs.
+then minimizes/scores those compounds with up to 124 independent single-core jobs.
 Its 200 lowest finite Amber scores go to Prime. Other project
 configs retain Prime-only behavior unless `amber-gbsa-enabled=true` is set.
 
 ```toml
 amber-gbsa-enabled = true
-amber-cpus = 96
+amber-cpus = 124
 amber-keep-count = 500  # Glide-ranked Amber input count
 gbsa-input-count = 200
 amber-ssh-host = "t41"

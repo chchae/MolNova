@@ -586,6 +586,38 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
 
 
 
+def start_stage_timer(path, iteration, stage):
+    """Keep the first supervised stage start across polls and driver restarts."""
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS stage_timing ('
+            'iteration INTEGER NOT NULL, stage TEXT NOT NULL, started_at REAL NOT NULL, '
+            'finished_at REAL, PRIMARY KEY (iteration, stage))'
+        )
+        conn.execute(
+            'INSERT INTO stage_timing(iteration,stage,started_at) VALUES (?,?,?) '
+            'ON CONFLICT(iteration,stage) DO NOTHING', (iteration, stage, time.time()),
+        )
+
+
+def finish_stage_timer(path, iteration, stage):
+    """Record verified full-stage completion once, including wait/restart downtime."""
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'UPDATE stage_timing SET finished_at=COALESCE(finished_at, ?) '
+            'WHERE iteration=? AND stage=?', (time.time(), iteration, stage),
+        )
+        row = conn.execute(
+            'SELECT started_at,finished_at FROM stage_timing WHERE iteration=? AND stage=?',
+            (iteration, stage),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f'Iteration {iteration} stage {stage} has no start time')
+        return max(0, row[1] - row[0])
+
+
 def start_iteration_timer(path, iteration):
     """Persist the original start across driver restarts; preserve old results."""
     now = time.time()

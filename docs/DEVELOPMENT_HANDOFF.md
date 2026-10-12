@@ -667,7 +667,7 @@ LEaP errors/missing or unreadable products prevent MM-GBSA. Keep saved runs inta
 
 The EGFR TOML now selects `amber-ssh-host="t41"` and
 `amber-conda-init="/home1/amber26/miniforge3/etc/profile.d/conda.sh"`.
-Keep `/home1/amber26/envs/AmberTools26`, the remote work directory and 96 parallel
+Keep `/home1/amber26/envs/AmberTools26`, the remote work directory and 124 parallel
 single-core calculations. The existing `environment_command` sources conda.sh,
 activates the configured environment, sources `$CONDA_PREFIX/amber.sh`, then sets
 native thread counts to one. No adapter/default changes are needed. REINVENT and
@@ -678,7 +678,7 @@ A noninteractive t41 probe verified the environment and required executables.
 An isolated one-ligand EGFR smoke run exercised receptor normalization/LEaP,
 AM1-BCC, parmchk2, complex LEaP, MMPBSA.py and result/log download with a finite
 score, terminal marker and released lock. No production DB/job changes were made;
-96-way throughput was not benchmarked.
+124-way throughput was not benchmarked.
 
 
 ## Latest Amber Glide preselection and restrained minimization
@@ -704,3 +704,16 @@ keep old results and saved workers intact. Prime's pose input flow is unchanged.
 A one-compound t41 smoke run completed minimization and MM-GBSA; its mask selected
 all protein/ligand heavy atoms, and the restart was the scoring input. The run hit
 500 cycles before convergence; no production data/jobs were changed.
+
+
+## Full calculation-stage elapsed times
+
+After LigPrep, all Glide groups, selected Amber work or final Prime work completes
+under the supervisor, print the full stage's wall time in HH:MM:SS.s. SQLite
+`stage_timing` checkpoints the first supervised pass and verified completion per
+iteration/stage, surviving polls/restarts and including waiting/recovery/downtime.
+Finish only when existing DB and external-job completion checks both pass.
+Failure/pause leaves the finish unset; retain the first verified finish on reruns.
+Prime recovery starts its timer but does not finish the final Prime stage. Keep
+worker-pass/native-job timings separate. Older pre-timer execution cannot be
+reconstructed; measure from the first newly recorded supervisor pass.

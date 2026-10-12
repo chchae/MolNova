@@ -229,9 +229,12 @@ def test_supervisor_refill_interval(stage, interval, expected, tmp_path, monkeyp
         def wait(self, seconds):
             waits.append(seconds)
     monkeypatch.setattr(driver, 'stream_process', lambda *a: 1)
-    driver.supervise_iteration(None, tmp_path / 'config.toml', 1,
+    args = SimpleNamespace(db_path=tmp_path / 'timing.sqlite')
+    driver.supervise_iteration(args, tmp_path / 'config.toml', 1,
                                [(stage, 'module')], interval, Stop(), False)
     assert waits == [expected]
+    with database.connect(args.db_path) as conn:
+        assert conn.execute('SELECT finished_at FROM stage_timing').fetchone() == (None,)
 
 
 def test_obsolete_queue_is_retained_for_external_job_reconciliation(tmp_path, monkeypatch):
