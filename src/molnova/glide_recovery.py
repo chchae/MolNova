@@ -5,6 +5,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from molnova.stages._logging import detail
 
 from molnova.schrodinger_guard import (active_jobs, belongs_to_directory,
     job_details, job_kind, submission_guard, TERMINAL)
@@ -136,9 +137,12 @@ def submit(suite, command, directory):
         save_record(directory, record)
         result = subprocess.run(record['command'], cwd=directory, check=True,
                                 capture_output=True, text=True)
-        print(result.stdout, end='', flush=True)
+        with (directory / 'glide_launch.log').open('a') as log:
+            log.write(result.stdout)
+            log.write(result.stderr or '')
+        detail(result.stdout, end='', flush=True)
         if result.stderr:
-            print(result.stderr, end='', flush=True)
+            detail(result.stderr, end='', flush=True)
         match = re.search(r'^JobId:\s*(\S+)', result.stdout, re.MULTILINE | re.IGNORECASE)
         if not match:
             raise RuntimeError('Glide submission returned no JobId; reconcile before retrying')

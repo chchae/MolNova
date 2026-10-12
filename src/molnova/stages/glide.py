@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import re
 from pathlib import Path
+from molnova.stages._logging import detail, progress
 import sqlite3
 import time
 from molnova import _core as c
@@ -59,7 +60,7 @@ def prepare_glide_files(glide_root, ligprep_file, live=(), suite=None):
     temporary.write_text(signature + "\n")
     temporary.replace(marker)
     if removed:
-        print(f"Removed {removed} old Glide files for the current LigPrep input.")
+        progress(f"Removed {removed} old Glide files for the current LigPrep input.")
 
 
 def query_groups(iteration, db_path):
@@ -130,13 +131,13 @@ def process_completed_job(iteration, args, job, extractor, merger, glide_root):
             failure_message="No Glide pose",
             db_path=args.db_path,
         )
-    print(f"Reference {job['reference_id']} completed: DB updated={updated}, no-pose={len(failed)}")
+    detail(f"Reference {job['reference_id']} completed: DB updated={updated}, no-pose={len(failed)}")
     logfile = job.get("log_file", job["group_dir"] / "glide_constrained.log")
     if logfile.exists():
         match = re.search(r"Total elapsed time for Glide script\s*=\s*([0-9.]+)\s*seconds",
                           logfile.read_text(errors="replace"))
         if match:
-            print(f"Glide reference {job['reference_id']} calculation completed; "
+            detail(f"Glide reference {job['reference_id']} calculation completed; "
                   f"elapsed={format_elapsed(float(match.group(1)))}.", flush=True)
 
 
@@ -297,11 +298,11 @@ def _run_stage(args, ns):
         now = time.monotonic()
         if tail_started is None and frac >= args.completion_fraction:
             tail_started = now
-            print(f"Tail phase started: {terminal}/{total} terminal, timeout={args.tail_timeout}s")
+            progress(f"Tail phase started: {terminal}/{total} terminal, timeout={args.tail_timeout}s")
         if tail_started is not None and now - tail_started >= args.tail_timeout:
             print(f"Tail timeout reached; leaving {len(pending)} jobs running for a later 03-glide.py invocation.")
             break
-        print(f"Glide: {len(pending)} running, {terminal}/{total} terminal")
+        progress(f"Glide: {len(pending)} running, {terminal}/{total} terminal")
         time.sleep(args.poll_interval)
 
     merge_current_best(args, glide_root, merger)

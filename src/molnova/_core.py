@@ -151,12 +151,13 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level
     return {
         **amber_settings(config, base),
         **gbsa_license_retry_settings(config),
         **schrodinger_cpu_settings(config),
         "toml_file": filename,
+        "log_level": log_level(config),
         "project": project,
         "db_path": output / f"{project}.sqlite",
         "libinvent_prior": (Path(config["libinvent-prior"]) if remote_reinvent
@@ -598,13 +599,27 @@ def run_command(
     *, log_message: str | None = None,
 ) -> None:
     cmd = [str(x) for x in cmd]
-    print()
+    from molnova.stages._logging import detail, enabled
     if log_message is None:
-        print("$", " ".join(cmd))
+        detail("$", " ".join(cmd))
     else:
-        print(log_message)
-    print()
-    subprocess.run(cmd, cwd=cwd, check=True)
+        detail(log_message)
+    # Keep output on disk even when console verbosity is low. Native logs
+    # remain untouched, and failed commands replay their diagnostics.
+    if enabled(3):
+        subprocess.run(cmd, cwd=cwd, check=True)
+        return
+    log_path = Path(cwd or '.') / 'molnova_commands.log'
+    with log_path.open('a+') as log:
+        log.write('$ ' + ' '.join(cmd) + '\n')
+        log.flush()
+        offset = log.tell()
+        try:
+            subprocess.run(cmd, cwd=cwd, check=True, stdout=log, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError:
+            log.seek(offset)
+            print(log.read(), end='', flush=True)
+            raise
 
 
 def canonicalize_smiles(smiles: str) -> str | None:
@@ -4397,6 +4412,7 @@ def run_iteration_mmgbsa(
 
 
 def finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, compound_ids):
+    from molnova.stages._logging import detail
     output_candidates = sorted(
         mmgbsa_dir.glob(
             "*-out.maegz"
@@ -4490,15 +4506,15 @@ def finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, compound_ids):
             gbsa_elites
         )
 
-    print(
+    detail(
         f"MM-GBSA scores DB   : {updated}"
     )
-    print(
+    detail(
         f"GBSA elite count    : {len(gbsa_elites)}"
     )
 
     if gbsa_elites:
-        print(
+        detail(
             f"Best GBSA score     : {gbsa_elites[0][3]}"
         )
 
@@ -4766,6 +4782,8 @@ def run_iteration(
 def configure_project(project_toml, schrodinger=None):
     """Load TOML, initialize/migrate SQLite, and prepare common scaffold."""
     cfg = load_project_toml(project_toml)
+    from molnova.stages._logging import set_log_level
+    set_log_level(cfg['log_level'])
     sch = Path(
         schrodinger
         or os.environ.get("SCHRODINGER", "/home1/schrodinger/2026-3")

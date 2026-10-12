@@ -134,7 +134,10 @@ def test_parent_completion_uses_final_output_without_child_transfers(tmp_path,mo
 
 
 @pytest.mark.parametrize('failed',[False,True])
-def test_stage_timer_reports_work_and_failure_but_not_idle(monkeypatch,capsys,failed):
+@pytest.mark.parametrize('level', [1, 2, 3])
+def test_stage_timer_reports_work_and_failure_but_not_idle(monkeypatch,capsys,failed,level):
+    from contextvars import ContextVar
+    monkeypatch.setattr('molnova.stages._logging._log_level', ContextVar('test_log_level', default=level))
     clock=iter([10,75.25]);monkeypatch.setattr('molnova.stages._logging.time.monotonic',lambda:next(clock))
     @timed_stage('Generate stage')
     def stage(active):
@@ -146,8 +149,8 @@ def test_stage_timer_reports_work_and_failure_but_not_idle(monkeypatch,capsys,fa
         with pytest.raises(RuntimeError):stage(True)
     else:stage(True)
     output=capsys.readouterr().out
-    assert 'elapsed=00:01:05.2' in output
-    assert ('failed/interrupted' if failed else 'completed') in output
+    assert ('elapsed=00:01:05.2' in output) == (failed or level >= 2)
+    assert (('failed/interrupted' if failed else 'completed') in output) == (failed or level >= 2)
 
 
 def test_external_job_duration_uses_server_timestamps():

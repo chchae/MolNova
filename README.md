@@ -181,10 +181,21 @@ During supervised runs, each successful idle poll prints one line such as
 `[ligprep ] skip: No iteration requires LigPrep.` Generate, synthetic feasibility,
 LigPrep, Glide, MM-GBSA and optional FEP report their idle reason; silent workers
 use `skip: No eligible work.` Repeated DB/MCS setup messages remain hidden.
-Actual calculation and result-processing logs stream immediately. Worker failures,
-including initialization failures and tracebacks, remain visible. The driver
-prints its configuration once at startup; standalone stage commands retain their
-diagnostic output. Polling and calculation eligibility are unchanged.
+Set console verbosity in the project TOML:
+
+```toml
+log_level = 1 # default; log-level is also accepted
+```
+
+- `1`: stage/iteration summaries, total completion times and failure diagnostics.
+- `2`: also worker invocation timing and stage-internal progress.
+- `3` or higher: also per-compound/group docking, Prime, downloaded Amber logs and external commands.
+
+The same setting applies to standalone stages. Amber native logs display after download rather than during remote execution. Native logs are retained;
+suppressed helper output is saved in `molnova_commands.log`, with launch output
+in `prime_launch.log` and `glide_launch.log` in their work directories.
+Failures and tracebacks remain visible at every level. Polling, JobId recovery
+and calculation eligibility are unchanged.
 
 See `examples/egfr.toml` and `docs/architecture.md`.
 

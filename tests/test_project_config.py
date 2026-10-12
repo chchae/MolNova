@@ -181,3 +181,24 @@ def test_glide_job_timeout_rejects_invalid_values(value):
     from molnova.config import glide_job_timeout
     with pytest.raises(ValueError, match='glide-job-timeout'):
         glide_job_timeout({'glide-job-timeout': value})
+
+
+@pytest.mark.parametrize('extra, expected', [
+    ('', 1), ('log_level = 2\n', 2), ('log_level = 3\n', 3),
+    ('log-level = 4\n', 4), ('log_level = 2\nlog-level = 2\n', 2),
+])
+def test_log_level_configuration(tmp_path, extra, expected):
+    project = tmp_path / 'egfr.toml'
+    project.write_text(PROJECT_TOML + extra)
+    assert _core.load_project_toml(project)['log_level'] == expected
+
+
+@pytest.mark.parametrize('settings', [
+    {'log_level': 0}, {'log_level': -1}, {'log_level': True},
+    {'log_level': 1.5}, {'log_level': '3'}, {'log-level': False},
+    {'log_level': 1, 'log-level': 3},
+])
+def test_log_level_rejects_invalid_configuration(settings):
+    from molnova.config import log_level
+    with pytest.raises(ValueError, match='log.level'):
+        log_level(settings)

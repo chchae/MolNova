@@ -1,5 +1,6 @@
 """Retry Prime submission after temporary license checkout failures."""
 from pathlib import Path
+from molnova.stages._logging import detail
 import subprocess
 import time
 
@@ -21,12 +22,14 @@ def _logs(directory):
 
 def _run_attempt(command, cwd, on_line=None):
     lines = []
-    with subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE,
+    with (Path(cwd) / 'prime_launch.log').open('a') as log, subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
         for line in proc.stdout:
             if on_line is not None:
                 on_line(line)
-            print(line, end="", flush=True)
+            log.write(line)
+            log.flush()
+            detail(line, end="", flush=True)
             lines.append(line)
         return proc.wait(), "".join(lines)
 
@@ -37,7 +40,7 @@ def run_prime(command, cwd, *, wait_seconds=300, retries=3):
     for attempt in range(retries + 1):
         before = _logs(cwd)
         old_outputs = {path: path.stat().st_mtime_ns for path in cwd.glob("*-out.maegz")}
-        print("$", " ".join(command), flush=True)
+        detail("$", " ".join(command), flush=True)
         code, output = _run_attempt(command, cwd)
         for path, (text, modified) in _logs(cwd).items():
             previous, old_modified = before.get(path, ("", None))

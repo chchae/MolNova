@@ -6,6 +6,18 @@ from typing import Any
 from molnova import _core
 
 
+def log_level(config: dict[str, Any]) -> int:
+    """Console verbosity; accept the hyphenated spelling for flat TOML consistency."""
+    if ('log_level' in config and 'log-level' in config
+            and config['log_level'] != config['log-level']):
+        raise ValueError('log_level and log-level must agree')
+    for key in ('log_level', 'log-level'):
+        value = config.get(key, 1)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f'{key} must be an integer >= 1')
+    return config.get('log_level', config.get('log-level', 1))
+
+
 def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     for key in ('amber_gbsa', 'amber-gbsa-enabled'):
         if key in config and not isinstance(config[key], bool):

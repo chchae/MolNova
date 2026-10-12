@@ -70,3 +70,78 @@ def test_mmgbsa_idle_poll_has_explicit_reason(tmp_path, monkeypatch, capsys):
     args = SimpleNamespace(db_path=db, output=tmp_path, gbsa_input_count=100)
     mmgbsa._run_stage(args, None)
     assert capsys.readouterr().out == "No completed docking iteration requires MM-GBSA.\n"
+
+
+@pytest.fixture
+def verbosity():
+    from molnova.stages import _logging
+    token = _logging.set_log_level(1)
+    yield _logging.set_log_level
+    _logging._log_level.reset(token)
+
+
+@pytest.mark.parametrize('level', [1, 2, 3, 4])
+def test_console_verbosity_thresholds(verbosity, capsys, level):
+    from molnova.stages._logging import detail, progress
+    verbosity(level)
+    work_started('stage started')
+    progress('stage progress')
+    detail('compound details')
+    output = capsys.readouterr().out
+    assert 'stage started' in output
+    assert ('stage progress' in output) == (level >= 2)
+    assert ('compound details' in output) == (level >= 3)
+
+
+@pytest.mark.parametrize('level', [1, 2, 3, 4])
+def test_prime_launch_checkpoints_and_keeps_logs_at_every_level(tmp_path, verbosity, capsys, level):
+    from molnova.schrodinger_retry import _run_attempt
+    verbosity(level)
+    seen = []
+    code, output = _run_attempt(
+        [sys.executable, '-c', "print('JobId: durable-id'); print('native detail')"],
+        tmp_path, seen.append,
+    )
+    assert code == 0
+    assert seen == ['JobId: durable-id\n', 'native detail\n']
+    assert 'JobId: durable-id' in output
+    assert 'native detail' in (tmp_path / 'prime_launch.log').read_text()
+    assert ('native detail' in capsys.readouterr().out) == (level >= 3)
+
+
+@pytest.mark.parametrize('level', [1, 2, 3])
+def test_helper_command_output_and_failures(tmp_path, verbosity, capfd, level):
+    import subprocess
+    from molnova import _core
+    verbosity(level)
+    _core.run_command([sys.executable, '-c', "print('group calculation')"], cwd=tmp_path)
+    output = capfd.readouterr().out
+    assert ('group calculation' in output) == (level >= 3)
+    if level < 3:
+        assert 'group calculation' in (tmp_path / 'molnova_commands.log').read_text()
+    with pytest.raises(subprocess.CalledProcessError):
+        _core.run_command([sys.executable, '-c', "import sys; print('failed calculation'); sys.exit(1)"], cwd=tmp_path)
+    assert 'failed calculation' in capfd.readouterr().out
+
+
+@pytest.mark.parametrize('level', [1, 2, 3])
+def test_amber_download_preserves_artifacts_and_filters_console(tmp_path, monkeypatch, verbosity, capsys, level):
+    import io
+    import tarfile
+    from molnova import amber_gbsa
+    verbosity(level)
+    folder = tmp_path / 'run-test'
+    folder.mkdir()
+    payload = b'ligand minimization detail\n'
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w') as archive:
+        member = tarfile.TarInfo('CMPID_1/calculation.log')
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    monkeypatch.setattr(amber_gbsa, 'ssh', lambda *a, **kw: kw['stdout'].write(buffer.getvalue()))
+    monkeypatch.setattr(amber_gbsa, 'environment_command', lambda settings, command: command)
+    record = {'remote_dir': '/remote/run-test', 'run_id': 'run-test',
+              'settings': {}, 'compound_ids': [1]}
+    amber_gbsa.download_logs(tmp_path, record)
+    assert (folder / 'CMPID_1/calculation.log').read_bytes() == payload
+    assert ('ligand minimization detail' in capsys.readouterr().out) == (level >= 3)

@@ -8,6 +8,7 @@ import subprocess
 import time
 from contextlib import nullcontext
 from pathlib import Path
+from molnova.stages._logging import detail
 
 from molnova.schrodinger_retry import _run_attempt, license_unavailable
 
@@ -242,7 +243,7 @@ def reconcile_interrupted_submission(directory, record):
     if job_id:
         record.update(job_id=job_id, launching=False)
         _save(directory, record)
-        print(f"Recovered interrupted Prime submission JobId: {job_id}.", flush=True)
+        detail(f"Recovered interrupted Prime submission JobId: {job_id}.", flush=True)
         return True
     started = record.get("launch_started_at", job_file(directory).stat().st_mtime)
     if time.time() - started < 60:
@@ -288,7 +289,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
         if on_completed_subjobs is not None:
             on_completed_subjobs(record, jobs)
         if any(job.get("status") not in {"DONE", "FAILED", "CANCELED", "STOPPED"} for job in jobs):
-            print(f"Prime job {record['job_id']}: {status}; checking on next worker run.")
+            detail(f"Prime job {record['job_id']}: {status}; checking on next worker run.")
             return False
         subprocess.run([str(jsc), "download", "--cwd", record["job_id"]],
                        cwd=directory, check=True, capture_output=True, text=True)
@@ -302,7 +303,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
             from molnova.stages._logging import job_elapsed, format_elapsed
             elapsed = job_elapsed(parent)
             if elapsed is not None:
-                print(f"Prime MM-GBSA calculation completed; elapsed={format_elapsed(elapsed)}.", flush=True)
+                detail(f"Prime MM-GBSA calculation completed; elapsed={format_elapsed(elapsed)}.", flush=True)
             return True
         if failed:
             job_file(directory).unlink()
@@ -332,7 +333,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
             record["launch_started_at"] = time.time()
             record["attempt"] += 1
             _save(directory, record)
-            print("$", " ".join(command), flush=True)
+            detail("$", " ".join(command), flush=True)
             def checkpoint(line):
                 match = re.search(r"^JobId:\s*(\S+)", line, re.IGNORECASE)
                 if match:

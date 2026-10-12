@@ -240,6 +240,7 @@ def poll(args, iteration, directory, record):
 
 
 def download_logs(directory, record):
+    from molnova.stages._logging import detail, enabled
     remote = shlex.quote(record['remote_dir'])
     folder = directory / record['run_id']
     archive = folder / 'results.tar.pending'
@@ -260,6 +261,9 @@ def download_logs(directory, record):
                     pending = destination.with_suffix(destination.suffix + '.pending')
                     pending.write_bytes(source.read())
                     pending.replace(destination)
+                if enabled(3) and destination.suffix in ('.log', '.out'):
+                    detail(f'Amber {member.name}:', flush=True)
+                    detail(destination.read_text(errors='replace'), flush=True)
     finally:
         archive.unlink(missing_ok=True)
 

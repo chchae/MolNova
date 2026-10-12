@@ -7,6 +7,25 @@ import time
 
 WORK_STARTED = "__MOLNOVA_WORK_STARTED__"
 _timer = contextvars.ContextVar("molnova_stage_timer", default=None)
+_log_level = contextvars.ContextVar("molnova_log_level", default=1)
+
+
+def set_log_level(level):
+    return _log_level.set(level)
+
+
+def enabled(level):
+    return _log_level.get() >= level
+
+
+def detail(*args, **kwargs):
+    if enabled(3):
+        print(*args, **kwargs)
+
+
+def progress(*args, **kwargs):
+    if enabled(2):
+        print(*args, **kwargs)
 
 
 def work_started(message):
@@ -53,6 +72,7 @@ def timed_stage(label):
                 _timer.reset(token)
                 if timing['start'] is not None:
                     elapsed = format_elapsed(time.monotonic() - timing['start'])
-                    print(f'{label} {outcome}; elapsed={elapsed}.', flush=True)
+                    (progress if outcome == 'completed' else print)(
+                        f'{label} {outcome}; elapsed={elapsed}.', flush=True)
         return wrapped
     return decorate

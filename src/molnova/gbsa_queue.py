@@ -3,6 +3,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from molnova.stages._logging import detail
 
 from molnova import _core as c, database
 from molnova import prime_async as prime
@@ -171,7 +172,7 @@ def poll_queue(iteration, args, directory, record):
             # DB commit precedes the durable queue checkpoint.
             prime._save(directory, record)
             prime.job_file(folder).unlink(missing_ok=True)
-            print(f'Iteration {iteration}: CMPID_{cid} GBSA score persisted; slot released.', flush=True)
+            detail(f'Iteration {iteration}: CMPID_{cid} GBSA score persisted; slot released.', flush=True)
         except Exception as exc:
             if prime.load_job(folder) is not None:
                 record['entries'][key] = 'active'
