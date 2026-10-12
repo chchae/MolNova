@@ -19,6 +19,11 @@ else:
     from receptor_pdb import CAP_TEMPLATE_NAMES, NORMALIZATION_VERSION, normalize_receptor_pdb
 
 
+PROTOCOL = 'restrained_minimized_ff14SB_GAFF2_igb5_mbondi2_salt0.15_no_entropy_v2'
+MINIMIZATION = {'ntr': 1, 'restraint_wt': 2.0, 'restraintmask': '!@H=',
+                'maxcyc': 500, 'ncyc': 250, 'igb': 5, 'saltcon': 0.15}
+
+
 def save(path, value):
     pending = path.with_suffix(path.suffix + '.pending')
     pending.write_text(json.dumps(value, indent=2) + '\n')
@@ -91,6 +96,42 @@ def parse_score(path):
     return score
 
 
+def minimize_complex(folder, lock_fd):
+    """Relax the combined complex against its original pose, then validate restart."""
+    import parmed
+    restart = folder / 'complex.minimized.rst7'
+    for name in ('complex.minimized.rst7', 'minimize.out', 'minimize.mdinfo'):
+        (folder / name).unlink(missing_ok=True)
+    (folder / 'minimize.in').write_text(
+        'Heavy-atom restrained complex minimization\n'
+        '&cntrl\n imin=1, maxcyc=500, ncyc=250, ntb=0, cut=999.0,\n'
+        ' igb=5, saltcon=0.15, ntpr=50,\n'
+        " ntr=1, restraint_wt=2.0, restraintmask='!@H=',\n/\n")
+    run(['sander', '-O', '-i', 'minimize.in', '-o', 'minimize.out',
+         '-p', 'complex.prmtop', '-c', 'complex.inpcrd', '-ref', 'complex.inpcrd',
+         '-r', restart.name, '-inf', 'minimize.mdinfo'], folder, lock_fd)
+    report = (folder / 'minimize.out').read_text()
+    # Sander can stop without a usable final frame. The final section and finite
+    # energy, plus a readable restart, are required even when it exits zero.
+    final = report.split('FINAL RESULTS')
+    match = re.search(r'^\s*NSTEP\s+ENERGY[^\n]*\n\s*\d+\s+(\S+)',
+                      final[-1], re.MULTILINE) if len(final) > 1 else None
+    if (match is None or not math.isfinite(float(match.group(1)))
+            or re.search(r'\bERROR\b|\bNaN\b|\*{4,}', report, re.IGNORECASE)):
+        raise ValueError('Complex minimization failed or returned non-finite energy; see minimize.out')
+    if not restart.is_file() or restart.stat().st_size == 0:
+        raise ValueError('Complex minimization did not produce a restart')
+    minimized = parmed.load_file(str(folder / 'complex.prmtop'), xyz=str(restart))
+    if not all(math.isfinite(value) for atom in minimized.atoms
+               for value in (atom.xx, atom.xy, atom.xz)):
+        raise ValueError('Complex minimization returned non-finite coordinates')
+    termination = 'cycle limit reached' if 'Maximum number of minimization cycles reached' in report else 'see minimize.out for termination'
+    with (folder / 'calculation.log').open('a') as log:
+        log.write(f'\nRestrained minimization complete ({termination}): final energy={match.group(1)}, '
+                  f'MM-GBSA input={restart.name}\n')
+    return restart
+
+
 def calculate(root, entry, charge_method, lock_fd):
     cid = entry['id']
     output = root / 'results' / f'CMPID_{cid}.json'
@@ -135,11 +176,12 @@ def calculate(root, entry, charge_method, lock_fd):
             if amber_atom.name != source[1] or any(abs(a-b) > 0.002 for a, b in
                     zip((amber_atom.xx, amber_atom.xy, amber_atom.xz), xyz)):
                 raise ValueError('LEaP changed ligand identity or docking coordinates')
+        minimized = minimize_complex(folder, lock_fd)
         (folder / 'mmpbsa.in').write_text(
             '&general\n startframe=1, endframe=1, interval=1, entropy=0, keep_files=1,\n/\n'
             '&gb\n igb=5, saltcon=0.15,\n/\n')
         run(['MMPBSA.py', '-O', '-i', 'mmpbsa.in', '-cp', 'complex.prmtop',
-             '-rp', 'receptor.prmtop', '-lp', 'ligand.prmtop', '-y', 'complex.inpcrd',
+             '-rp', 'receptor.prmtop', '-lp', 'ligand.prmtop', '-y', minimized.name,
              '-o', 'FINAL_RESULTS_MMPBSA.dat'], folder, lock_fd)
         result = {'id': cid, 'score': parse_score(folder / 'FINAL_RESULTS_MMPBSA.dat')}
     except Exception as exc:
@@ -160,6 +202,10 @@ def execute(root):
         save(root / 'status.json', {'status': 'running'})
         # Common receptor errors must stop the batch, not fail every ligand.
         try:
+            if config.get('protocol', PROTOCOL) != PROTOCOL:
+                raise RuntimeError('Input protocol does not match this Amber worker; saved work retained')
+            if config.get('minimization', MINIMIZATION) != MINIMIZATION:
+                raise RuntimeError('Input minimization settings do not match this Amber worker')
             version = config.get('receptor_normalization_version')
             if version is not None and version != NORMALIZATION_VERSION:
                 raise RuntimeError(f'Unsupported receptor normalization version: {version}')
@@ -204,7 +250,7 @@ def collect(root):
 def archive_logs(root):
     with tarfile.open(fileobj=sys.stdout.buffer, mode='w|') as archive:
         for path in sorted(root.glob('CMPID_*/*')):
-            if path.name in ('calculation.log', 'FINAL_RESULTS_MMPBSA.dat'):
+            if path.name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat'):
                 archive.add(path, arcname=str(path.relative_to(root)))
         if (root / 'calculation.log').exists():
             archive.add(root / 'calculation.log', arcname='calculation.log')

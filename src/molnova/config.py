@@ -11,6 +11,7 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     if not isinstance(enabled, bool):
         raise ValueError('amber-gbsa-enabled must be a boolean')
     settings = {'amber_gbsa_enabled': enabled}
+    # amber-keep-count now limits the Glide-ranked population before Amber.
     for key, default in [('amber-cpus', 128), ('amber-keep-count', 500)]:
         value = config.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:

@@ -231,19 +231,30 @@ def amber_keep_count(args):
     return getattr(args, 'amber_keep_count', 500) if getattr(args, 'amber_gbsa_enabled', False) else None
 
 
-def _amber_rows(conn, iteration):
-    return conn.execute(
+def _amber_rows(conn, iteration, keep_count=None):
+    rows = conn.execute(
         'SELECT id,name,state,docking_score,amber_gbsa_score,gbsa_score,fep_score,failed_stage '
         'FROM compound WHERE iteration=? AND (iteration=0 OR docking_score IS NOT NULL) ORDER BY id',
         (iteration,),
     ).fetchall()
+    if iteration == 0 or keep_count is None:
+        return rows
+    # Rank the final Glide population before excluding scored/failed/claimed
+    # rows: they retain their positions and cannot trigger lower-ranked refill.
+    return sorted((r for r in rows if math.isfinite(r[3])),
+                  key=lambda r: (r[3], r[0]))[:keep_count]
 
 
-def _amber_completion_reason(conn, iteration, target_count):
+def _amber_completion_reason(conn, iteration, target_count, keep_count=500):
     reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count) if iteration > 0 else None
     if reason:
         return reason
-    rows = _amber_rows(conn, iteration)
+    running = sum(r[2] == State.AMBER_RUNNING for r in _amber_rows(conn, iteration))
+    if running:
+        # A saved legacy all-pose run may include compounds outside the new
+        # Glide shortlist. Its claims still require recovery, never abandonment.
+        return f'{running} compounds still running Amber GBSA screening'
+    rows = _amber_rows(conn, iteration, keep_count)
     pending = sum(
         state == State.AMBER_RUNNING or
         (state != State.FAILED and failed_stage != 'amber_gbsa' and (score is None or not math.isfinite(score)))
@@ -252,15 +263,15 @@ def _amber_completion_reason(conn, iteration, target_count):
     return f'{pending} compounds await Amber GBSA screening' if pending else None
 
 
-def amber_completion_reason(path, iteration, target_count):
+def amber_completion_reason(path, iteration, target_count, keep_count=500):
     with connect(path) as conn:
-        return _amber_completion_reason(conn, iteration, target_count)
+        return _amber_completion_reason(conn, iteration, target_count, keep_count)
 
 
 def _prime_ranked_rows(conn, iteration, rows, amber_keep_count):
     if amber_keep_count is None or iteration == 0:
         return sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
-    scores = {r[0]: r[4] for r in _amber_rows(conn, iteration)
+    scores = {r[0]: r[4] for r in _amber_rows(conn, iteration, amber_keep_count)
               if r[4] is not None and math.isfinite(r[4])}
     return sorted((r for r in rows if r[0] in scores),
                   key=lambda r: (scores[r[0]], r[2], r[0]))[:amber_keep_count]
@@ -273,12 +284,13 @@ def prime_selection_rows(path, iteration, count, amber_keep_count=None):
         return [(r[0], names[r[0]], r[2]) for r in ranked[:count]]
 
 
-def claim_amber_candidates(path, iteration, target_count):
+def claim_amber_candidates(path, iteration, target_count, keep_count=500):
+    """Atomically rank the final Glide top-N, then claim its unscored members."""
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         if iteration > 0 and _docking_completion_reason(_iteration_rows(conn, iteration), target_count):
             return []
-        rows = [r for r in _amber_rows(conn, iteration)
+        rows = [r for r in _amber_rows(conn, iteration, keep_count)
                 if r[2] in ((State.REFERENCE, State.DOCKED, State.GBSA_DONE, State.FEP_DONE) if iteration == 0
                             else (State.DOCKED, State.GBSA_DONE, State.FEP_DONE)) and r[4] is None
                 and r[7] != 'amber_gbsa']
@@ -299,12 +311,12 @@ def reset_unsubmitted_amber(path, iteration):
             (State.FEP_DONE, State.GBSA_DONE, State.REFERENCE if iteration == 0 else State.DOCKED, iteration, State.AMBER_RUNNING))
 
 
-def amber_rankings(path, iteration):
+def amber_rankings(path, iteration, keep_count=None):
     with connect(path) as conn:
-        return [r for r in conn.execute(
-            'SELECT id,name,docking_score,amber_gbsa_score,gbsa_score FROM compound '
-            'WHERE iteration=? AND (iteration=0 OR docking_score IS NOT NULL) AND amber_gbsa_score IS NOT NULL '
-            'ORDER BY amber_gbsa_score,docking_score,id', (iteration,)) if math.isfinite(r[3])]
+        rows = [(r[0], r[1], r[3], r[4], r[5])
+                for r in _amber_rows(conn, iteration, keep_count)
+                if r[4] is not None and math.isfinite(r[4])]
+        return sorted(rows, key=lambda r: (r[3], r[2] if r[2] is not None else float('-inf'), r[0]))
 
 
 def amber_identity_rows(path, iteration, ids):
@@ -362,13 +374,13 @@ def store_amber_results(path, iteration, results, allowed_ids):
 def _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count=None):
     rows = _iteration_rows(conn, iteration)
     if iteration == 0:
-        if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count):
+        if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count, amber_keep_count):
             return []
         return [cid for cid, state, _, score in rows
                 if score is None and state in (State.REFERENCE, State.DOCKED)]
     if iteration < 0 or _docking_completion_reason(rows, target_count) is not None:
         return []
-    if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count):
+    if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count, amber_keep_count):
         return []
     docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
     return [cid for cid, state, _, score in docked[:count]
@@ -408,7 +420,7 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
     with connect(path) as conn:
         rows = _iteration_rows(conn, iteration)
         if amber_keep_count is not None:
-            reason = _amber_completion_reason(conn, iteration, target_count)
+            reason = _amber_completion_reason(conn, iteration, target_count, amber_keep_count)
             if reason:
                 return reason
         docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
@@ -534,7 +546,8 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
     if stage == 'mmgbsa-recovery':
         return 'Existing Prime claims still running' if has_running_mmgbsa(path, iteration) else None
     if stage == 'amber-gbsa':
-        return amber_completion_reason(path, iteration, target_count)
+        return amber_completion_reason(path, iteration, target_count,
+                                       amber_keep_count if amber_keep_count is not None else 500)
     if stage == 'mmgbsa' and iteration == 0:
         return reference_mmgbsa_completion_reason(path)
     if stage == 'mmgbsa':

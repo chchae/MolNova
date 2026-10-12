@@ -86,11 +86,11 @@ tail-timeout = 300
 glide-job-timeout = 1800
 elite-tl-epochs = 3
 amber-gbsa-enabled = true
-amber-cpus = 128
+amber-cpus = 96
 amber-keep-count = 500
-amber-ssh-host = "tensor"
+amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
-amber-conda-init = "/home1/chchae/anaconda3/etc/profile.d/conda.sh"
+amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
 amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
 amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
 amber-charge-method = "bcc"
@@ -329,7 +329,7 @@ Completion means required behavior passes relevant automated checks, scientific 
 
 ### Observed differences and incomplete engineering requirements
 
-- Earlier README top-100 wording has been updated by the explicit Amber prescreen change: the EGFR example uses Amber top-500 then Prime top-200. Loader omission default for Prime-only projects remains 20.
+- Earlier README top-100 wording has been updated by the explicit Amber prescreen change: the EGFR example uses Glide top-500, restrained Amber minimization/scoring, then Prime top-200 by Amber score. Loader omission default for Prime-only projects remains 20.
 - Old architecture concurrency text and state-chain diagrams omit later supervisor/synthetic/reference behavior; they are not sufficient specifications.
 - SQL/configuration logic and raw state strings still exist in `_core.py` and some stages despite centralization guidance. Full centralization and enum-only use are incomplete; preserve behavior while addressing relevant work, not through a wholesale rewrite.
 - Version pinning and an executable end-to-end scientific validation record were not established by this review. Tests were inspected, not run; compliance of all code paths is not proven.
@@ -348,35 +348,70 @@ Completion means required behavior passes relevant automated checks, scientific 
 
 ## 15. AmberTools prescreen before Prime — 2026-10-12 user change
 
-**Confirmed user change:** use AmberTools on tensor with a 128-core CPU to screen
-Glide results for approximately 1,000 compounds, retain approximately 500, then
-calculate Prime MM-GBSA for the 200 lowest Amber scores. Add a separate
-`compound.amber_gbsa_score REAL` column; preserve Prime `gbsa_score` and all
-existing results/jobs. Use the prepared receptor at
-`output/iter0/mmgbsa/receptor.maegz` and each iteration's
-`iterN/glide/best_poses.maegz`. Keep `CMPID_<id>` identity and use the separate
-`iterN/amber_gbsa/` directory, leaving Prime `iterN/mmgbsa/` intact. Iteration 0
-also calculates Amber GBSA before new Prime calculations when enabled. All eligible reference poses are scored regardless of docking score or top-N counts; supplied reference titles map to SQLite IDs in calculation copies. Existing Prime/FEP scores and active submissions are preserved; active Prime work is recovered first. The default receptor can be extracted from the docking grid with the existing Prime extractor before Amber runs.
+**Confirmed user change (latest selection/minimization policy):** after the entire
+generated iteration's Glide work finishes, select only the 500 original compounds
+with the lowest finite Glide scores. Run Amber GBSA for this selected set, then
+send its 200 lowest finite Amber scores to Prime MM-GBSA. `amber-keep-count`
+(default 500) now means the Glide-ranked Amber input count, and
+`gbsa-input-count` sets the Prime count. This supersedes the former all-docked-pose
+Amber calculation and Amber-based top-500 reduction. Keep the current EGFR host
+on t41 and 96 parallel single-core calculations; omission defaults remain unchanged.
+Store `compound.amber_gbsa_score` separately from Prime `gbsa_score`, and preserve
+all scientific results and saved jobs. Use the prepared receptor at
+`output/iter0/mmgbsa/receptor.maegz`, each iteration's
+`iterN/glide/best_poses.maegz`, and `CMPID_<id>` calculation identity.
+`iterN/amber_gbsa/` remains separate from `iterN/mmgbsa/`. Iteration 0 still scores
+all eligible reference poses with Amber before unscored Prime references, without
+Glide/top-N filtering. Recover existing Prime and Amber submissions intact first,
+including legacy Amber submissions containing more than the new Glide shortlist.
 
-**Implementation choices pending scientific evaluation:** score all finite-score
-docked poses, rank by finite Amber score ascending, then docking score and ID,
-export top 500 and send its top 200 to Prime. The 500-compound reduction is a
-ranked shortlist, not a separate prefilter before Amber. Smaller successful sets
-produce smaller shortlists; terminal Amber failures are diagnosed and excluded,
-never given invented scores. The user did not specify a separate criterion for
-reducing 1,000 to 500. No speedup factor or target-level validation is established.
+**Implementation choices:** break Glide ties by SQLite ID. Rank the complete
+finite-score Glide population before excluding scored, failed or running rows;
+they retain their selection positions, and failures do not refill from outside
+the Glide top-500. Within this set, break Amber ties by Glide score then ID.
+Existing Amber scores outside the Glide shortlist remain stored and in the full
+score export, but cannot enter new Prime selection. Unscored outside compounds
+need no Amber result for Prime/iteration/generation readiness; legacy running
+claims and saved remote work still require recovery. Smaller successful sets
+produce smaller candidate lists; terminal failures never receive invented scores.
 
-The fast protocol uses one docking snapshot, ff14SB protein parameters,
-GAFF2 ligand parameters, AM1-BCC charges (`amber-charge-method="bcc"`, optional
-`"abcg2"`), igb=5, mbondi2 radii and saltcon=0.15 M. No MD, complex minimization
-or entropy estimate is performed. AM1-BCC parameterization can relax coordinates;
-restore the original atom-matched Glide coordinates before scoring and verify
-LEaP preserves ligand identity/positions. Obtain integer net charge from the
-actual docked LigPrep state rather than original generation SMILES. Translate
-prepared histidine protonation and explicit cysteine disulfide/thiolate states
-into Amber names/bonds. Unsupported receptor residues/cofactors or receptor
-preparation errors stop the entire batch; do not silently remove them. Amber and
-Prime numerical scores represent different protocols and are not interchangeable.
+**Confirmed scientific change:** start from the Glide pose, restrain both protein
+and ligand heavy atoms, minimize the combined complex, then evaluate Amber
+MM-GBSA from the minimized complex snapshot. Use exactly:
+
+```text
+ntr=1,
+restraint_wt=2.0,
+restraintmask='!@H=',
+```
+
+Keep ff14SB protein/GAFF2 ligand parameters, AM1-BCC (`amber-charge-method="bcc"`,
+optional `"abcg2"`), igb=5, mbondi2 radii and saltcon=0.15 M. Restore the original
+atom-matched Glide coordinates after AM1-BCC parameterization and verify LEaP
+preserves ligand identity/positions before intentional complex minimization.
+Use the original `complex.inpcrd` as both the starting coordinates and Sander
+restraint reference; preserve it and the original docking poses. Write a separate
+`complex.minimized.rst7`, then pass that frame to MMPBSA.py's single-trajectory
+complex/receptor/ligand evaluation. Positional restraints are used for minimization
+only; the subsequent MM-GBSA energy evaluation does not add their penalty.
+Prime continues to use its established Glide-pose input flow.
+
+**Minimization implementation choices pending scientific evaluation:** Sander
+`imin=1`, nonperiodic `ntb=0`, `cut=999.0`, implicit solvent `igb=5`, `saltcon=0.15`,
+maximum 500 cycles with 250 initial steepest-descent cycles, followed by conjugate
+gradient under the installed default method. A finite final energy, final-results
+section and readable finite-coordinate restart establish completed minimization;
+reaching the cycle limit does not establish convergence. Record that termination
+and retain `minimize.in`/`minimize.out` locally for review. A failed/incomplete
+minimization must stop this compound's MM-GBSA and record its diagnostic.
+No MD or entropy estimate is performed. New runs record the versioned
+`restrained_minimized_ff14SB_GAFF2_igb5_mbondi2_salt0.15_no_entropy_v2` protocol and
+restraint/minimization settings; existing scores are not recomputed or relabelled.
+Obtain ligand net charge from the actual docked LigPrep state. Translate prepared
+histidine and explicit cysteine protonation/disulfide states without deleting
+unsupported residues/cofactors. Receptor preparation errors stop the batch.
+Amber and Prime scores represent different protocols and are not interchangeable.
+No target-ranking validation or throughput claim is established.
 
 **Confirmed receptor normalization change:** immediately after Maestro-to-PDB export,
 preserve `receptor.pdb` and write a separate `receptor.normalized.pdb` for every
@@ -401,7 +436,8 @@ products and parse them with ParmEd before any MM-GBSA calculation. Saved jobs a
 scientific scores remain intact; this does not authorize resubmitting production work.
 
 Configuration is flat TOML. `amber-gbsa-enabled` defaults false for compatibility;
-`examples/egfr.toml` enables it. `amber-cpus=128`, `amber-keep-count=500`;
+`examples/egfr.toml` enables it with `amber-cpus=96`, `amber-keep-count=500`;
+the loader CPU default remains 128 for omitted settings.
 keep-count must be >= `gbsa-input-count`. CPU/count settings are positive integers
 and reject bool. SSH host defaults tensor, environment defaults
 `/home1/amber26/envs/AmberTools26`, conda initialization defaults
@@ -415,6 +451,21 @@ conda activate /home1/amber26/envs/AmberTools26
 source "$CONDA_PREFIX/amber.sh"
 ```
 
+**Later confirmed host change:** the EGFR example now runs Amber on `t41`,
+using `/home1/amber26/miniforge3/etc/profile.d/conda.sh`, then activating
+`/home1/amber26/envs/AmberTools26` and sourcing `$CONDA_PREFIX/amber.sh`.
+The existing configurable SSH adapter supports this sequence; other-project
+loader defaults remain unchanged. Preserve the example's 96 concurrent single-core
+calculations. REINVENT and AiZynthFinder stay on tensor. Saved runs retain their
+original host/settings and must not be relocated or resubmitted implicitly.
+A noninteractive SSH probe on t41 verified Python 3.12, ParmEd 4.3.1 and all
+required Amber executables under that environment. A separate one-ligand EGFR
+smoke run completed receptor normalization/LEaP, AM1-BCC, parmchk2, ligand/complex
+LEaP and MMPBSA.py; finite results/logs were downloaded and the terminal marker
+and released remote lock were verified. No production SQLite results/jobs were
+modified. This verifies execution for one compound, not 96-way throughput or
+scientific ranking quality.
+
 `amber-receptor` defaults to `<out-dir>/iter0/mmgbsa/receptor.maegz` and resolves
 relative to TOML; SSH environment/work/init paths remain remote absolute paths.
 Optional `amber-ssh-config` is a local SSH configuration file; normal host-key
@@ -424,8 +475,9 @@ worker, with OMP/OpenBLAS/MKL/NumExpr threads set to one. Another saved iteratio
 in the same project blocks a new batch; this is not a cluster resource allocator
 or a host-wide limit across independent projects.
 
-SQLite atomically claims eligible unscored compounds into `amber_running` only
-after target-count and all upstream work finish. Successful results restore
+SQLite atomically ranks the final Glide top-`amber-keep-count` and claims its
+eligible unscored compounds into `amber_running` only after target-count and all
+upstream work finish. Readiness and Prime ranking use the same selected set. Successful results restore
 `docked` or the prior score-bearing GBSA/FEP state; preserve existing scientific
 scores. A native ligand failure records `failed_stage="amber_gbsa"` and its
 message, marking unscored compounds failed while preserving completed Prime/FEP
@@ -461,7 +513,9 @@ Standalone Amber performs one submission/recovery pass; the supervisor polls it.
 Local artifacts: run input/protocol manifest, receptor PDB and ligand MOL2 files,
 per-compound native calculation logs and `FINAL_RESULTS_MMPBSA.dat`, remote
 snapshots, completed records, `amber_scores.tsv`, `amber_top.tsv`, and
-`prime_candidates.tsv`. TSVs include both DB names and CMPID titles. Full Amber
+`prime_candidates.tsv`. `amber_scores.tsv` retains all stored scores, while
+`amber_top.tsv` and Prime candidates include only finite Amber scores from the
+Glide-selected input set. TSVs include both DB names and CMPID titles. Full Amber
 topologies/intermediates remain in the recorded remote run folder. `status`
 reports Amber scored counts and minimum separately from Prime.
 
@@ -474,3 +528,12 @@ MMPBSA.py, result download and SQLite persistence. This proves adapter operation
 on that small fixture; it does not validate EGFR scores, 128-core throughput,
 complex cofactors or production ranking quality. Production jobs/DBs were not run
 or modified during verification.
+
+
+Latest protocol verification: a separate one-compound EGFR smoke run on t41
+completed the 500-cycle restrained complex minimization and evaluated MMPBSA.py
+from `complex.minimized.rst7`. The requested mask selected all 2,286 receptor and
+26 ligand heavy atoms, with finite relaxed coordinates and a finite GBSA score.
+The smoke run reached its cycle limit before convergence; it validates runtime
+integration, not convergence, target ranking or 96-way throughput. Original poses,
+production SQLite results and submitted jobs were preserved.

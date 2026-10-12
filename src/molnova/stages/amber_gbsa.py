@@ -50,7 +50,7 @@ def _run_stage(args, iteration):
             amber_gbsa.prepare_reference_receptor(args)
         if not args.amber_receptor.is_file():
             raise FileNotFoundError(f'Amber receptor not found: {args.amber_receptor}')
-        ids = database.claim_amber_candidates(args.db_path, iteration, args.target_count)
+        ids = database.claim_amber_candidates(args.db_path, iteration, args.target_count, args.amber_keep_count)
         if ids:
             record = amber_gbsa.new_record(args, iteration, directory, ids)
     if record is not None:
@@ -58,7 +58,7 @@ def _run_stage(args, iteration):
         if not amber_gbsa.poll(args, iteration, directory, record):
             print('Amber GBSA remote work pending; persisted results will be recovered on the next poll.')
             return
-    reason = database.amber_completion_reason(args.db_path, iteration, args.target_count)
+    reason = database.amber_completion_reason(args.db_path, iteration, args.target_count, args.amber_keep_count)
     if reason:
         raise RuntimeError(reason)
     amber_gbsa.write_rankings(args, iteration, directory)

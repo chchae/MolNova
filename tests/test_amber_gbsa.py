@@ -84,7 +84,7 @@ def test_1000_to_500_to_200(project):
             "INSERT INTO compound(id,name,smiles,iteration,state,docking_score,amber_gbsa_score) "
             "VALUES (?,?,'C',1,'docked',?,?)",
             [(i,f'GEN_I01_{i:06d}',-i,-(1001-i)) for i in range(1,1001)])
-    assert database.claim_mmgbsa_candidates(project.db_path,1,200,1000,500) == list(range(1,201))
+    assert database.claim_mmgbsa_candidates(project.db_path,1,200,1000,500) == list(range(501,701))
 
 
 @pytest.mark.parametrize('bad', [{'id':99,'score':-5}, {'id':2,'score':float('inf')},

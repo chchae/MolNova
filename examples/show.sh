@@ -9,10 +9,10 @@ from (
            count(*) as count,
            count(docking_score) as n_dock,
            printf('%6.2f', min(docking_score)) as glide,
-           count(amber_gbsa_score) as n_amber,
+           count(amber_gbsa_score) as n_ambe,
            printf('%6.2f', min(amber_gbsa_score)) as amber,
-           count(gbsa_score) as n_gbsa,
-           printf('%6.2f', min(gbsa_score)) as gbsa,
+           count(gbsa_score) as n_prim,
+           printf('%6.2f', min(gbsa_score)) as prime,
            strftime('%m-%d %H:%M', MIN(modified_at), '+9 hours') AS modified
     from compound
     group by iteration

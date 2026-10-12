@@ -74,7 +74,7 @@ the same options, such as `--once` and `--poll-interval`.
 
 To permit iteration numbers up to 10, set `max-iteration = 10` in
 `examples/egfr.toml` and invoke each iteration separately.
-The example uses 1000 compounds per iteration, an Amber top-500 shortlist,
+The example uses 1000 compounds per iteration, a Glide top-500 selection for restrained Amber GBSA,
 Prime MM-GBSA for the Amber top-200, and 20 Prime GBSA elites. Each next iteration waits until the previous iterations'
 LigPrep/Glide work, optional Amber screening and Prime processing of the final selected top-N have
 finished. Terminal failures are processed but cannot supply elites; retryable
@@ -467,20 +467,20 @@ reference failures are recorded and do not cause endless resubmission.
 
 ### AmberTools screening before Prime
 
-`examples/egfr.toml` enables `Glide → AmberTools → Prime` screening on tensor.
-Amber scores all completed docking poses with up to 128 independent single-core
-jobs, exports the lowest 500, and sends its lowest 200 to Prime. The 500 is a
-ranked shortlist; all docking poses are scored by Amber first. Other project
+`examples/egfr.toml` enables `Glide → AmberTools → Prime` screening on t41.
+Amber selects only the 500 lowest finite Glide scores after docking completes,
+then minimizes/scores those compounds with up to 96 independent single-core jobs.
+Its 200 lowest finite Amber scores go to Prime. Other project
 configs retain Prime-only behavior unless `amber-gbsa-enabled=true` is set.
 
 ```toml
 amber-gbsa-enabled = true
-amber-cpus = 128
-amber-keep-count = 500
+amber-cpus = 96
+amber-keep-count = 500  # Glide-ranked Amber input count
 gbsa-input-count = 200
-amber-ssh-host = "tensor"
+amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
-amber-conda-init = "/home1/chchae/anaconda3/etc/profile.d/conda.sh"
+amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
 amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
 amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
 amber-charge-method = "bcc"
@@ -489,7 +489,7 @@ amber-charge-method = "bcc"
 Run `molnova run egfr.toml --iteration 1` to supervise the full iteration, or
 `molnova amber-gbsa egfr.toml --iteration 1` for one Amber submit/recovery pass.
 The receptor path is local and relative to TOML; environment/work/init paths
-belong to tensor. Optional `amber-ssh-config` points to a local SSH config.
+belong to t41. Optional `amber-ssh-config` points to a local SSH config.
 
 Amber results go to `output/iterN/amber_gbsa/`; Prime keeps
 `output/iterN/mmgbsa/`. SQLite migrates non-destructively to add
@@ -498,10 +498,14 @@ Amber results go to `output/iterN/amber_gbsa/`; Prime keeps
 to calculation titles `CMPID_<id>`. Native logs and final score reports are
 retrieved locally; full topologies remain in the recorded remote run folder.
 
-The fast protocol scores the docking snapshot without MD or complex minimization:
-ff14SB/GAFF2, AM1-BCC (optional ABCG2), igb=5/mbondi2, 0.15 M salt, no entropy.
+The Amber protocol minimizes the combined protein–ligand complex with heavy-atom
+restraints (`ntr=1`, `restraint_wt=2.0`, `restraintmask='!@H='`), then scores the
+minimized snapshot: ff14SB/GAFF2, AM1-BCC (optional ABCG2), igb=5/mbondi2, 0.15 M
+salt, no MD or entropy. The implementation uses up to 500 minimization cycles
+(250 steepest descent); a completed cycle limit does not guarantee convergence.
+Original Glide coordinates are retained; Prime uses its existing input flow.
 Ligand net charge comes from the selected docked state, and original docking
-coordinates are restored after charge parameterization. Receptor preparation
+coordinates are restored after charge parameterization, before restrained minimization. Receptor preparation
 errors stop the batch; native ligand failures receive diagnostics and no score.
 Amber and Prime scores are separate protocols. A small synthetic real-calculator
 smoke test passed; target scoring quality and 128-core throughput remain unverified.

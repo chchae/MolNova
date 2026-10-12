@@ -169,8 +169,9 @@ def prepare_remote(args, iteration, directory, record):
         raise RuntimeError('Amber input structures changed during export')
     identities = database.amber_identity_rows(args.db_path, iteration, record['compound_ids'])
     from molnova.receptor_pdb import NORMALIZATION_VERSION
+    from molnova.amber_runner import PROTOCOL, MINIMIZATION
     config = {'receptor_normalization_version': NORMALIZATION_VERSION, 'entries': entries, 'cpus': args.amber_cpus, 'charge_method': args.amber_charge_method,
-              'protocol': 'single_pose_ff14SB_GAFF2_igb5_mbondi2_salt0.15_no_entropy',
+              'protocol': PROTOCOL, 'minimization': MINIMIZATION,
               'identities': identities}
     save(folder / 'input.json', config)
     worker = Path(__file__).with_name('amber_runner.py')
@@ -248,7 +249,7 @@ def download_logs(directory, record):
                 f'python {remote}/worker.py archive {remote}'), stdout=stream)
         allowed = {'calculation.log'} | {
             f'CMPID_{cid}/{name}' for cid in record['compound_ids']
-            for name in ('calculation.log', 'FINAL_RESULTS_MMPBSA.dat')}
+            for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat')}
         with tarfile.open(archive) as stream:
             for member in stream:
                 if member.name not in allowed or not member.isfile():
@@ -265,7 +266,7 @@ def download_logs(directory, record):
 
 def write_rankings(args, iteration, directory):
     rows = database.amber_rankings(args.db_path, iteration)
-    retained = rows if iteration == 0 else rows[:args.amber_keep_count]
+    retained = database.amber_rankings(args.db_path, iteration, args.amber_keep_count)
     candidates = rows if iteration == 0 else retained[:args.gbsa_input_count]
     selections = [('amber_scores.tsv', rows), ('amber_top.tsv', retained),
                   ('prime_candidates.tsv', candidates)]

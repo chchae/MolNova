@@ -637,8 +637,8 @@ same final filename. This postprocessing does not launch new calculations.
 
 The 2026-10-12 user change adds optional Amber screening after completed Glide
 and before Prime. See SPEC section 15 for confirmed scope and scientific choices.
-When enabled: score all docked poses on tensor, export Amber top 500, and claim
-Prime top 200 by Amber score. Store `amber_gbsa_score` separately; keep Prime
+When enabled: select final Glide top 500, minimize/score only those compounds
+with Amber on the configured host (EGFR: t41), and claim its Prime top 200 by Amber score. Store `amber_gbsa_score` separately; keep Prime
 `gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/mmgbsa/` intact. The example
 EGFR config enables it; default omission preserves Prime-only compatibility.
 Iteration 0 also runs Amber before new Prime calculations when enabled, using all eligible supplied reference poses without docking-score/top-N filtering. Map source titles to CMPID in calculation copies. Bootstrap the default receptor with the existing grid extractor when absent. Existing Prime submissions are recovered first.
@@ -661,3 +661,46 @@ Changes/errors are logged. LEaP cap template names are aligned to the normalized
 PDB without changing parameters. `receptor-pdb-v1` is recorded in new inputs;
 there is no topology cache. Stale products are removed only after locking, and
 LEaP errors/missing or unreadable products prevent MM-GBSA. Keep saved runs intact.
+
+
+## EGFR Amber host update
+
+The EGFR TOML now selects `amber-ssh-host="t41"` and
+`amber-conda-init="/home1/amber26/miniforge3/etc/profile.d/conda.sh"`.
+Keep `/home1/amber26/envs/AmberTools26`, the remote work directory and 96 parallel
+single-core calculations. The existing `environment_command` sources conda.sh,
+activates the configured environment, sources `$CONDA_PREFIX/amber.sh`, then sets
+native thread counts to one. No adapter/default changes are needed. REINVENT and
+AiZynthFinder remain on tensor, and Schrödinger retains its separate host setting.
+Preserve saved run identities/settings; do not move or resubmit existing jobs.
+
+A noninteractive t41 probe verified the environment and required executables.
+An isolated one-ligand EGFR smoke run exercised receptor normalization/LEaP,
+AM1-BCC, parmchk2, complex LEaP, MMPBSA.py and result/log download with a finite
+score, terminal marker and released lock. No production DB/job changes were made;
+96-way throughput was not benchmarked.
+
+
+## Latest Amber Glide preselection and restrained minimization
+
+`amber-keep-count=500` now limits the Amber input population by final finite Glide
+score (ID breaks ties), before excluding scored/failed/running rows. Restrict
+Amber completion and new Prime ranking to that same population. Select Prime's
+`gbsa-input-count=200` by finite Amber score, then Glide score/ID. Preserve existing
+outside scores, but exclude them from new Prime selection; recover legacy saved
+all-pose runs and running claims intact. Iteration 0 remains exempt from the limit.
+
+New Amber calculations restore original docking coordinates after charge typing,
+then minimize the combined complex using `ntr=1`, `restraint_wt=2.0`, and
+`restraintmask='!@H='` with original complex coordinates as restraint reference.
+Evaluate MM-GBSA from the separate minimized restart, using the same snapshot for
+complex/receptor/ligand energies, without adding restraint energy to MM-GBSA.
+The current implementation uses 500 cycles (250 steepest descent), nonperiodic
+GB igb=5/0.15 M salt; these cycle/solvent choices are implementation details pending
+scientific evaluation. Reject missing/nonfinite/invalid final results and retain
+minimization inputs/logs. Cycle-limit termination is completed execution, not proof
+of convergence. New manifests record the versioned restrained-minimized protocol;
+keep old results and saved workers intact. Prime's pose input flow is unchanged.
+A one-compound t41 smoke run completed minimization and MM-GBSA; its mask selected
+all protein/ligand heavy atoms, and the restart was the scoring input. The run hit
+500 cycles before convergence; no production data/jobs were changed.
