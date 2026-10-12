@@ -159,7 +159,7 @@ N+1 generation requires all preceding iterations to satisfy completion: target-c
 
 Import iteration-0 ligands from multi-structure MAEGZ via Schrödinger `utilities/structconvert` to SDF and RDKit canonical isomeric SMILES. Titles become names; empty titles use `REF_<four-digit index>`. Reject duplicate titles and zero usable references. Diagnose unreadable structures; the current receptor guard skips structures with >200 heavy atoms. Preserve experimental values and finite preexisting reference GBSA.
 
-Reference properties: docking `r_i_docking_score`/`docking_score`; experimental `dG_exp`/`r_user_dG_exp`/`r_i_dG_exp`; GBSA `r_psp_MMGBSA_dG_Bind`/`r_psp_MMGBSA_dG_Bind(NS)`/`gbsa_score`. Nonfinite reference GBSA is unscored. No experimental-unit conversion is specified.
+Reference properties: docking `r_i_docking_score`/`docking_score`; experimental `r_csv_dG\_exp`/`r_csv_dG_exp`/`dG_exp`/`r_user_dG_exp`/`r_i_dG_exp` (first readable numeric value, in this order); GBSA `r_psp_MMGBSA_dG_Bind`/`r_psp_MMGBSA_dG_Bind(NS)`/`gbsa_score`. Nonfinite reference GBSA is unscored. No experimental-unit conversion is specified.
 
 Scaffold cases: infer MCS and attachments when no core supplied; add attachment sites to a supplied dummy-free core; accept a complete scaffold with `[*:0]` and `[*:1]` without adding dummy atoms again. Exclude incompatible references from pose candidates; no compatible reference is an error.
 

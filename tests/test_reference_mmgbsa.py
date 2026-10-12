@@ -119,6 +119,36 @@ def test_reference_pv_builder_maps_original_titles_and_does_not_mutate_source(tm
     assert [s.property['i_user_compound_id'] for s in written[1:]] == [2, 3]
 
 
+@pytest.mark.parametrize('properties, expected', [
+    ({r'r_csv_dG\_exp': -10.5}, -10.5),
+    ({r'r_csv_dG\_exp': -10.5, 'r_csv_dG_exp': -9.5}, -10.5),
+    ({'r_csv_dG_exp': -9.5}, -9.5),
+    ({'r_csv_dG_exp': -9.5, 'dG_exp': -8.0}, -9.5),
+    ({'dG_exp': -8.0}, -8.0),
+    ({'r_user_dG_exp': -7.0}, -7.0),
+    ({'r_i_dG_exp': -6.0}, -6.0),
+    ({}, None),
+])
+def test_initial_reference_import_stores_experimental_activity(tmp_path, monkeypatch, properties, expected):
+    from rdkit import Chem
+    suite = tmp_path / 'suite'
+    (suite / 'utilities').mkdir(parents=True)
+    (suite / 'utilities/structconvert').touch()
+    mol = Chem.MolFromSmiles('CC')
+    mol.SetProp('_Name', 'reference')
+    mol.SetDoubleProp('r_i_docking_score', -4.0)
+    for name, value in properties.items():
+        mol.SetDoubleProp(name, value)
+    monkeypatch.setattr(c, 'run_command', lambda *a, **kw: None)
+    monkeypatch.setattr(Chem, 'SDMolSupplier', lambda *a, **kw: [mol])
+    db_path = tmp_path / 'db.sqlite'
+    c.initialize_project_database(db_path, tmp_path / 'poses.maegz', suite)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            'SELECT iteration,dG_exp,docking_score,state FROM compound'
+        ).fetchall() == [(0, expected, -4.0, 'reference')]
+
+
 def test_new_reference_import_retains_input_gbsa_score(tmp_path, monkeypatch):
     from rdkit import Chem
     suite = tmp_path / 'suite'

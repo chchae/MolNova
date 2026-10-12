@@ -453,7 +453,7 @@ def import_reference_poses_to_sqlite(
             )
             dg_exp = _first_float_property(
                 mol,
-                ["dG_exp", "r_user_dG_exp", "r_i_dG_exp"],
+                [r"r_csv_dG\_exp", "r_csv_dG_exp", "dG_exp", "r_user_dG_exp", "r_i_dG_exp"],
             )
 
             gbsa_score = _first_float_property(mol, [
