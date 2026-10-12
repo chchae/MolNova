@@ -616,3 +616,18 @@ in `elite_skipped.tsv` and vocabulary metadata in `elite_vocabulary.json`.
 Preserve original molecular strings, database compounds, and scientific scores.
 Never bypass a failed vocabulary lookup, replace unsupported tokens, or extend
 the prior vocabulary implicitly. At least two compatible pairs remain required.
+
+
+## Final MM-GBSA coordinates
+
+Confirmed addition requested on 2026-10-12: after MM-GBSA completes, publish
+`iterN/mmgbsa/mmgbsa_final.maegz` containing the native final structures from
+successful results. Keep receptor and ligand entries, CMPID titles, coordinates
+and native score properties unchanged; per-compound receptor structures remain
+paired with their ligands. Merge completed queue manifests plus the finishing
+queue, including each compound once, and exclude failed results. Publish through
+a temporary MAEGZ and atomic rename before archiving the queue. A merge failure
+retains the queue and committed scores for retry without calculation resubmission.
+Missing successful native output is an error, not a reason to use docking/input
+coordinates. Legacy completed batches copy their native output atomically to the
+same final filename. This postprocessing does not launch new calculations.

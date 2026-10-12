@@ -282,7 +282,7 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
     (glide_dir / "best_poses.maegz").write_text("best poses")
     commands = []
 
-    def run(command, cwd):
+    def run(command, cwd, **kwargs):
         commands.append([str(item) for item in command])
         if Path(command[0]).name == "prime_mmgbsa":
             assert command[2:] == ["-OVERWRITE", "-HOST", host, "-NJOBS", njobs]
@@ -302,6 +302,8 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
         elif Path(command[1]).name == "_extract_mmgbsa_scores.py":
             cid = int(cwd.name.removeprefix('CMPID_'))
             Path(command[3]).write_text(f"id\tgbsa_score\n{cid}\t-35\n")
+        elif Path(command[1]).name == "_merge_best_poses.py":
+            Path(command[2]).write_text('merged final coordinates')
         else:
             pytest.fail(f"Unexpected command: {command}")
 
@@ -314,8 +316,9 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
     assert _core.run_iteration_mmgbsa(
         1, args, iteration_dir, glide_dir, compound_ids=pending
     ) == batch_size
-    assert len(commands) == 2 + 2 * batch_size
+    assert len(commands) == 3 + 2 * batch_size
     assert (iteration_dir / "mmgbsa/gbsa_top.tsv").is_file()
+    assert (iteration_dir / "mmgbsa/mmgbsa_final.maegz").is_file()
     output = capsys.readouterr().out
     assert "queue active=0, waiting=0, limit=7" in output
 

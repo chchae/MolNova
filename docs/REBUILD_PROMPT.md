@@ -267,6 +267,18 @@ Output DB: `output/<project>.sqlite`. Iteration artifacts include `iter0/mmgbsa/
 
 Active invocation duration, including errors, is `HH:MM:SS.s`; keep idle polls concise. Distinguish native calculation time from worker duration. Queue manifests/archives store started_at/finished_at and report total wall time including waiting, collection, and restart downtime. Legacy queue start can be recovered from its nanosecond run-directory timestamp. This queue timing feature is present in reviewed uncommitted code/docs/tests.
 
+Confirmed addition requested on 2026-10-12: after MM-GBSA completes, publish
+`iterN/mmgbsa/mmgbsa_final.maegz` containing the native final structures from
+successful results. Keep receptor and ligand entries, CMPID titles, coordinates
+and native score properties unchanged; per-compound receptor structures remain
+paired with their ligands. Merge completed queue manifests plus the finishing
+queue, including each compound once, and exclude failed results. Publish through
+a temporary MAEGZ and atomic rename before archiving the queue. A merge failure
+retains the queue and committed scores for retry without calculation resubmission.
+Missing successful native output is an error, not a reason to use docking/input
+coordinates. Legacy completed batches copy their native output atomically to the
+same final filename. This postprocessing does not launch new calculations.
+
 SQLite `iteration_timing` stores start and verified finish. Pause/failure never marks finish. Preserve original start across restarts and first finish on reruns. For legacy iterations use earliest compound creation UTC and label estimated. Driver reports total including polling/recovery/downtime only after configured stage completion.
 
 ## 13. Implementation order, verification, and completion

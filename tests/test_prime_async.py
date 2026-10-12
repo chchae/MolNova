@@ -78,6 +78,7 @@ def test_worker_submits_multiple_iterations_and_preserves_running_states(tmp_pat
 def test_recovery_uses_submitted_ids_even_after_top_n_changes(tmp_path, monkeypatch):
     directory = tmp_path / "iter1/mmgbsa"
     directory.mkdir(parents=True)
+    (directory / 'mmgbsa_input-out.maegz').write_text('completed native output')
     prime._save(directory, {"command": ["/suite/prime_mmgbsa"], "compound_ids": [5]})
     args = SimpleNamespace(db_path=tmp_path / "project.sqlite")
     monkeypatch.setattr(prime, "submit_or_poll", lambda *a, **kw: True)
@@ -282,6 +283,7 @@ def test_partial_batch_scores_import_before_permanent_failures(tmp_path,monkeypa
         conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
                          "VALUES (?,'C',1,-9,'gbsa_running')", [('good',),('bad',)])
     directory=tmp_path/'iter1/mmgbsa';directory.mkdir(parents=True)
+    (directory / 'mmgbsa_input-out.maegz').write_text('completed native output')
     prime._save(directory,{'command':['/suite/prime_mmgbsa'],'compound_ids':[1,2],
                            'atomtyping_failed_ids':[2]})
     monkeypatch.setattr(prime,'submit_or_poll',lambda *a,**kw:True)

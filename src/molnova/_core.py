@@ -4216,6 +4216,11 @@ def run_iteration_mmgbsa(
             return None
         updated = finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, active["compound_ids"])
         persist_atomtyping_failures(mmgbsa_dir, args.db_path)
+        # A legacy batch already contains all its final native structures.
+        output_file = max(mmgbsa_dir.glob('*-out.maegz'), key=lambda path: path.stat().st_mtime)
+        pending_coordinates = mmgbsa_dir / 'mmgbsa_final.pending.maegz'
+        shutil.copy2(output_file, pending_coordinates)
+        pending_coordinates.replace(mmgbsa_dir / 'mmgbsa_final.maegz')
         job_file(mmgbsa_dir).unlink()
         return updated
 

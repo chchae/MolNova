@@ -43,9 +43,14 @@ def fixture(tmp_path, monkeypatch, count=10):
         score.write_text(f'id\tgbsa_score\n{cid}\t-35\n')
         updated = c.update_gbsa_scores(score, args.db_path, allowed_ids=compound_ids)
         (folder / 'gbsa_top.tsv').write_text('elites')
+        (folder / 'mmgbsa_input-out.maegz').write_text(f'receptor\nCMPID_{cid}\n')
         return updated
     monkeypatch.setattr(prime, 'submit_or_poll', submit)
     monkeypatch.setattr(c, 'finish_iteration_mmgbsa', finish)
+    def merge(command, cwd, **kw):
+        assert Path(command[1]).name == '_merge_best_poses.py'
+        Path(command[2]).write_text(''.join(Path(path).read_text() for path in command[3:]))
+    monkeypatch.setattr(c, 'run_command', merge)
     return args, directory, record, launched, completed
 
 
@@ -243,6 +248,7 @@ def test_committed_score_without_child_record_is_not_calculated_again(tmp_path, 
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
     with sqlite3.connect(args.db_path) as conn:
         conn.execute("UPDATE compound SET gbsa_score=-41,state='gbsa_done'")
+    (q._folder(root, record, 1) / 'mmgbsa_input-out.maegz').write_text('receptor\nCMPID_1\n')
     assert q.poll_queue(1, args, root, record) == 0
     assert not launches
     assert database.mmgbsa_submission_rows(args.db_path, [1])[1][2] == -41
@@ -276,3 +282,122 @@ def test_glide_blocks_refill_but_existing_scores_are_still_collected(tmp_path, m
     monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 9))
+
+
+def test_final_coordinates_wait_for_queue_and_exclude_failed_results(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=3)
+    assert q.poll_queue(1, args, root, record) is None
+    output = root / 'mmgbsa_final.maegz'
+    assert not output.exists()
+    completed.add(1)
+    submit = prime.submit_or_poll
+    def failure(command, folder, ids, **kw):
+        if ids == [2]:
+            prime.job_file(folder).unlink()
+            raise prime.PrimeAtomTypingError(2)
+        return submit(command, folder, ids, **kw)
+    monkeypatch.setattr(prime, 'submit_or_poll', failure)
+    assert q.poll_queue(1, args, root, prime.load_job(root)) is None
+    assert not output.exists()
+    completed.add(3)
+    assert q.poll_queue(1, args, root, prime.load_job(root)) == 1
+    assert output.read_text() == 'receptor\nCMPID_1\nreceptor\nCMPID_3\n'
+    assert launches == [1, 2, 3]
+
+
+def test_coordinate_merge_failure_preserves_previous_file_and_retries_without_jobs(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
+    q.poll_queue(1, args, root, record)
+    output = root / 'mmgbsa_final.maegz'
+    output.write_text('previous final coordinates')
+    completed.add(1)
+    merge = c.run_command
+    def broken(command, cwd, **kw):
+        Path(command[2]).write_text('partial coordinates')
+        raise RuntimeError('structure writer failed')
+    monkeypatch.setattr(c, 'run_command', broken)
+    with pytest.raises(RuntimeError, match='structure writer failed'):
+        q.poll_queue(1, args, root, prime.load_job(root))
+    assert output.read_text() == 'previous final coordinates'
+    assert not (root / 'mmgbsa_final.pending.maegz').exists()
+    assert prime.load_job(root)['entries']['1'] == 'done'
+    assert database.mmgbsa_submission_rows(args.db_path, [1])[1][2] == -35
+    monkeypatch.setattr(c, 'run_command', merge)
+    assert q.poll_queue(1, args, root, prime.load_job(root)) == 0
+    assert output.read_text() == 'receptor\nCMPID_1\n'
+    assert launches == [1]
+
+
+def test_coordinates_include_previous_completed_queues_without_duplicates(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=2)
+    previous = dict(record, run_dir='queue-1', compound_ids=[1], entries={'1': 'done'})
+    folder = q._folder(root, previous, 1)
+    folder.mkdir(parents=True)
+    (folder / 'mmgbsa_input-out.maegz').write_text('original receptor\nCMPID_1\n')
+    (root / 'queue-1.completed.json').write_text(json.dumps(previous))
+    q.poll_queue(1, args, root, record)
+    completed.update([1, 2])
+    q.poll_queue(1, args, root, prime.load_job(root))
+    assert (root / 'mmgbsa_final.maegz').read_text() == 'original receptor\nCMPID_1\nreceptor\nCMPID_2\n'
+
+
+def test_missing_completed_coordinates_keep_queue_recoverable(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
+    record['entries']['1'] = 'done'
+    prime._save(root, record)
+    with sqlite3.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET gbsa_score=-35,state='gbsa_done'")
+    with pytest.raises(RuntimeError, match='final MM-GBSA coordinates are missing'):
+        q.poll_queue(1, args, root, prime.load_job(root))
+    assert prime.load_job(root) is not None
+    assert not launches
+
+
+def test_native_merger_preserves_receptor_and_ligand_coordinates_and_properties(tmp_path, monkeypatch):
+    import runpy
+    import sys
+    from types import ModuleType
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=2)
+    record['entries'] = {'1': 'done', '2': 'done'}
+    structures = {}
+    originals = []
+    for cid in (1, 2):
+        source = q._folder(root, record, cid) / 'mmgbsa_input-out.maegz'
+        source.write_text('native output')
+        receptor = SimpleNamespace(title='receptor', xyz=[(float(cid), 0, 0)], property={'native': cid})
+        ligand = SimpleNamespace(title=f'CMPID_{cid}', xyz=[(0, float(cid), 0)],
+                                 property={'r_psp_MMGBSA_dG_Bind': -35})
+        structures[str(source)] = [receptor, ligand]
+        originals.extend([receptor, ligand])
+    written = []
+    class Writer:
+        def __init__(self, path): self.path = Path(path)
+        def __enter__(self): return self
+        def append(self, st): written.append(st)
+        def __exit__(self, *exc): self.path.write_text('native merged structures')
+    module = ModuleType('schrodinger')
+    module.structure = SimpleNamespace(StructureReader=lambda path: structures[path], StructureWriter=Writer)
+    monkeypatch.setitem(sys.modules, 'schrodinger', module)
+    def native_run(command, cwd, **kw):
+        monkeypatch.setattr(sys, 'argv', list(map(str, command[1:])))
+        runpy.run_path(str(command[1]), run_name='__main__')
+    monkeypatch.setattr(c, 'run_command', native_run)
+    q.merge_final_coordinates(args, root, record)
+    assert written == originals
+    assert [st.xyz for st in written] == [[(1.0, 0, 0)], [(0, 1.0, 0)], [(2.0, 0, 0)], [(0, 2.0, 0)]]
+    assert [st.title for st in written] == ['receptor', 'CMPID_1', 'receptor', 'CMPID_2']
+    assert written[1].property['r_psp_MMGBSA_dG_Bind'] == -35
+
+
+def test_legacy_completed_batch_publishes_native_coordinates(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=2)
+    prime._save(root, {'command': ['/suite/prime_mmgbsa'], 'compound_ids': [1, 2]})
+    monkeypatch.setattr(prime, 'submit_or_poll', lambda *a, **kw: True)
+    monkeypatch.setattr(prime, 'persist_atomtyping_failures', lambda *a: None)
+    def finish(*a):
+        (root / 'mmgbsa_input-out.maegz').write_bytes(b'native coordinates and properties')
+        return 2
+    monkeypatch.setattr(c, 'finish_iteration_mmgbsa', finish)
+    assert c.run_iteration_mmgbsa(1, args, root.parent, root.parent / 'glide') == 2
+    assert (root / 'mmgbsa_final.maegz').read_bytes() == b'native coordinates and properties'
+    assert prime.load_job(root) is None

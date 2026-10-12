@@ -80,6 +80,41 @@ def other_active_slots(args, directory):
     return active
 
 
+def merge_final_coordinates(args, directory, record):
+    """Publish completed native structures without changing coordinates/properties."""
+    records = [json.loads(path.read_text())
+               for path in sorted(directory.glob('queue-*.completed.json'))]
+    records.append(record)
+    sources = {}
+    for completed in records:
+        if completed.get('mode') != MODE:
+            continue
+        for cid in completed['compound_ids']:
+            if completed['entries'][str(cid)] != 'done' or cid in sources:
+                continue
+            folder = _folder(directory, completed, cid)
+            outputs = sorted(folder.glob('*-out.maegz'),
+                             key=lambda path: path.stat().st_mtime, reverse=True)
+            if not outputs:
+                raise RuntimeError(f'CMPID_{cid}: final MM-GBSA coordinates are missing in {folder}')
+            sources[cid] = outputs[0]
+    if not sources:
+        return None
+    output = directory / 'mmgbsa_final.maegz'
+    pending = directory / 'mmgbsa_final.pending.maegz'
+    merger = c.create_best_pose_merger(directory)
+    try:
+        c.run_command([args.schrodinger / 'run', merger, pending,
+                       *(sources[cid] for cid in sorted(sources))], cwd=directory,
+                      log_message=f'MM-GBSA final coordinates: {len(sources)} results -> {output.name}')
+        if not pending.is_file():
+            raise RuntimeError('Merged MM-GBSA coordinates were not created')
+        pending.replace(output)
+    finally:
+        pending.unlink(missing_ok=True)
+    return output
+
+
 def poll_queue(iteration, args, directory, record):
     """Check active jobs, commit each result, then immediately refill free slots."""
     directory = Path(directory)
@@ -193,6 +228,9 @@ def poll_queue(iteration, args, directory, record):
           f'limit={MAX_ACTIVE}, scores updated={updated}.', flush=True)
     if active or pending:
         return None
+    # Keep the live manifest until coordinates publish successfully. On failure,
+    # the next worker retries merging, without resubmitting scored compounds.
+    merge_final_coordinates(args, directory, record)
     record.setdefault('finished_at', time.time())
     prime._save(directory, record)
     prime.job_file(directory).replace(directory / f"{record['run_dir']}.completed.json")
