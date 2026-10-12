@@ -1,4 +1,4 @@
-# EGFR: Glide 점수 상위 500개 → restrained Amber GBSA → Amber 점수 상위 200개를 Prime으로
+# EGFR: Glide 점수 상위 200개 → restrained Amber GBSA → Amber 점수 상위 50개를 Prime으로
 # 로컬 상대 경로는 이 TOML 파일이 있는 폴더를 기준으로 해석합니다.
 # 원격 환경과 작업 폴더 경로는 해당 SSH host의 절대 경로입니다.
 
@@ -47,12 +47,12 @@ tail-timeout = 300                # worker 대기 제한(초); native job은 취
 glide-job-timeout = 1800          # 그룹별 native job 제한(초); 0이면 비활성화
 
 # 7. AmberTools GBSA screening
-# 최종 Glide 점수가 낮은 500개만 선발하여 Amber GBSA를 계산합니다.
+# 최종 Glide 점수가 낮은 200개만 선발하여 Amber GBSA를 계산합니다.
 # 복합체 heavy atom에 2.0 kcal/mol/Å² restraint를 걸고 최소화한 좌표를 평가합니다.
 # 결과: output/iterN/amber_gbsa/, DB: amber_gbsa_score
 amber-gbsa-enabled = true
 amber-cpus = 124                   # 동시 실행할 단일 코어 계산 수
-amber-keep-count = 500             # Glide 점수로 선발할 Amber 입력 수
+amber-keep-count = 200             # Glide 점수로 선발할 Amber 입력 수
 amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
 amber-charge-method = "bcc"        # AM1-BCC; 지원하는 다른 값은 "abcg2"
 
@@ -63,10 +63,10 @@ amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
 amber-ssh-config = "/home1/chchae/.ssh/config" # 로컬 SSH 설정 파일
 
 # 8. Prime MM-GBSA 정밀 평가
-# Glide 상위 500개의 Amber 계산 결과 중 점수가 낮은 200개를 계산합니다.
+# Glide 상위 200개의 Amber 계산 결과 중 점수가 낮은 50개를 계산합니다.
 # 결과: output/iterN/mmgbsa/, DB: gbsa_score
 # iteration 0은 reference 전체의 Amber 계산 후 미평가 reference 전체를 Prime으로 계산합니다.
-gbsa-input-count = 200
+gbsa-input-count = 50
 gbsa-license-retry-seconds = 300
 gbsa-license-retries = 3
 

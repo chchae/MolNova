@@ -363,7 +363,7 @@ and enabled Amber screening. Rank by Amber score when enabled, docking otherwise
 
 Typical configuration:
 
-    gbsa-input-count = 200
+    gbsa-input-count = 50
     gbsa-elite-count = 10
 
 The worker should:
@@ -637,8 +637,8 @@ same final filename. This postprocessing does not launch new calculations.
 
 The 2026-10-12 user change adds optional Amber screening after completed Glide
 and before Prime. See SPEC section 15 for confirmed scope and scientific choices.
-When enabled: select final Glide top 500, minimize/score only those compounds
-with Amber on the configured host (EGFR: t41), and claim its Prime top 200 by Amber score. Store `amber_gbsa_score` separately; keep Prime
+When enabled: select final Glide top 200, minimize/score only those compounds
+with Amber on the configured host (EGFR: t41), and claim its Prime top 50 by Amber score. Store `amber_gbsa_score` separately; keep Prime
 `gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/mmgbsa/` intact. The example
 EGFR config enables it; default omission preserves Prime-only compatibility.
 Iteration 0 also runs Amber before new Prime calculations when enabled, using all eligible supplied reference poses without docking-score/top-N filtering. Map source titles to CMPID in calculation copies. Bootstrap the default receptor with the existing grid extractor when absent. Existing Prime submissions are recovered first.
@@ -683,10 +683,10 @@ score, terminal marker and released lock. No production DB/job changes were made
 
 ## Latest Amber Glide preselection and restrained minimization
 
-`amber-keep-count=500` now limits the Amber input population by final finite Glide
+`amber-keep-count=200` now limits the Amber input population by final finite Glide
 score (ID breaks ties), before excluding scored/failed/running rows. Restrict
 Amber completion and new Prime ranking to that same population. Select Prime's
-`gbsa-input-count=200` by finite Amber score, then Glide score/ID. Preserve existing
+`gbsa-input-count=50` by finite Amber score, then Glide score/ID. Preserve existing
 outside scores, but exclude them from new Prime selection; recover legacy saved
 all-pose runs and running claims intact. Iteration 0 remains exempt from the limit.
 
