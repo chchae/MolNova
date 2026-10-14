@@ -25,6 +25,9 @@ def _run_stage(args, requested_iteration):
         print(f"Iteration {iteration}: LigPrep waiting: {reason}.")
         return
 
+    if hasattr(args, 'sa_accepted_ratio'):
+        database.apply_sa_filter(args.db_path, iteration, args.target_count, args.sa_accepted_ratio)
+
     rows = database.ligprep_pending_rows(args.db_path, iteration, args.synthetic_feasibility_enabled)
     outdir = args.output / f"iter{iteration}" / "ligprep"
     active = load_job(outdir)

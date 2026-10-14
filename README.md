@@ -417,7 +417,14 @@ calculation processes (default 1, capped by available CPUs and compound count).
 The generation worker alone writes scores to SQLite. Re-running
 `molnova generate project.toml --iteration N` fills missing scores even when
 that iteration has already reached its target count, preserving existing scores,
-workflow states and failure details. SA scores do not filter compounds.
+results and failure details. Once the full iteration is scored,
+`sa-accepted-ratio = 0.75` (default) passes only the lowest-SA-score 75% to the
+next stages. For 10,000 generated compounds, 7,500 proceed to LigPrep. The count
+is rounded up for fractional counts, with compound ID breaking score ties. Set
+a ratio in `(0, 1]`; `1.0` passes all compounds. Excluded compounds remain in
+SQLite as `sa_rejected`, preserving their SA scores. The selection is saved once
+per iteration, so restarts or later TOML changes do not rerank it. Existing
+iterations that already started downstream work retain their prior population.
 
 The synthetic feasibility stage also fills missing RDKit SA scores in
 `compound.sa_score` (1–10; lower means easier synthetic accessibility). SA scores

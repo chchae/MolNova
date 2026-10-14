@@ -67,6 +67,11 @@ def process_iteration(args, iteration):
         raise RuntimeError(
             "Enable synthetic-feasibility-enabled in the project TOML to run this stage."
         )
+    if hasattr(args, 'sa_accepted_ratio'):
+        reason = database.stage_completion_reason(args.db_path, iteration, 'generate', args.target_count, 0)
+        if reason or database.stage_is_running(args.db_path, 'generate'):
+            print(f'Iteration {iteration}: SA selection waiting for generation completion.')
+            return 0
     missing_scores = database.missing_sa_scores(args.db_path, iteration)
     if missing_scores:
         work_started(f"Iteration {iteration}: calculating RDKit SA scores for {len(missing_scores)} compounds.")
@@ -74,6 +79,9 @@ def process_iteration(args, iteration):
     updated = database.store_sa_scores(args.db_path, scores)
     if updated:
         print(f"Iteration {iteration}: RDKit SA scores stored for {updated} compounds.")
+
+    if hasattr(args, 'sa_accepted_ratio'):
+        database.apply_sa_filter(args.db_path, iteration, args.target_count, args.sa_accepted_ratio)
 
     with c.open_sqlite(args.db_path) as conn:
         compounds = conn.execute(

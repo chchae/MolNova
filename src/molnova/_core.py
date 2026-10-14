@@ -121,7 +121,7 @@ def load_project_toml(filename):
         )
 
     base = filename.parent
-    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count, sa_score_process_count
+    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count, sa_score_process_count, sa_accepted_ratio
     remote_reinvent = remote_reinvent_settings(config)
     remote_aizynth = remote_aizynth_settings(config)
 
@@ -186,6 +186,7 @@ def load_project_toml(filename):
         "aizynth_cli": aizynth_cli,
         "aizynth_nproc": aizynth_process_count(config),
         "sa_score_cpus": sa_score_process_count(config),
+        "sa_accepted_ratio": sa_accepted_ratio(config),
         "remote_aizynth": remote_aizynth,
         "mmgbsa_receptor": (
             resolve_path(config["mmgbsa-receptor"])

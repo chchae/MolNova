@@ -110,5 +110,7 @@ synthetic-feasibility-enabled = false
 '''
     toml.write_text(content)
     assert _core.load_project_toml(toml)['sa_score_cpus'] == 1
-    toml.write_text(content + 'sa-score-cpus = 128\n')
+    assert _core.load_project_toml(toml)['sa_accepted_ratio'] == .75
+    toml.write_text(content + 'sa-score-cpus = 128\nsa-accepted-ratio = 0.5\n')
     assert _core.load_project_toml(toml)['sa_score_cpus'] == 128
+    assert _core.load_project_toml(toml)['sa_accepted_ratio'] == .5

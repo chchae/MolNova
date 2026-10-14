@@ -198,6 +198,14 @@ def sa_score_process_count(config: dict[str, Any]) -> int:
     return value
 
 
+def sa_accepted_ratio(config: dict[str, Any]) -> float:
+    value = config.get('sa-accepted-ratio', 0.75)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not 0 < value <= 1):
+        raise ValueError('sa-accepted-ratio must be a number greater than 0 and at most 1')
+    return float(value)
+
+
 def gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
     settings = {}
     for key, default, minimum in (("gbsa-license-retry-seconds", 300, 1),

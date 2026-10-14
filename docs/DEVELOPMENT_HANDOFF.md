@@ -122,6 +122,13 @@ batch, independently of AiZynthFinder. `sa-score-cpus` defaults to 1 and enables
 local process parallelism when increased. An explicit generation rerun backfills
 missing scores even at target count; scores/states/results already present are
 preserved, and scoring failures leave generated compounds available for retry.
+After the full iteration is scored, `sa-accepted-ratio` (default 0.75, range
+`0 < ratio <= 1`) keeps `ceil(count * ratio)` compounds ordered by SA score/ID.
+Persist the selection in `iteration_sa_selection` and mark excluded rows
+`sa_rejected` atomically; preserve their scores and exclude them from all later
+stages and synthetic readiness checks. Target count remains the total generated
+population. Reuse the saved selection on restart/config changes. Never apply
+a new filter to iteration 0 or legacy iterations with downstream work/results.
 
 New LigPrep/Glide/Prime calculations clear stale working artifacts from the
 active path before rebuilding inputs. Verified terminal historical work is

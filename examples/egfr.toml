@@ -22,6 +22,7 @@ target-count = 10000               # iteration당 신규 화합물 목표 수
 elite-tl-epochs = 5
 gbsa-elite-count = 20              # 직전 iteration의 Prime 점수로 선택할 TL elite 수
 sa-score-cpus = 1                 # 생성 직후 로컬 RDKit SA score 계산 프로세스 수
+sa-accepted-ratio = 0.75          # SA score가 낮은 화합물 75%만 다음 단계로 진행 (0 < 비율 <= 1)
 
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
 reinvent-ssh-host = "tensor"

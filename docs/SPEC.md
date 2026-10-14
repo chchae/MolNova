@@ -122,7 +122,7 @@ Connection settings: `journal_mode=WAL`, `busy_timeout=30000`, `foreign_keys=ON`
 
 `compound`: `id INTEGER PRIMARY KEY AUTOINCREMENT`; unique non-null `name`; non-null `smiles`; integer `iteration` default 0; nullable real `dG_exp`, `docking_score`, `gbsa_score`, `amber_gbsa_score`, `fep_score`, `sa_score`, `similarity`; nullable `synthetic_feasibility` restricted to 0/1; non-null `state`; nullable `failed_stage`, `failure_message`; nullable `similar_to` referencing `compound(id)`; creation/modification timestamps. Index iteration, state, and similar_to. The application ensures reference selection points to iteration 0.
 
-States: `reference`, `generated`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `amber_running`, `gbsa_running`, `gbsa_done`, `fep_running`, `fep_done`, `failed`.
+States: `reference`, `generated`, `sa_rejected`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `amber_running`, `gbsa_running`, `gbsa_done`, `fep_running`, `fep_done`, `failed`.
 
 Generated compounds start at `generated`; references start at `reference`, not through generation. Synthetic evaluation temporarily uses `synthetic_running`, normally returning to `generated` with assessment fields populated. Reference GBSA can use `gbsa_running`/`gbsa_done`. Export alone does not mean FEP completion. Permanent GBSA failures use `failed_stage="gbsa"`; command name `mmgbsa` is distinct.
 
@@ -223,8 +223,23 @@ iteration also backfills missing scores. `sa-score-cpus` is a positive integer
 size. Calculation processes receive SMILES only; the generation worker writes
 the validated ID/score batch through `database.py`. Failed scoring retains inserted
 compounds for retry. Existing scores, workflow states, failure details and other
-scientific results are preserved. SA scoring does not filter molecules or change
-selection rankings. No remote SA calculation is enabled by this change.
+scientific results are preserved. No remote SA calculation is enabled by this change.
+
+**Confirmed SA acceptance filter (2026-10-14, latest user update):** after
+the full generated iteration reaches `target-count` and all SA scores are valid,
+accept the lowest-SA-score fraction configured by `sa-accepted-ratio` (default
+0.75; a finite number with `0 < ratio <= 1`). Rank by SA score ascending, then
+compound ID; keep `ceil(compound_count * ratio)` compounds. `target-count` still
+counts all generated compounds, before filtering. Store excluded rows and scores
+in state `sa_rejected`; they do not enter synthetic assessment, LigPrep, Glide
+or GBSA, and count as processed for completion gates. Freeze the ratio/counts
+in SQLite `iteration_sa_selection` and commit rejected states in that same write
+transaction. Resumes and TOML changes retain the saved selection. Underfilled
+batches are scored but not filtered until the full population is available.
+Iteration 0 is exempt. Existing iterations that already started downstream work
+or contain scientific results/failures retain their prior population; never reset
+those jobs or results to apply this new filter. Ratio 1 accepts every compound.
+The SA heuristic is a selection criterion, not proof of a feasible synthesis route.
 
 ## 7. Local/SSH execution and synthetic assessment — documented baseline
 
@@ -440,7 +455,7 @@ Completion means required behavior passes relevant automated checks, scientific 
 - SQL/configuration logic and raw state strings still exist in `_core.py` and some stages despite centralization guidance. Full centralization and enum-only use are incomplete; preserve behavior while addressing relevant work, not through a wholesale rewrite.
 - Version pinning and an executable end-to-end scientific validation record were not established by this review. Tests were inspected, not run; compliance of all code paths is not proven.
 - `examples/input/egfr-ligands.toml` describes separate Mol2Mol TL and is not connected to the current LibInvent project flow. Do not turn it into a mandatory feature.
-- Structured TOML sections are a long-term proposal, not current support or confirmed required functionality. Broad rewrites, Windows support, new scoring filters, and automatic production FEP are outside established scope.
+- Structured TOML sections are a long-term proposal, not current support or confirmed required functionality. Broad rewrites, Windows support, further unrequested scoring filters, and automatic production FEP are outside established scope.
 
 ### Files and information to provide for reconstruction
 

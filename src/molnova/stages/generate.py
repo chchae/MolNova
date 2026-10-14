@@ -46,6 +46,19 @@ def store_iteration_sa_scores(args, iteration):
     return updated
 
 
+def select_iteration_sa_compounds(args, iteration):
+    selected = database.apply_sa_filter(
+        args.db_path, iteration, args.target_count, getattr(args, 'sa_accepted_ratio', 0.75),
+    )
+    if selected:
+        ratio, total, accepted = selected
+        print(f'Iteration {iteration}: SA selection accepted {accepted}/{total} compounds '
+              f'(ratio={ratio:g}, lowest SA scores first); {total - accepted} sa_rejected.', flush=True)
+    else:
+        print(f'Iteration {iteration}: SA selection deferred for incomplete generation '
+              'or preserved because downstream work has already started.', flush=True)
+
+
 @timed_stage("Generate stage")
 def _run_stage(args, requested_iteration):
     iteration = choose_iteration(args, requested_iteration)
@@ -61,6 +74,7 @@ def _run_stage(args, requested_iteration):
     if remaining == 0:
         log_iteration_mcs(args, iteration)
         store_iteration_sa_scores(args, iteration)
+        select_iteration_sa_compounds(args, iteration)
         print(
             f"Iteration {iteration} already has the target "
             f"{args.target_count} compounds; generation skipped."
@@ -139,6 +153,7 @@ def _run_stage(args, requested_iteration):
         db_path=args.db_path,
     )
     store_iteration_sa_scores(args, iteration)
+    select_iteration_sa_compounds(args, iteration)
     if inserted == 0:
         raise RuntimeError(
             f"Iteration {iteration} remains below target-count "

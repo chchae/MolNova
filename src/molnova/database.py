@@ -206,8 +206,8 @@ def upstream_completion_reason(path, iteration, target_count, stage,
         if any(state in blocked for _, state, _, _ in rows):
             return 'upstream compounds still pending or running'
         if synthetic_enabled and conn.execute(
-            'SELECT 1 FROM compound WHERE iteration=? AND state != ? '
-            'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED)
+            'SELECT 1 FROM compound WHERE iteration=? AND state NOT IN (?,?) '
+            'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED, State.SA_REJECTED)
         ).fetchone():
             return 'synthetic feasibility assessment incomplete'
     return None
@@ -493,6 +493,53 @@ def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]
         ).fetchall()
 
 
+def apply_sa_filter(path, iteration, target_count, ratio):
+    """Freeze final SA selection atomically, before any downstream work starts.
+
+    Return a saved selection, or None for underfilled/legacy started iterations.
+    Never modify running work, existing scientific results or failure records.
+    """
+    from molnova.config import sa_accepted_ratio
+    ratio = sa_accepted_ratio({'sa-accepted-ratio': ratio})
+    if iteration <= 0:
+        return None
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS iteration_sa_selection ('
+            'iteration INTEGER PRIMARY KEY, ratio REAL NOT NULL, '
+            'compound_count INTEGER NOT NULL, accepted_count INTEGER NOT NULL)'
+        )
+        saved = conn.execute(
+            'SELECT ratio,compound_count,accepted_count FROM iteration_sa_selection WHERE iteration=?',
+            (iteration,),
+        ).fetchone()
+        if saved:
+            return saved
+        rows = conn.execute(
+            'SELECT id,sa_score,state,docking_score,amber_gbsa_score,gbsa_score,fep_score '
+            'FROM compound WHERE iteration=? ORDER BY sa_score,id', (iteration,),
+        ).fetchall()
+        if len(rows) < target_count:
+            return None
+        if any(state != State.GENERATED or any(score is not None for score in results)
+               for _, _, state, *results in rows):
+            return None
+        if any(score is None or not math.isfinite(score) or not 1 <= score <= 10
+               for _, score, *_ in rows):
+            raise RuntimeError(f'Iteration {iteration}: SA selection requires all valid SA scores')
+        accepted = math.ceil(len(rows) * ratio)
+        conn.executemany(
+            'UPDATE compound SET state=?,modified_at=CURRENT_TIMESTAMP WHERE id=? AND state=?',
+            [(State.SA_REJECTED, cid, State.GENERATED) for cid, *_ in rows[accepted:]],
+        )
+        conn.execute(
+            'INSERT INTO iteration_sa_selection VALUES (?,?,?,?)',
+            (iteration, ratio, len(rows), accepted),
+        )
+        return ratio, len(rows), accepted
+
+
 def ligprep_pending_rows(path, iteration, synthetic_enabled):
     """Include only the known missing-input Glide failure for preparation retry."""
     with connect(path) as conn:
@@ -615,9 +662,9 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
             return None
         if stage == 'synthetic':
             pending = conn.execute(
-                'SELECT COUNT(*) FROM compound WHERE iteration=? AND state != ? '
+                'SELECT COUNT(*) FROM compound WHERE iteration=? AND state NOT IN (?,?) '
                 'AND (synthetic_feasibility IS NULL OR sa_score IS NULL OR state=?)',
-                (iteration, State.FAILED, State.SYNTHETIC_RUNNING),
+                (iteration, State.FAILED, State.SA_REJECTED, State.SYNTHETIC_RUNNING),
             ).fetchone()[0]
             return f'{pending} compounds await synthetic assessment' if pending else None
         if stage == 'ligprep':
@@ -626,8 +673,8 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
             if pending:
                 return f'{pending} compounds await LigPrep completion'
             if synthetic_enabled and conn.execute(
-                'SELECT 1 FROM compound WHERE iteration=? AND state != ? '
-                'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED)
+                'SELECT 1 FROM compound WHERE iteration=? AND state NOT IN (?,?) '
+                'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED, State.SA_REJECTED)
             ).fetchone():
                 return 'synthetic assessment incomplete'
             return None
