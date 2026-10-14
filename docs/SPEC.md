@@ -163,22 +163,43 @@ Reference properties: docking `r_i_docking_score`/`docking_score`; experimental 
 
 Scaffold cases: infer MCS and attachments when no core supplied; add attachment sites to a supplied dummy-free core; accept a complete scaffold with `[*:0]` and `[*:1]` without adding dummy atoms again. Exclude incompatible references from pose candidates; no compatible reference is an error.
 
-**Confirmed generation/docking MCS separation (2026-10-14, latest user update):**
-Iteration 1 uses the supplied `reference-mcs` as its initial scaffold/core,
-or infers it from the original iteration-0 references when omitted.
-Every new iteration N>1, regardless of whether an initial core was supplied,
-infers a fresh generation MCS/scaffold from exactly
-the selected `gbsa-elite-count` finite Prime elites of iteration N-1 (20 in
-the EGFR example), after the existing completion gates. Do not infer from
-all generated compounds or pooled historical elites. Use the new scaffold
-for both elite decomposition/TL and sampling. Glide keeps the initial
-supplied or reference-inferred core as its fixed constraint across new cycles.
-Nearest-reference filtering and core mapping use that docking constraint,
-not the current generation MCS. The new scaffold must retain the fixed
-docking constraint; an expanded generation core need not match an original pose.
+**Confirmed generation/docking MCS inputs (2026-10-14, latest user update):**
+`reference-mcs` defines the fixed docking constraint from iteration-0 references.
+It must be a valid nonempty SMARTS matching an original pose, but needs no
+LibInvent attachment points. When omitted, infer the docking MCS from those
+references. Persist it in row 0; later generation inputs never replace it.
+Iteration 0 uses supplied reference poses and does not perform generation.
+
+Optional TOML `elite-mcs` is a nonempty SMARTS string used for generation.
+Apply it once to the first new generation snapshot started with that value,
+even when the iteration number is greater than 1. Starting at iteration 3 uses
+it for iteration 3 TL/sampling; iteration 4 derives its MCS from iteration 3
+elites. **Confirmed fallback:** when `elite-mcs` is absent, use `reference-mcs`
+as the first generation's effective elite MCS, once. Record this bootstrap
+default as `initial_elite_mcs` in the iteration-0 snapshot when initializing the
+cores; row 0 does not consume the one-time generation application. A saved
+iteration-0 fallback is retained across later reference TOML changes. An explicit
+`elite-mcs` for a new generation takes precedence. If both are absent, infer
+the first generation MCS from iteration-0 references. Subsequent new iterations
+N>1 infer their generation MCS/scaffold from exactly the selected
+`gbsa-elite-count` finite Prime elites of N-1 (20 in EGFR), after existing
+completion gates. Supplied later-generation cores use those same elites for
+attachment analysis and TL. Do not infer from all compounds or pooled history.
+
+Persist the effective supplied value as `supplied_elite_mcs` in the immutable
+SQLite generation snapshot. Resumes, failed TL/sampling and replenishment reuse
+that snapshot; unchanged TOML values do not reapply the input each cycle. A new
+supplied value applies once at the next new generation snapshot. Existing
+snapshots/jobs remain unchanged; old snapshots without the explicit application
+marker do not consume the new one-time policy. Use the generation scaffold for
+both TL and sampling. Nearest-reference filtering and core mapping use the
+fixed docking constraint, not the generation MCS. Generation scaffolds must
+contain that constraint and support LibInvent attachments/decomposition; an
+expanded generation core need not match an original pose. Insufficient compatible
+TL pairs still stop generation; the new input cannot bypass prior completion gates.
 
 Persist the automatic core, scaffold, source and input IDs once in SQLite
-`iteration_scaffold`; row 0 stores the fixed initial core/scaffold, and
+`iteration_scaffold`; row 0 stores the fixed docking core (legacy rows may also retain a scaffold), and
 rows N store generation scaffolds plus `docking_mcs_smarts`.
 Publish derivative files in `iterN/scaffold/`, including separate
 `mcs.smarts` (generation) and `docking_mcs.smarts` (docking); also publish

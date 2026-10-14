@@ -206,6 +206,15 @@ def sa_accepted_ratio(config: dict[str, Any]) -> float:
     return float(value)
 
 
+def elite_mcs(config: dict[str, Any]) -> str | None:
+    value = config.get('elite-mcs')
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError('elite-mcs must be a nonempty SMARTS string')
+    return value.strip()
+
+
 def gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
     settings = {}
     for key, default, minimum in (("gbsa-license-retry-seconds", 300, 1),

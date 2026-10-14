@@ -484,6 +484,17 @@ def iteration_has_compounds(path, iteration):
         ).fetchone() is not None
 
 
+def elite_mcs_was_used(path, supplied):
+    """Check durable generation snapshots, excluding the fixed docking row."""
+    import json
+    # Ensure the non-destructive scaffold migration exists for older projects.
+    iteration_scaffold(path, 0)
+    with connect(path) as conn:
+        return any(json.loads(snapshot).get('supplied_elite_mcs') == supplied
+                   for (snapshot,) in conn.execute(
+                       'SELECT snapshot FROM iteration_scaffold WHERE iteration>0'))
+
+
 def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]:
     with connect(path) as conn:
         return conn.execute(

@@ -201,16 +201,31 @@ and calculation eligibility are unchanged.
 
 See `examples/egfr.toml` and `docs/architecture.md`.
 
-Cycle 1 uses the supplied `reference-mcs` or derives an initial core/scaffold
-from the original references when omitted. Every later new cycle derives its
-generation MCS/scaffold from the preceding cycle's Prime MM-GBSA elites
-(`gbsa-elite-count`), including when an initial `reference-mcs` was supplied.
-Glide keeps the initial core as its fixed docking constraint and the supplied
-poses as templates. Generation scaffolds must retain that constraint.
-SQLite preserves both cores across restart. Files in `iterN/scaffold/` include
-`mcs.smarts` for generation and `docking_mcs.smarts` for Glide; the initial
-constraint is also published as `output/docking_mcs.smarts`.
-Existing iterations retain the scaffold and docking core they already used.
+`reference-mcs` fixes the docking constraint using iteration-0 reference poses.
+`elite-mcs` optionally supplies the generation core independently:
+
+```toml
+reference-mcs = "c1ccccc1"           # fixed docking constraint
+elite-mcs = "[*:0]Oc1ccc([*:1])cc1" # optional first generation core
+```
+
+Starting at a new iteration 3 uses `elite-mcs` once for that generation's
+TL/sampling. Iteration 4 calculates its generation MCS from iteration 3 Prime
+MM-GBSA elites (`gbsa-elite-count`). Without `elite-mcs`, use `reference-mcs`
+as the initial elite MCS in the iteration-0 snapshot, then use it for the first
+generation once. If both are absent, derive the first core
+from original references. The example SMARTS must match your project's inputs.
+SQLite records the effective supplied value, so restarts and unchanged TOML
+values do not apply it again. A new supplied value applies once at the next new
+cycle. Existing iterations retain their saved cores and jobs. Completion gates
+and TL from the original prior remain unchanged.
+
+Generation scaffolds must contain the fixed docking constraint and support
+LibInvent attachments and elite decomposition. A docking constraint itself
+needs no attachment points. Generation/docking cores are stored separately in
+`iterN/scaffold/mcs.smarts` and `docking_mcs.smarts`; the fixed constraint is
+also published as `output/docking_mcs.smarts` and never replaced by `elite-mcs`.
+Iteration 0 uses reference poses and has no generation stage.
 
 New LigPrep, Glide and Prime calculations clear old working files before
 building fresh inputs. Old files are moved to timestamped archives outside the

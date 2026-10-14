@@ -48,15 +48,20 @@ def _initial_scaffold(args):
         if initial is None:
             references = _core.get_reference_compounds(args.db_path)
             supplied = getattr(args, 'initial_mcs_smarts', None)
-            with tempfile.TemporaryDirectory() as temporary:
-                info = _core.prepare_libinvent_scaffold(
-                    references, supplied, Path(temporary), mcs_timeout=args.mcs_timeout,
-                )
-            initial = dict(mcs_smarts=info['mcs_smarts'],
-                           scaffold_smiles=info['scaffold_smiles'],
+            core = supplied if supplied is not None else infer_mcs_smarts(references, timeout=args.mcs_timeout)
+            initial = dict(mcs_smarts=core,
                            source='user_initial_mcs' if supplied else 'iteration0_references',
                            source_ids=[ref['id'] for ref in references])
-    query, _ = _validate(initial)
+        initial = dict(initial)
+        explicit_elite = getattr(args, 'elite_mcs_smarts', None)
+        initial['initial_elite_mcs'] = (
+            explicit_elite if explicit_elite is not None else
+            initial['mcs_smarts'] if getattr(args, 'initial_mcs_smarts', None) is not None else None
+        )
+    # A docking SMARTS needs no LibInvent attachment points or SMILES conversion.
+    query = Chem.MolFromSmarts(initial['mcs_smarts'])
+    if query is None or query.GetNumHeavyAtoms() == 0:
+        raise RuntimeError('Invalid initial docking MCS.')
     if not any(ref['mol'].HasSubstructMatch(query, useChirality=False)
                for ref in _core.get_reference_compounds(args.db_path)):
         raise RuntimeError('Initial docking core matches no original reference pose.')
@@ -84,6 +89,10 @@ def log_iteration_mcs(args, iteration, snapshot=None):
             source = f'iteration {iteration - 1} elites'
         elif source == 'user_initial_mcs':
             source = 'user supplied'
+        elif source == 'user_elite_mcs':
+            source = 'user supplied elite-mcs'
+        elif source == 'reference_mcs_fallback':
+            source = 'reference-mcs fallback for generation'
         elif source == 'iteration0_references':
             source = 'initial references'
         elif source == 'legacy_project_scaffold':
@@ -116,8 +125,15 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False):
         if not create:
             raise RuntimeError(f'Iteration {iteration}: no saved generation scaffold.')
         initial = _initial_scaffold(args)
+        explicit_elite = getattr(args, 'elite_mcs_smarts', None)
+        fallback = initial.get('initial_elite_mcs')
+        if 'initial_elite_mcs' not in initial and getattr(args, 'initial_mcs_smarts', None) is not None:
+            # Older row-zero snapshots already define the original reference core.
+            fallback = initial['mcs_smarts']
+        supplied = explicit_elite if explicit_elite is not None else fallback
+        use_supplied = supplied is not None and not database.elite_mcs_was_used(args.db_path, supplied)
         if iteration == 1:
-            snapshot = dict(initial)
+            inputs = _core.get_reference_compounds(args.db_path)
         else:
             if elites is None or len(elites) != args.gbsa_elite_count:
                 raise RuntimeError('Automatic MCS requires the selected preceding-iteration elites.')
@@ -125,17 +141,20 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False):
                 raise RuntimeError('Automatic MCS inputs must belong to the preceding iteration.')
             inputs = [dict(id=row[0], name=row[1], mol=Chem.MolFromSmiles(row[2]))
                       for row in elites]
-            source = 'previous_iteration_elites'
-            if any(ref['mol'] is None for ref in inputs):
-                raise RuntimeError('Invalid molecule in automatic MCS inputs.')
-            with tempfile.TemporaryDirectory() as temporary:
-                info = _core.prepare_libinvent_scaffold(
-                    inputs, None, Path(temporary), mcs_timeout=args.mcs_timeout,
-                )
-            snapshot = {
-                'mcs_smarts': info['mcs_smarts'], 'scaffold_smiles': info['scaffold_smiles'],
-                'source': source, 'source_ids': [ref['id'] for ref in inputs],
-            }
+        source = (('user_elite_mcs' if explicit_elite is not None else 'reference_mcs_fallback') if use_supplied else
+                  'iteration0_references' if iteration == 1 else 'previous_iteration_elites')
+        if any(ref['mol'] is None for ref in inputs):
+            raise RuntimeError('Invalid molecule in automatic MCS inputs.')
+        with tempfile.TemporaryDirectory() as temporary:
+            info = _core.prepare_libinvent_scaffold(
+                inputs, supplied if use_supplied else None, Path(temporary), mcs_timeout=args.mcs_timeout,
+            )
+        snapshot = {
+            'mcs_smarts': info['mcs_smarts'], 'scaffold_smiles': info['scaffold_smiles'],
+            'source': source, 'source_ids': [ref['id'] for ref in inputs],
+        }
+        if use_supplied:
+            snapshot['supplied_elite_mcs'] = supplied
         snapshot['docking_mcs_smarts'] = initial['mcs_smarts']
 
     _, scaffold = _validate(snapshot)

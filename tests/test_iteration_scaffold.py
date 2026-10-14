@@ -71,6 +71,7 @@ def test_reference_first_then_previous_elites_and_restart(project, monkeypatch):
 def test_generation_passes_ranked_elites_and_new_scaffold_to_tl(project, monkeypatch, supplied):
     project.iteration_mcs = True
     project.initial_mcs_smarts = supplied
+    project.elite_mcs_smarts = supplied
     project.automatic_mcs = supplied is None
     seen = []
     def training(elites, scaffold, directory, **kwargs):
@@ -79,7 +80,8 @@ def test_generation_passes_ranked_elites_and_new_scaffold_to_tl(project, monkeyp
         assert scaffold == snapshot['scaffold_smiles']
         if supplied:
             assert snapshot['docking_mcs_smarts'] == supplied
-            assert scaffold != supplied
+            assert scaffold == supplied
+            assert snapshot['source'] == 'user_elite_mcs'
         seen.append('training')
         return None, 'train', 'valid', 2
     monkeypatch.setattr(_core, 'write_elite_libinvent_training_files', training)
@@ -134,7 +136,7 @@ def test_explicit_initial_mcs_still_adapts_generation_to_elites(project):
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
     prepare_iteration_scaffold(project, 1, create=True)
     assert project.libinvent_scaffold_smiles == project.initial_mcs_smarts
-    assert database.iteration_scaffold(project.db_path, 1)['source'] == 'user_initial_mcs'
+    assert database.iteration_scaffold(project.db_path, 1)['source'] == 'reference_mcs_fallback'
     prepare_iteration_scaffold(project, 3, database.iteration_gbsa_elites(project.db_path, 2, 2),
                                create=True)
     assert project.mcs_smarts == project.initial_mcs_smarts
@@ -255,21 +257,23 @@ def test_default_log_shows_initial_and_elite_cores_on_create_and_resume(
     try:
         project.iteration_mcs = True
         project.initial_mcs_smarts = supplied
+        project.elite_mcs_smarts = supplied
         prepare_iteration_scaffold(project, 2,
                                    database.iteration_gbsa_elites(project.db_path, 1, 2),
                                    create=True)
         initial = database.iteration_scaffold(project.db_path, 0)['mcs_smarts']
         generation = project.generation_mcs_smarts
-        assert initial != generation
+        source = 'user supplied elite-mcs' if supplied else 'iteration 1 elites'
+        assert (initial == generation) if supplied else (initial != generation)
         output = capsys.readouterr().out
         assert f'[MCS] Initial docking constraint: {initial}' in output
-        assert f'[MCS] Iteration 2 generation core (iteration 1 elites): {generation}' in output
+        assert f'[MCS] Iteration 2 generation core ({source}): {generation}' in output
         monkeypatch.setattr(_core, 'prepare_libinvent_scaffold',
                             lambda *a, **k: pytest.fail('logging recalculated MCS'))
         prepare_iteration_scaffold(project, 2)
         resumed_output = capsys.readouterr().out
         assert f'[MCS] Initial docking constraint: {initial}' in resumed_output
-        assert f'[MCS] Iteration 2 generation core (iteration 1 elites): {generation}' in resumed_output
+        assert f'[MCS] Iteration 2 generation core ({source}): {generation}' in resumed_output
     finally:
         _logging._log_level.reset(token)
 
@@ -295,3 +299,179 @@ def test_legacy_log_distinguishes_initial_core_from_preserved_glide_core(project
     output = capsys.readouterr().out
     assert '[MCS] Initial docking constraint: c1ccccc1' in output
     assert '[MCS] Iteration 2 preserved Glide constraint: Cc1ccccc1' in output
+
+
+def test_supplied_core_applies_once_when_starting_after_iteration_one(project, monkeypatch):
+    supplied = '[*:0]c1ccc([*:1])cc1'
+    project.initial_mcs_smarts = supplied
+    project.elite_mcs_smarts = supplied
+    project.iteration_mcs = True
+    # Existing older projects have no explicit one-time generation application marker.
+    initial = dict(mcs_smarts=supplied, scaffold_smiles=supplied,
+                   source='user_initial_mcs', source_ids=[1, 2, 3])
+    database.iteration_scaffold(project.db_path, 0, initial)
+    database.iteration_scaffold(project.db_path, 1, dict(initial, docking_mcs_smarts=supplied))
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    elites = database.iteration_gbsa_elites(project.db_path, 2, 2)
+    prepare_iteration_scaffold(project, 3, elites, create=True)
+    saved = database.iteration_scaffold(project.db_path, 3)
+    assert saved['mcs_smarts'] == supplied
+    assert saved['supplied_elite_mcs'] == supplied
+    assert saved['source'] == 'user_elite_mcs'
+    assert saved['docking_mcs_smarts'] == supplied
+
+    # Failed TL/no inserted compounds and lost files still reuse the supplied snapshot.
+    project.libinvent_scaffold_file.unlink()
+    with monkeypatch.context() as patch:
+        patch.setattr(_core, 'prepare_libinvent_scaffold', lambda *a, **k: pytest.fail('resume recomputed'))
+        restarted = SimpleNamespace(**vars(project))
+        prepare_iteration_scaffold(restarted, 3, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 3) == saved
+    following_elites = [(*row[:3], 3, *row[4:]) for row in elites]
+    prepare_iteration_scaffold(restarted, 4, following_elites, create=True)
+    following = database.iteration_scaffold(project.db_path, 4)
+    assert following['source'] == 'previous_iteration_elites'
+    assert following['mcs_smarts'] != supplied
+    assert restarted.mcs_smarts == supplied
+    assert database.iteration_scaffold(project.db_path, 0) == initial
+
+
+def test_changed_generation_core_cannot_change_iteration_zero_docking_core(project):
+    project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    prepare_iteration_scaffold(project, 1, create=True)
+    initial = database.iteration_scaffold(project.db_path, 0)
+    fixed = project.mcs_smarts
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    elites = database.iteration_gbsa_elites(project.db_path, 2, 2)
+    prepare_iteration_scaffold(project, 3, elites, create=True)
+    assert project.generation_mcs_smarts == project.elite_mcs_smarts
+    assert project.mcs_smarts == fixed
+    assert database.iteration_scaffold(project.db_path, 0) == initial
+    following_elites = [(*row[:3], 3, *row[4:]) for row in elites]
+    prepare_iteration_scaffold(project, 4, following_elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 4)['source'] == 'previous_iteration_elites'
+    assert project.mcs_smarts == fixed
+
+
+def test_incompatible_supplied_generation_core_is_not_consumed(project):
+    # Save the initial docking constraint before supplying an incompatible core.
+    prepare_iteration_scaffold(project, 2, database.iteration_gbsa_elites(project.db_path, 1, 2), create=True)
+    initial = database.iteration_scaffold(project.db_path, 0)
+    project.elite_mcs_smarts = '[*:0]C1CCCCC1[*:1]'
+    elites = [(100, 'A', 'CC1CCCCC1C', 2, -10, -40),
+              (101, 'B', 'CCC1CCCCC1CC', 2, -9, -30)]
+    with pytest.raises(RuntimeError, match='does not contain the fixed docking core'):
+        prepare_iteration_scaffold(project, 3, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 3) is None
+    assert not database.elite_mcs_was_used(project.db_path, project.elite_mcs_smarts)
+    assert database.iteration_scaffold(project.db_path, 0) == initial
+
+
+def test_reference_fallback_applies_once_when_starting_at_iteration_three(project):
+    project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    elites = database.iteration_gbsa_elites(project.db_path, 2, 2)
+    prepare_iteration_scaffold(project, 3, elites, create=True)
+    saved = database.iteration_scaffold(project.db_path, 3)
+    assert saved['source'] == 'reference_mcs_fallback'
+    assert saved['mcs_smarts'] == project.initial_mcs_smarts
+    prepare_iteration_scaffold(project, 4, [(*r[:3], 3, *r[4:]) for r in elites], create=True)
+    assert database.iteration_scaffold(project.db_path, 4)['source'] == 'previous_iteration_elites'
+    assert project.mcs_smarts == project.initial_mcs_smarts
+
+
+def test_reference_docking_query_needs_no_libinvent_attachments(project):
+    project.initial_mcs_smarts = '[#6]1:[#6]:[#6]:[#6]:[#6]:[#6]:1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    prepare_iteration_scaffold(project, 3, database.iteration_gbsa_elites(project.db_path, 2, 2), create=True)
+    assert project.mcs_smarts == project.initial_mcs_smarts
+    assert project.libinvent_scaffold_smiles == project.elite_mcs_smarts
+    assert 'scaffold_smiles' not in database.iteration_scaffold(project.db_path, 0)
+
+
+def test_reference_input_change_does_not_override_explicit_elite_core(project):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    elites = database.iteration_gbsa_elites(project.db_path, 2, 2)
+    prepare_iteration_scaffold(project, 3, elites, create=True)
+    initial = database.iteration_scaffold(project.db_path, 0)
+    project.initial_mcs_smarts = 'invalid changed reference'
+    prepare_iteration_scaffold(project, 4, [(*r[:3], 3, *r[4:]) for r in elites], create=True)
+    assert database.iteration_scaffold(project.db_path, 4)['source'] == 'previous_iteration_elites'
+    assert database.iteration_scaffold(project.db_path, 0) == initial
+    assert project.mcs_smarts == 'c1ccccc1'
+
+
+def test_first_iteration_uses_explicit_elite_core_instead_of_reference_core(project):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    prepare_iteration_scaffold(project, 1, create=True)
+    assert project.generation_mcs_smarts == project.elite_mcs_smarts
+    assert project.libinvent_scaffold_smiles == project.elite_mcs_smarts
+    assert project.mcs_smarts == project.initial_mcs_smarts
+    assert database.iteration_scaffold(project.db_path, 1)['source'] == 'user_elite_mcs'
+    prepare_iteration_scaffold(project, 3, database.iteration_gbsa_elites(project.db_path, 2, 2), create=True)
+    assert database.iteration_scaffold(project.db_path, 3)['source'] == 'previous_iteration_elites'
+
+
+@pytest.mark.parametrize('value', ['', '  ', True, 3, []])
+def test_invalid_elite_mcs_config(value):
+    from molnova.config import elite_mcs
+    with pytest.raises(ValueError, match='elite-mcs'):
+        elite_mcs({'elite-mcs': value})
+
+
+def test_elite_mcs_loaded_from_toml(tmp_path):
+    toml = tmp_path / 'project.toml'
+    toml.write_text('''libinvent-prior = "prior"
+dock-grid = "grid.zip"
+reference-pose = "refs.maegz"
+out-dir = "output"
+sample-size = 10
+target-count = 2
+max-iteration = 5
+host = "localhost"
+synthetic-feasibility-enabled = false
+reference-mcs = "c1ccccc1"
+''')
+    assert _core.load_project_toml(toml)['elite_mcs_smarts'] is None
+    with toml.open('a') as stream:
+        stream.write('elite-mcs = "[*:0]Oc1ccc([*:1])cc1"\n')
+    config = _core.load_project_toml(toml)
+    assert config['elite_mcs_smarts'] == '[*:0]Oc1ccc([*:1])cc1'
+    assert config['mcs_smarts'] == 'c1ccccc1'
+
+
+def test_iteration_zero_saves_reference_as_initial_elite_fallback(project):
+    from molnova.chemistry.scaffold import _initial_scaffold
+    project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    saved = _initial_scaffold(project)
+    assert saved['initial_elite_mcs'] == project.initial_mcs_smarts
+    assert not database.elite_mcs_was_used(project.db_path, project.initial_mcs_smarts)
+    # The bootstrap default survives changes to TOML before the first generation.
+    project.initial_mcs_smarts = 'invalid changed reference'
+    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert project.generation_mcs_smarts == saved['initial_elite_mcs']
+    assert project.mcs_smarts == saved['mcs_smarts']
+    assert database.iteration_scaffold(project.db_path, 0) == saved
+
+
+def test_iteration_zero_preserves_explicit_initial_elite_input(project):
+    from molnova.chemistry.scaffold import _initial_scaffold
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    saved = _initial_scaffold(project)
+    assert saved['initial_elite_mcs'] == project.elite_mcs_smarts
+    assert saved['mcs_smarts'] == project.initial_mcs_smarts
+    assert not database.elite_mcs_was_used(project.db_path, project.elite_mcs_smarts)
