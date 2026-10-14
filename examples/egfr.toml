@@ -21,6 +21,7 @@ sample-size = 30000                 # 한 번의 샘플링 수
 target-count = 10000               # iteration당 신규 화합물 목표 수
 elite-tl-epochs = 5
 gbsa-elite-count = 20              # 직전 iteration의 Prime 점수로 선택할 TL elite 수
+elite-mcs-fixed = false           # true: 초기 generation MCS/scaffold 고정, false: 이후 cycle마다 elite MCS 계산
 # elite-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"     # 선택: 첫 새 generation에 한 번 사용, 이후 직전 elite에서 MCS 계산
 # elite-mcs 생략 시 첫 generation은 reference-mcs를 사용합니다. Docking constraint는 reference-mcs로 고정됩니다.
 sa-score-cpus = 1                 # 생성 직후 로컬 RDKit SA score 계산 프로세스 수

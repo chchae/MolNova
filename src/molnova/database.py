@@ -506,6 +506,26 @@ def prior_generation_exists(path, iteration):
         ).fetchone() is not None
 
 
+def fixed_generation_scaffold(path, iteration, supplied):
+    """Reuse the first pinned scaffold, or the original supplied scaffold."""
+    import json
+    iteration_scaffold(path, 0)
+    with connect(path) as conn:
+        snapshots = [(i, json.loads(s)) for i, s in conn.execute(
+            'SELECT iteration,snapshot FROM iteration_scaffold '
+            'WHERE iteration>0 AND iteration<? ORDER BY iteration', (iteration,))]
+    for i, snapshot in snapshots:
+        if snapshot.get('elite_mcs_fixed') is True:
+            return i, snapshot
+    if supplied is not None:
+        for i, snapshot in snapshots:
+            if (snapshot.get('supplied_elite_mcs') == supplied
+                    or (snapshot.get('source') == 'user_initial_mcs'
+                        and snapshot.get('mcs_smarts') == supplied)):
+                return i, snapshot
+    return None
+
+
 def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]:
     with connect(path) as conn:
         return conn.execute(

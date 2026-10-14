@@ -445,11 +445,13 @@ synthetic-feasibility-enabled = false
 reference-mcs = "c1ccccc1"
 ''')
     assert _core.load_project_toml(toml)['elite_mcs_smarts'] is None
+    assert _core.load_project_toml(toml)['elite_mcs_fixed'] is False
     with toml.open('a') as stream:
-        stream.write('elite-mcs = "[*:0]Oc1ccc([*:1])cc1"\n')
+        stream.write('elite-mcs = "[*:0]Oc1ccc([*:1])cc1"\nelite-mcs-fixed = true\n')
     config = _core.load_project_toml(toml)
     assert config['elite_mcs_smarts'] == '[*:0]Oc1ccc([*:1])cc1'
     assert config['mcs_smarts'] == 'c1ccccc1'
+    assert config['elite_mcs_fixed'] is True
 
 
 def test_iteration_zero_saves_reference_as_initial_elite_fallback(project):
@@ -532,3 +534,96 @@ def test_prior_snapshot_without_inserted_compounds_also_consumes_bootstrap(proje
     database.iteration_scaffold(project.db_path, 1, {'source': 'legacy_project_scaffold'})
     assert database.prior_generation_exists(project.db_path, 2)
     assert not database.prior_generation_exists(project.db_path, 1)
+
+
+def test_fixed_elite_core_and_attachments_persist_across_cycles_and_restart(project, monkeypatch, capsys):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = 'c1ccccc1'  # Let the first cycle infer attachment sites.
+    project.elite_mcs_fixed = True
+    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    first = database.iteration_scaffold(project.db_path, 2)
+    assert first['elite_mcs_fixed'] is True
+    assert first['fixed_from_iteration'] == 2
+    assert first['source'] == 'fixed_elite_mcs'
+    assert '[*:0]' in first['scaffold_smiles']
+    capsys.readouterr()
+    restarted = SimpleNamespace(**vars(project))
+    restarted.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    monkeypatch.setattr(_core, 'prepare_libinvent_scaffold', lambda *a, **k: pytest.fail('fixed scaffold recomputed'))
+    prepare_iteration_scaffold(restarted, 3, [(*r[:3], 2, *r[4:]) for r in elites], create=True)
+    later = database.iteration_scaffold(project.db_path, 3)
+    assert later['mcs_smarts'] == first['mcs_smarts']
+    assert later['scaffold_smiles'] == first['scaffold_smiles']
+    assert later['source_ids'] == first['source_ids']
+    assert later['fixed_from_iteration'] == 2
+    assert restarted.mcs_smarts == project.initial_mcs_smarts
+    assert 'fixed elite-mcs from iteration 2' in capsys.readouterr().out
+    # A TOML mode switch cannot change the generation already saved for iteration 3.
+    restarted.elite_mcs_fixed = False
+    prepare_iteration_scaffold(restarted, 3)
+    assert database.iteration_scaffold(project.db_path, 3) == later
+
+
+def test_enabling_fixed_mode_reuses_the_original_supplied_scaffold(project, monkeypatch):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    original = database.iteration_scaffold(project.db_path, 2)
+    project.elite_mcs_fixed = True
+    monkeypatch.setattr(_core, 'prepare_libinvent_scaffold', lambda *a, **k: pytest.fail('original scaffold recalculated'))
+    prepare_iteration_scaffold(project, 3, [(*r[:3], 2, *r[4:]) for r in elites], create=True)
+    fixed = database.iteration_scaffold(project.db_path, 3)
+    assert fixed['mcs_smarts'] == original['mcs_smarts']
+    assert fixed['scaffold_smiles'] == original['scaffold_smiles']
+    assert fixed['fixed_from_iteration'] == 2
+    assert database.iteration_scaffold(project.db_path, 2) == original
+
+
+def test_switching_fixed_off_recomputes_from_preceding_elites(project):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    project.elite_mcs_fixed = True
+    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    first = database.iteration_scaffold(project.db_path, 2)
+    project.elite_mcs_fixed = False
+    prepare_iteration_scaffold(project, 3, [(*r[:3], 2, *r[4:]) for r in elites], create=True)
+    adaptive = database.iteration_scaffold(project.db_path, 3)
+    assert adaptive['source'] == 'previous_iteration_elites'
+    assert adaptive['mcs_smarts'] != first['mcs_smarts']
+    assert 'elite_mcs_fixed' not in adaptive
+    project.elite_mcs_fixed = True
+    prepare_iteration_scaffold(project, 4, [(*r[:3], 3, *r[4:]) for r in elites], create=True)
+    assert database.iteration_scaffold(project.db_path, 4)['scaffold_smiles'] == first['scaffold_smiles']
+
+
+def test_fixed_mode_can_pin_the_reference_fallback(project):
+    project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    project.elite_mcs_fixed = True
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    prepare_iteration_scaffold(project, 1, create=True)
+    first = database.iteration_scaffold(project.db_path, 1)
+    prepare_iteration_scaffold(project, 3, database.iteration_gbsa_elites(project.db_path, 2, 2), create=True)
+    assert database.iteration_scaffold(project.db_path, 3)['scaffold_smiles'] == first['scaffold_smiles']
+    assert project.generation_mcs_smarts == project.initial_mcs_smarts
+
+
+def test_fixed_mode_still_checks_preceding_iteration_and_docking_compatibility(project):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    project.elite_mcs_fixed = True
+    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    with pytest.raises(RuntimeError, match='preceding iteration'):
+        prepare_iteration_scaffold(project, 3, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 3) is None
+
+
+@pytest.mark.parametrize('value', [1, 0, 'true', 'false', None])
+def test_invalid_fixed_flag(value):
+    from molnova.config import elite_mcs_fixed
+    with pytest.raises(ValueError, match='elite-mcs-fixed'):
+        elite_mcs_fixed({'elite-mcs-fixed': value})

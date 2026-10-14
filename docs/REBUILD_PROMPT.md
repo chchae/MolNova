@@ -184,7 +184,26 @@ LibInvent attachment points. When omitted, infer the docking MCS from those
 references. Persist it in row 0; later generation inputs never replace it.
 Iteration 0 uses supplied reference poses and does not perform generation.
 
+**Confirmed fixed-generation flag (2026-10-14):** optional TOML
+`elite-mcs-fixed` is a strict boolean, default `false`. With `true`, reuse the
+first chosen generation MCS **and its attachment-bearing scaffold** for later
+new cycles. Persist `elite_mcs_fixed=true` and `fixed_from_iteration` in each
+new generation snapshot. Reuse the first prior fixed snapshot on restart or
+subsequent cycles; changing/removing TOML `elite-mcs` cannot replace that pinned
+core. When enabling fixed mode after the same supplied input was already used,
+reuse its original saved scaffold rather than redetermining attachment sites.
+Without explicit `elite-mcs`, fixed mode can pin the saved initial fallback;
+if no supplied/fallback input exists, pin the normally inferred first core.
+With `false`, use the adaptive policy below: apply an unconsumed supplied input
+once, then recompute from preceding elites on every new cycle. Turning fixed
+mode off affects new snapshots only; existing snapshots/jobs remain immutable.
+Re-enabling fixed mode reuses its previously pinned scaffold. Fixed mode still
+uses immediately preceding elites for TL from the original prior, obeys
+completion/decomposition gates, and retains the iteration-0 docking constraint.
+Logs identify fixed cores as `fixed elite-mcs from iteration N`.
+
 Optional TOML `elite-mcs` is a nonempty SMARTS string used for generation.
+The following describes the default adaptive mode (`elite-mcs-fixed=false`).
 Apply it once to the first new generation snapshot started with that value,
 even when the iteration number is greater than 1. Starting at iteration 3 uses
 it for iteration 3 TL/sampling; iteration 4 derives its MCS from iteration 3

@@ -223,6 +223,17 @@ Three cases are supported.
 for the explicit first-generation fallback below. A docking SMARTS does not need
 LibInvent attachments. Persist row 0 and never change it for generation input.
 
+`elite-mcs-fixed` is a strict TOML boolean, default false. True pins the first
+chosen generation core **and scaffold attachment positions**, then reuses them
+across new cycles/restarts. Record `elite_mcs_fixed` and `fixed_from_iteration`
+in immutable generation snapshots; prefer the first previous fixed snapshot,
+or the original saved scaffold for the same supplied value when enabling the
+mode later. Fixed mode can use the saved initial fallback when elite input is
+absent. False uses the adaptive policy below. Flag changes affect only new
+snapshots; disabling fixed mode resumes elite-derived MCS, and re-enabling it
+reuses the prior pin. TL still uses immediately preceding elites and original
+prior; all gates, scientific compatibility and docking constraints remain.
+
 Optional `elite-mcs` supplies the first new generation core once, including
 when starting at iteration 3. Iteration 4 and later infer their generation cores
 from exactly the selected finite Prime elites of the preceding iteration

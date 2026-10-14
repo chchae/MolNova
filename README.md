@@ -207,9 +207,19 @@ See `examples/egfr.toml` and `docs/architecture.md`.
 ```toml
 reference-mcs = "c1ccccc1"           # fixed docking constraint
 elite-mcs = "[*:0]Oc1ccc([*:1])cc1" # optional first generation core
+elite-mcs-fixed = false           # default: adapt MCS from preceding elites
 ```
 
-Starting at a new iteration 3 uses `elite-mcs` once for that generation's
+Set `elite-mcs-fixed = true` to keep the first generation MCS and its scaffold
+attachment positions across cycles. SQLite preserves that choice across restart
+and later TOML input changes. Fixed mode still trains from the immediately
+preceding elites; it does not fix the training data or change the docking core.
+When enabling it after the same elite input was used, reuse its original saved
+scaffold. Without elite input, fixed mode can pin the initial reference fallback.
+Switching to false affects new cycles only and resumes MCS calculation from
+preceding elites; existing iterations retain their saved cores.
+
+With the default `elite-mcs-fixed = false`, starting at a new iteration 3 uses `elite-mcs` once for that generation's
 TL/sampling. Iteration 4 calculates its generation MCS from iteration 3 Prime
 MM-GBSA elites (`gbsa-elite-count`). Without `elite-mcs`, use `reference-mcs`
 as the initial elite MCS in the iteration-0 snapshot, then use it for the first

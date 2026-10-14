@@ -121,7 +121,7 @@ def load_project_toml(filename):
         )
 
     base = filename.parent
-    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count, sa_score_process_count, sa_accepted_ratio, elite_mcs
+    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count, sa_score_process_count, sa_accepted_ratio, elite_mcs, elite_mcs_fixed
     remote_reinvent = remote_reinvent_settings(config)
     remote_aizynth = remote_aizynth_settings(config)
 
@@ -167,6 +167,7 @@ def load_project_toml(filename):
         "reference_poses": resolve_path(config["reference-pose"]),
         "mcs_smarts": config.get("reference-mcs"),
         "elite_mcs_smarts": elite_mcs(config),
+        "elite_mcs_fixed": elite_mcs_fixed(config),
         "output": output,
         "sample_size": int(config["sample-size"]),
         "target_count": int(config["target-count"]),

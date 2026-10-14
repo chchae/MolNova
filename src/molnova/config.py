@@ -215,6 +215,13 @@ def elite_mcs(config: dict[str, Any]) -> str | None:
     return value.strip()
 
 
+def elite_mcs_fixed(config: dict[str, Any]) -> bool:
+    value = config.get('elite-mcs-fixed', False)
+    if not isinstance(value, bool):
+        raise ValueError('elite-mcs-fixed must be a boolean')
+    return value
+
+
 def gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
     settings = {}
     for key, default, minimum in (("gbsa-license-retry-seconds", 300, 1),
