@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import hashlib
+import json
 import re
 from pathlib import Path
 from molnova.stages._logging import detail, progress
@@ -8,6 +9,7 @@ import sqlite3
 import time
 from molnova import _core as c
 from molnova import database
+from molnova.config import glide_group_resources, schrodinger_job_options
 from molnova.stages._logging import work_started, timed_stage, format_elapsed
 from molnova.states import CompoundState as State
 from molnova.glide_recovery import group_status, load_record, record_file
@@ -161,6 +163,9 @@ def _run_stage(args, ns):
         print(f"Iteration {iteration}: Glide waiting: {reason}.")
         return
 
+    from molnova.chemistry.scaffold import prepare_iteration_scaffold
+    prepare_iteration_scaffold(args, iteration)
+
     # Assign nearest reference for any still-undocked compounds.
     c.assign_reference_compounds(iteration, args)
     groups = query_groups(iteration, args.db_path)
@@ -202,6 +207,8 @@ def _run_stage(args, ns):
     core_matcher = c.create_core_atom_matcher(glide_root)
 
     jobs = []
+    unsubmitted = []
+    reserved = []
     for refid, compounds in sorted(groups.items()):
         ligand_file = group_ligand_files.get(refid)
         if ligand_file is None:
@@ -224,6 +231,11 @@ def _run_stage(args, ns):
         if status in ('RUNNING', 'UNKNOWN'):
             mark_group(args.db_path, compounds, State.GLIDE_RUNNING)
             jobs.append(job)
+            record = load_record(gdir) or {}
+            command = record.get('command', [])
+            reserved.append(command[command.index('-HOST') + 1]
+                            if '-HOST' in command and command.index('-HOST') + 1 < len(command)
+                            else None)
             continue
         if status == 'DONE':
             if output_file.exists() and output_file.stat().st_size:
@@ -236,6 +248,31 @@ def _run_stage(args, ns):
             mark_group(args.db_path, compounds, State.FAILED, failed_stage='glide',
                        message=failure_reason(gdir, status))
             continue
+
+        unsubmitted.append((job, ligand_file))
+
+    counts_file = glide_root / 'ligprep_counts.json'
+    structure_counts = json.loads(counts_file.read_text()) if counts_file.exists() else {}
+    counts = {job['reference_id']: structure_counts.get(str(job['reference_id']), job['input_count'])
+              for job, _ in unsubmitted}
+    resources = glide_group_resources(getattr(args, 'host', ''),
+                                      getattr(args, 'glide_cpus', None), counts, reserved)
+    deferred = len(unsubmitted) - len(resources)
+    if deferred:
+        print(f'Glide: {deferred} reference groups waiting for the shared core budget.', flush=True)
+
+    for job, ligand_file in unsubmitted:
+        refid = job['reference_id']
+        if refid not in resources:
+            continue
+        gdir, ref_file = job['group_dir'], job['reference_file']
+        refname = job['reference_name']
+        compounds = job['compounds']
+        host = resources[refid]
+        options = schrodinger_job_options(host, split_jobs=True)
+        njobs = options[options.index('-NJOBS') + 1] if '-NJOBS' in options else 'host default'
+        print(f"Glide reference {refid}: {counts[refid]} prepared ligands; "
+              f'NJOBS={njobs}, HOST={host}.', flush=True)
 
         c.extract_reference_pose(
             args.schrodinger, ref_extractor, args.reference_poses,
@@ -252,8 +289,7 @@ def _run_stage(args, ns):
         )
         try:
             submitted = c.submit_glide(
-                args.schrodinger, inp, gdir, args.host,
-                cpus=getattr(args, "glide_cpus", None),
+                args.schrodinger, inp, gdir, host,
             )
         except SubmissionBlocked as exc:
             print(f'Iteration {iteration}: Glide submissions waiting: {exc}.')

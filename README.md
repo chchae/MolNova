@@ -180,7 +180,9 @@ The driver supervises independent subprocess workers. SQLite is the source of tr
 During supervised runs, each successful idle poll prints one line such as
 `[ligprep ] skip: No iteration requires LigPrep.` Generate, synthetic feasibility,
 LigPrep, Glide, MM-GBSA and optional FEP report their idle reason; silent workers
-use `skip: No eligible work.` Repeated DB/MCS setup messages remain hidden.
+use `skip: No eligible work.` Repeated setup details remain hidden; concise
+`[MCS]` summaries show the initial docking constraint and each iteration's
+generation core at the default log level, including on restart.
 Set console verbosity in the project TOML:
 
 ```toml
@@ -199,12 +201,30 @@ and calculation eligibility are unchanged.
 
 See `examples/egfr.toml` and `docs/architecture.md`.
 
+Cycle 1 uses the supplied `reference-mcs` or derives an initial core/scaffold
+from the original references when omitted. Every later new cycle derives its
+generation MCS/scaffold from the preceding cycle's Prime MM-GBSA elites
+(`gbsa-elite-count`), including when an initial `reference-mcs` was supplied.
+Glide keeps the initial core as its fixed docking constraint and the supplied
+poses as templates. Generation scaffolds must retain that constraint.
+SQLite preserves both cores across restart. Files in `iterN/scaffold/` include
+`mcs.smarts` for generation and `docking_mcs.smarts` for Glide; the initial
+constraint is also published as `output/docking_mcs.smarts`.
+Existing iterations retain the scaffold and docking core they already used.
+
 Glide uses reference-guided constrained SP docking. MCS-compatible iteration-0
 references are ranked by Morgan radius-2/2048-bit Tanimoto similarity. Prepared
 ligands are grouped by the selected reference and submitted with `-HOST` and
 `-OVERWRITE`, without `-WAIT`. Core restraints stay enabled and unconstrained
 fallback stays disabled. Across LigPrep states, each `CMPID_<id>` retains the
 lowest `r_i_docking_score` and its corresponding pose.
+
+`glide-cpus` is shared across reference groups. New groups receive `HOST` slots
+and `NJOBS` in proportion to their actual LigPrep structure counts, with at least
+one slot per nonempty group when possible and no more jobs than structures.
+The worker logs each group's count and allocation. Saved live/uncertain jobs keep
+their original requests and consume the budget before new submissions; groups
+without available slots wait for a later worker pass. Bare hosts retain vendor defaults.
 
 Completed groups publish `best_poses.maegz` atomically before their scores enter
 SQLite. MM-GBSA waits until generation reaches `target-count` and no compounds

@@ -44,6 +44,25 @@ def test_standalone_work_message_has_no_protocol_marker(monkeypatch, capsys):
     assert capsys.readouterr().out == "Starting MM-GBSA\n"
 
 
+@pytest.mark.parametrize('active', [False, True])
+def test_mcs_summaries_survive_supervisor_setup_filter(tmp_path, capsys, active):
+    script = "print('setup message')\n"
+    script += "print('[MCS] Initial docking constraint: c1ccccc1')\n"
+    script += "print('[MCS] Iteration 2 generation core (iteration 1 elites): Cc1ccccc1')\n"
+    if active:
+        script += f"print({WORK_STARTED!r})\nprint('Sampling')\n"
+    else:
+        script += "print('Generation already complete.')\n"
+    assert stream_process('generate', [sys.executable, '-c', script], tmp_path,
+                          threading.Event()) == 0
+    output = capsys.readouterr().out
+    assert output.count('[MCS] Initial docking constraint: c1ccccc1') == 1
+    assert output.count('[MCS] Iteration 2 generation core (iteration 1 elites): Cc1ccccc1') == 1
+    assert 'setup message' not in output
+    assert WORK_STARTED not in output
+    assert ('skip: Generation already complete.' in output) == (not active)
+
+
 @pytest.mark.parametrize("stage", ["generate", "synthetic", "ligprep", "glide", "mmgbsa", "fep"])
 @pytest.mark.parametrize("silent", [False, True])
 def test_each_idle_stage_emits_one_skip_line(tmp_path, capsys, stage, silent):

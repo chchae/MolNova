@@ -115,6 +115,75 @@ def mmgbsa_job_options(host: str, ligand_count: int) -> list[str]:
     return ["-HOST", hosts, "-NJOBS", str(ligand_count)]
 
 
+def glide_group_resources(host, cpus, counts, reserved=()):
+    """Share explicit host slots by prepared-ligand count, reserving live jobs.
+
+    A missing/uncertain saved host request consumes the full budget until
+    recovery establishes completion. Bare hosts keep vendor resource defaults.
+    Return only groups that can launch; others wait for a later worker pass.
+    """
+    host = schrodinger_job_options(host, cpus)[1]
+    for count in counts.values():
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError('Glide group ligand counts must be positive integers')
+
+    def slots(request):
+        result = {}
+        for entry in (request or '').split():
+            name, colon, value = entry.rpartition(':')
+            if not colon or not value.isdigit() or int(value) < 1:
+                return None
+            result[name] = result.get(name, 0) + int(value)
+        return result or None
+
+    available = slots(host)
+    if available is None:
+        return {ref: host for ref in counts}  # No explicit budget was configured.
+    for request in reserved:
+        used = slots(request)
+        if used is None or any(name not in available for name in used):
+            return {}
+        for name, value in used.items():
+            available[name] -= value
+    # Preserve legacy requests even when they exceed a newly reduced budget.
+    if any(value < 0 for value in available.values()):
+        return {}
+
+    budget = min(sum(available.values()), sum(counts.values()))
+    allocation = {ref: 0 for ref in counts}
+    # Give nonempty groups one slot first. If cores are scarce, larger groups
+    # launch first; deferred groups receive slots after native jobs terminate.
+    for ref in sorted(counts, key=lambda ref: (-counts[ref], ref))[:budget]:
+        allocation[ref] = 1
+    remaining = budget - sum(allocation.values())
+    while remaining:
+        active = [ref for ref in counts if allocation[ref] < counts[ref]]
+        total = sum(counts[ref] for ref in active)
+        shares = {ref: divmod(remaining * counts[ref], total) for ref in active}
+        for ref in active:
+            addition = min(shares[ref][0], counts[ref] - allocation[ref])
+            allocation[ref] += addition
+            remaining -= addition
+        for ref in sorted(active, key=lambda ref: (-shares[ref][1], ref)):
+            if remaining and allocation[ref] < counts[ref]:
+                allocation[ref] += 1
+                remaining -= 1
+
+    requests = {}
+    for ref in sorted(allocation):
+        need = allocation[ref]
+        entries = []
+        for name in available:
+            take = min(need, available[name])
+            if take:
+                entries.append(f'{name}:{take}')
+                available[name] -= take
+                need -= take
+        if entries:
+            requests[ref] = ' '.join(entries)
+    return requests
+
+
 def aizynth_process_count(config: dict[str, Any]) -> int:
     value = config.get("aizynth-nproc", 8)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:

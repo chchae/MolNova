@@ -973,12 +973,12 @@ def assign_reference_compounds(iteration, args):
 
 
 def infer_mcs_smarts_from_iteration0(references, timeout=60):
-    """Infer an MCS shared by all iteration=0 reference ligands."""
+    """Infer an MCS shared by all supplied ligands (references or elites)."""
     mols = [Chem.RemoveHs(Chem.Mol(ref["mol"])) for ref in references]
 
     if len(mols) < 2:
         raise RuntimeError(
-            "At least two iteration=0 ligands are required "
+            "At least two input ligands are required "
             "for automatic MCS extraction."
         )
 
@@ -1225,6 +1225,9 @@ def build_libinvent_scaffold(
         canonical=True,
         isomericSmiles=True,
     )
+    # RDKit omits atom map zero and emits a bare '*'; keep the explicit
+    # attachment-zero notation expected by scaffold preparation and TL.
+    scaffold_smiles = re.sub(r"(?<!\[)\*", "[*:0]", scaffold_smiles)
 
     if (
         "[*:0]" not in scaffold_smiles
@@ -2876,6 +2879,7 @@ def create_ligprep_splitter(glide_root):
 
     script = r"""
 import csv
+import json
 import re
 import sys
 from pathlib import Path
@@ -2929,6 +2933,9 @@ finally:
 
 for reference_id in sorted(counts):
     print(reference_id, counts[reference_id])
+pending = output_root / 'ligprep_counts.json.tmp'
+pending.write_text(json.dumps(counts))
+pending.replace(output_root / 'ligprep_counts.json')
 """
 
     script_file.write_text(script.strip() + "\n", encoding="utf-8")
@@ -2938,6 +2945,7 @@ for reference_id in sorted(counts):
 def split_ligprep_by_reference(schrodinger, ligprep_file, groups, glide_root):
     map_file = write_reference_map(groups, glide_root)
     splitter = create_ligprep_splitter(glide_root)
+    (glide_root / 'ligprep_counts.json').unlink(missing_ok=True)
 
     for reference_id in groups:
         stale = glide_root / f"ref_{reference_id}" / "ligprep_group.maegz"
@@ -4794,6 +4802,9 @@ def configure_project(project_toml, schrodinger=None):
     args.grid = cfg["grid"]
     args.reference_poses = cfg["reference_poses"]
     args.mcs_smarts = cfg["mcs_smarts"]
+    args.initial_mcs_smarts = args.mcs_smarts
+    args.iteration_mcs = True
+    args.automatic_mcs = args.mcs_smarts is None
     args.output = cfg["output"]
     args.libinvent_prior = cfg["libinvent_prior"]
     args.poll_interval = int(cfg.get("poll_interval", 30)) if isinstance(cfg, dict) else 30
@@ -4820,17 +4831,8 @@ def configure_project(project_toml, schrodinger=None):
 
     args.output.mkdir(parents=True, exist_ok=True)
 
-    references = get_reference_compounds(args.db_path)
-    info = prepare_libinvent_scaffold(
-        references=references,
-        user_mcs_smarts=args.mcs_smarts,
-        output_root=args.output,
-        mcs_timeout=args.mcs_timeout,
-        attachment_override=None,
-    )
-    args.mcs_smarts = info["mcs_smarts"]
-    args.libinvent_scaffold_file = info["scaffold_file"]
-    args.libinvent_scaffold_smiles = info["scaffold_smiles"]
+    # Initial docking core and iteration-specific generation scaffolds are
+    # prepared in stage workers, not by the supervisor or status commands.
     return args
 
 

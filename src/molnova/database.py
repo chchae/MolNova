@@ -455,6 +455,35 @@ def iteration_gbsa_elites(path, iteration, count):
     return [row for row in rows if math.isfinite(row[5])][:count]
 
 
+def iteration_scaffold(path, iteration, snapshot=None):
+    """Load or atomically initialize an immutable automatic iteration core."""
+    import json
+
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS iteration_scaffold ('
+            'iteration INTEGER PRIMARY KEY, snapshot TEXT NOT NULL)'
+        )
+        if snapshot is not None:
+            conn.execute(
+                'INSERT INTO iteration_scaffold(iteration,snapshot) VALUES (?,?) '
+                'ON CONFLICT(iteration) DO NOTHING',
+                (iteration, json.dumps(snapshot, sort_keys=True)),
+            )
+        row = conn.execute(
+            'SELECT snapshot FROM iteration_scaffold WHERE iteration=?', (iteration,),
+        ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def iteration_has_compounds(path, iteration):
+    with connect(path) as conn:
+        return conn.execute(
+            'SELECT 1 FROM compound WHERE iteration=? LIMIT 1', (iteration,),
+        ).fetchone() is not None
+
+
 def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]:
     with connect(path) as conn:
         return conn.execute(

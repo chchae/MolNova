@@ -62,6 +62,10 @@ def stream_process(stage, cmd, cwd, stop_event):
         if line.strip() == WORK_STARTED:
             active = True
             pending.clear()
+        elif line.startswith('[MCS] '):
+            # Core summaries are visible even before WORK_STARTED or on resume.
+            # They must not mark an idle worker as active or start its timer.
+            print(f"[{stage:<8}] {line}", end="", flush=True)
         elif active:
             print(f"[{stage:<8}] {line}", end="", flush=True)
         else:

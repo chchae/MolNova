@@ -102,6 +102,13 @@ passes it to every worker. It exits after that iteration, without advancing N+1.
 Workers retain DB inspection, atomic claims, calculation and persistence. Workers
 do not invoke one another and scientific calculation code stays outside the driver.
 
+Glide now shares `glide-cpus` (or explicit host slots) across reference groups
+in proportion to prepared ligand structure counts. Group `HOST`/`NJOBS` requests
+fit that shared budget and are capped by group structure count. Reserve saved
+live/uncertain requests first; preserve legacy jobs unchanged and defer new
+groups when slots are exhausted. Bare hosts retain vendor defaults.
+See SPEC section 8 for allocation, restart and count-metadata behavior.
+
 A zero subprocess exit is not completion. Check SQLite state and native JobServer
 parent/child completion before advancing; retry only the current incomplete stage.
 Preserve durable submission recovery and the cross-project submission mutex.
@@ -188,8 +195,24 @@ Three cases are supported.
 
 ### No user MCS
 
-Infer an MCS from iteration-0 compounds and determine LibInvent
-attachment sites.
+For iteration 1, infer an MCS from iteration-0 references and determine
+LibInvent attachment sites. When a user core is supplied, use it for iteration 1.
+For every new later iteration, even when an initial user core was supplied, infer it from
+exactly the selected finite Prime elites of the immediately preceding
+iteration (`gbsa-elite-count`, 20 in EGFR), after completion gates.
+Use that generation scaffold for TL/sampling. Glide keeps the initial supplied
+or reference-inferred core as its fixed docking constraint. The new generation
+scaffold must contain that constraint; its full core need not match a reference pose.
+Persist one immutable SQLite `iteration_scaffold` snapshot with source IDs;
+publish derived files in `iterN/scaffold/` and reuse them on recovery.
+Existing pre-upgrade iterations retain their original global core/scaffold;
+missing original files stop recovery rather than changing live calculations.
+Persist the initial core/scaffold in row 0 and each new cycle's separate
+`docking_mcs_smarts` in its snapshot. Older snapshots retain their already-used
+docking core, including across restarts of live jobs.
+The reference pose library remains iteration 0; no pose compatible with the fixed docking core,
+invalid/timed-out MCS or fewer than two attachment sites stops generation.
+See SPEC section 6 for the latest separated generation/docking policy.
 
 ### User MCS without attachment points
 

@@ -17,9 +17,9 @@ max-iteration = 100
 host = "t41-cpu:128"
 
 # 3. REINVENT / LibInvent 생성과 transfer learning
-sample-size = 3000                 # 한 번의 샘플링 수
-target-count = 1000               # iteration당 신규 화합물 목표 수
-elite-tl-epochs = 3
+sample-size = 30000                 # 한 번의 샘플링 수
+target-count = 10000               # iteration당 신규 화합물 목표 수
+elite-tl-epochs = 5
 gbsa-elite-count = 20              # 직전 iteration의 Prime 점수로 선택할 TL elite 수
 
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
@@ -44,7 +44,7 @@ ligprep-max-states = 2
 ligprep-max-stereo = 1
 
 # 6. Glide constrained docking
-glide-cpus = 96
+glide-cpus = 124
 tail-timeout = 300                # worker 대기 제한(초); native job은 취소하지 않음
 glide-job-timeout = 1800          # 그룹별 native job 제한(초); 0이면 비활성화
 

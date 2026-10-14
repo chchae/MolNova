@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 from molnova import _core as c
 from molnova import database
+from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration_mcs
 from molnova.stages._logging import work_started, timed_stage
 
 
@@ -44,6 +45,7 @@ def _run_stage(args, requested_iteration):
         ).fetchone()[0]
     remaining = max(0, args.target_count - n)
     if remaining == 0:
+        log_iteration_mcs(args, iteration)
         print(
             f"Iteration {iteration} already has the target "
             f"{args.target_count} compounds; generation skipped."
@@ -54,6 +56,7 @@ def _run_stage(args, requested_iteration):
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if iteration == 1:
+        prepare_iteration_scaffold(args, iteration, create=True)
         work_started("Iteration 1: starting LibInvent sampling.")
         model = args.libinvent_prior
         print("Iteration 1: sampling original LibInvent prior.")
@@ -86,6 +89,7 @@ def _run_stage(args, requested_iteration):
             raise RuntimeError(
                 f"Need {args.gbsa_elite_count} previous MM-GBSA elites; only {len(elites)} available."
             )
+        prepare_iteration_scaffold(args, iteration, elites, create=True)
         _, train_file, valid_file, usable = c.write_elite_libinvent_training_files(
             elites, args.libinvent_scaffold_smiles, run_dir,
             prior_file=args.libinvent_prior,

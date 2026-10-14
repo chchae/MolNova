@@ -177,7 +177,48 @@ Reference properties: docking `r_i_docking_score`/`docking_score`; experimental 
 
 Scaffold cases: infer MCS and attachments when no core supplied; add attachment sites to a supplied dummy-free core; accept a complete scaffold with `[*:0]` and `[*:1]` without adding dummy atoms again. Exclude incompatible references from pose candidates; no compatible reference is an error.
 
-Observed automatic MCS settings: at least two references; timeout 60 seconds; threshold 1.0; maximize bonds; element atom comparison; bond-order comparison; ring matches ring only; complete rings; no valence matching. Invalid, empty, or timed-out MCS is an error. Do not invent CLI flags from old diagnostic wording. Exact attachment heuristics require scientific regression fixtures/source, not arbitrary replacement.
+**Confirmed generation/docking MCS separation (2026-10-14, latest user update):**
+Iteration 1 uses the supplied `reference-mcs` as its initial scaffold/core,
+or infers it from the original iteration-0 references when omitted.
+Every new iteration N>1, regardless of whether an initial core was supplied,
+infers a fresh generation MCS/scaffold from exactly
+the selected `gbsa-elite-count` finite Prime elites of iteration N-1 (20 in
+the EGFR example), after the existing completion gates. Do not infer from
+all generated compounds or pooled historical elites. Use the new scaffold
+for both elite decomposition/TL and sampling. Glide keeps the initial
+supplied or reference-inferred core as its fixed constraint across new cycles.
+Nearest-reference filtering and core mapping use that docking constraint,
+not the current generation MCS. The new scaffold must retain the fixed
+docking constraint; an expanded generation core need not match an original pose.
+
+Persist the automatic core, scaffold, source and input IDs once in SQLite
+`iteration_scaffold`; row 0 stores the fixed initial core/scaffold, and
+rows N store generation scaffolds plus `docking_mcs_smarts`.
+Publish derivative files in `iterN/scaffold/`, including separate
+`mcs.smarts` (generation) and `docking_mcs.smarts` (docking); also publish
+the initial `output/docking_mcs.smarts` from row 0.
+**Confirmed MCS logging (2026-10-14):** at the default `log_level=1`,
+show `[MCS] Initial docking constraint: <SMARTS>` and
+`[MCS] Iteration N generation core (<source>): <SMARTS>` when a scaffold
+is created or restored, including completed-generation resumes. The supervisor
+must retain these summaries before the work-start marker and on idle workers,
+without marking an idle worker active or starting calculation timers.
+When an older iteration preserves a different Glide core, label that constraint
+separately. Reporting saved cores must not recompute MCS or change scores/jobs.
+Resume/replenish the same iteration from that snapshot, never recomputing
+its core beneath compounds or live jobs. Existing pre-upgrade iterations
+retain their original project-level `mcs.smarts` and
+`libinvent_scaffold.smi`; missing originals require restoration rather than
+recalculation. Saved older iteration snapshots lacking `docking_mcs_smarts`
+retain the generation core they already used for docking; never change live
+or uncertain jobs. New iterations use the separated-core policy.
+The original reference pose library remains unchanged: the fixed docking
+constraint must match at least one original pose, with no unconstrained fallback. MCS timeout,
+empty/invalid core, fewer than two input molecules or insufficient attachment
+sites remain errors. RDKit's bare map-zero dummy is serialized explicitly as
+`[*:0]` before the established scaffold/decoration vocabulary conversion.
+
+Observed automatic MCS settings: at least two input ligands; timeout 60 seconds; threshold 1.0; maximize bonds; element atom comparison; bond-order comparison; ring matches ring only; complete rings; no valence matching. Invalid, empty, or timed-out MCS is an error. Do not invent CLI flags from old diagnostic wording. Exact attachment heuristics require scientific regression fixtures/source, not arbitrary replacement.
 
 Iteration 1 samples original prior. Later iterations select finite GBSA elites from exactly N-1, ascending GBSA then docking score then ID, decompose into scaffold/decorators, and train from original prior. Unusable decompositions are diagnosed; at least two usable pairs are needed. Pair files are `scaffold<TAB>decorators`; shuffle seed 12345; validation approximately 20%, at least one, leaving training rows. Preserve dummy vocabulary and attachment ordering; verify decomposition/reassembly.
 
@@ -209,6 +250,30 @@ ligprep -ismi input.smi -omae ligprep.maegz -epik
 Save `ligprep_job.json` before launch; save JobId from output immediately while the existing WAIT command runs. Recover that exact job on restart, downloading only terminal output. Unknown launch/status prevents resubmission. Retain records until DB commits. Legacy logs need recoverable JobIds.
 
 Glide groups prepared ligands by selected reference. Constrained SP input uses `POSE_OUTTYPE ligandlib`, `POSES_PER_LIG 1`, `USE_REF_LIGAND True`, `CORE_RESTRAIN True`, `CORECONS_FALLBACK False`, with reference pose and core mapping. Submit `glide <input> -HOST <host> [-NJOBS N] -OVERWRITE`, without WAIT. Explicit splitting preserves the scientific backend/constraints.
+
+**Confirmed Glide allocation change (2026-10-14):** treat `glide-cpus`, or
+the explicit host slot counts when omitted, as one shared resource budget
+for the iteration's reference groups. The splitter records actual prepared
+structure counts (including LigPrep states) in `ligprep_counts.json`.
+Allocate at least one slot to each nonempty group when possible, then
+distribute remaining slots in proportion to those counts with deterministic
+integer remainders and a cap at the group's structure count. Older adapters
+without this metadata use original compound counts. Set each new group's
+`HOST` slots and `NJOBS` to its allocation. Equal-size groups therefore
+approximate cores/reference-groups; large groups receive larger allocations.
+Multiple explicit hosts retain their individual remaining-slot limits;
+bare hosts retain vendor defaults because no explicit budget is known.
+
+Recover and collect all existing groups before allocating new submissions.
+Reserve the exact saved host requests for live/uncertain jobs; never resize,
+cancel or resubmit them to fit a new budget. Missing/unknown requests or
+legacy requests exceeding the current budget block new submissions until
+those jobs terminate. If there are fewer available slots than groups,
+launch larger groups first and defer the rest to later worker passes.
+Deferred groups keep pending DB state and cannot release the MM-GBSA gate.
+Log prepared counts and assigned `NJOBS`/`HOST` for each new submission.
+This resource allocation changes no docking constraints, scientific input,
+best-pose selection, immediate group persistence or submission fencing.
 
 Each completed group publishes results immediately. Select minimum `r_i_docking_score` per CMPID and corresponding pose. Publish merged `best_poses.maegz` atomically before DB score commits. The merged file has one best pose per original compound.
 
