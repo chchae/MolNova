@@ -1,4 +1,6 @@
 import json
+import socket
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -142,3 +144,46 @@ def test_no_ligprep_ids_does_not_turn_all_compounds_into_terminal_failures(tmp_p
         glide._run_stage(args, SimpleNamespace(iteration=1, poll_interval=1, completion_fraction=.95, tail_timeout=1))
     with database.connect(db) as conn:
         assert conn.execute('SELECT state,failed_stage FROM compound WHERE iteration=1').fetchone() == ('glide_running', None)
+
+
+@pytest.mark.parametrize('case', ['unsubmitted', 'done', 'running', 'offline'])
+def test_obsolete_queue_reconciles_interrupted_child_without_submitting(tmp_path, monkeypatch, case):
+    db = tmp_path / 'project.sqlite'
+    with database.connect(db) as conn:
+        _core.create_sqlite_schema(conn)
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,docking_score) VALUES ('current','C',2,'docked',-9)")
+    root = tmp_path / 'mmgbsa'
+    root.mkdir()
+    record = {'mode': gbsa_queue.MODE, 'compound_ids': [30025],
+              'run_dir': 'queue-1', 'entries': {'30025': 'active'}}
+    prime_async._save(root, record)
+    child = root / 'queue-1/CMPID_30025'
+    child.mkdir(parents=True)
+    saved = {'command': ['/suite/prime_mmgbsa', str(child / 'mmgbsa_input.maegz')],
+             'compound_ids': [30025], 'job_id': None, 'launching': True,
+             'attempt': 1, 'retry_at': 0, 'log_snapshot': {},
+             'launch_started_at': time.time() - 120, 'launch_host': socket.gethostname()}
+    prime_async._save(child, saved)
+    monkeypatch.setattr(prime_async, '_launch_process_alive', lambda *a: False)
+    def history(*a):
+        if case == 'offline':
+            raise OSError('JobServer unavailable')
+        return [] if case == 'unsubmitted' else [{'jobId': 'recovered', 'status': case.upper()}]
+    monkeypatch.setattr(prime_async, '_launch_history', history)
+    monkeypatch.setattr(prime_async, '_job_details', lambda *a: [
+        {'jobId': 'recovered', 'status': case.upper()}])
+    monkeypatch.setattr(prime_async, '_run_attempt', lambda *a: pytest.fail('obsolete compound submitted'))
+    if case in ('unsubmitted', 'done'):
+        assert prime_async.reconcile_saved_job(root, db, 2) is None
+        assert not prime_async.job_file(root).exists()
+        archived = next(tmp_path.glob('mmgbsa.stale-*')) / 'queue-1/CMPID_30025'
+        recovered = prime_async.load_job(archived)
+        assert recovered['launching'] is False
+        assert recovered['job_id'] == (None if case == 'unsubmitted' else 'recovered')
+    else:
+        with pytest.raises(prime_async.PrimeReconciliationPending):
+            prime_async.reconcile_saved_job(root, db, 2)
+        assert prime_async.load_job(root) == record
+        assert not list(tmp_path.glob('mmgbsa.stale-*'))
+    with database.connect(db) as conn:
+        assert conn.execute('SELECT state,docking_score,gbsa_score FROM compound').fetchone() == ('docked', -9, None)

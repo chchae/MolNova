@@ -147,6 +147,13 @@ def reconcile_saved_job(directory, db_path, iteration):
             folder = Path(directory) / record['run_dir'] / f'CMPID_{cid}'
             child = load_job(folder)
             if child is not None:
+                if not child.get('job_id') and child.get('launching'):
+                    try:
+                        reconcile_interrupted_submission(folder, child)
+                    except Exception as exc:
+                        raise PrimeReconciliationPending(
+                            f'Iteration {iteration}: obsolete CMPID_{cid} launch reconciliation pending: {exc}'
+                        ) from exc
                 if child.get('job_id'):
                     jobs = _job_details(child, folder)
                     if any(job.get('status') not in {'DONE', 'FAILED', 'CANCELED', 'STOPPED'} for job in jobs):

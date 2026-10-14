@@ -129,7 +129,10 @@ archived; same-submission restarts recover JobIds, and live/uncertain jobs block
 cleanup. Zero mapped LigPrep IDs cannot complete Glide. The specific historical
 missing-LigPrep-input failure can be retried through LigPrep without resetting
 other failures or scores. Entirely obsolete Prime queues are archived only after
-all saved child jobs are verified terminal/unsubmitted. See SPEC section 8.
+all saved child jobs are verified terminal/unsubmitted. Interrupted obsolete
+children use the existing launch-client/log/JobServer reconciliation to recover
+missing JobIds or establish that no submission occurred, without submitting old
+compound IDs. Query failures retain the queue and report the cause. See SPEC section 8.
 
 ## 6. SQLite
 

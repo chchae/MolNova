@@ -267,7 +267,13 @@ publication. Polling/restart of the same saved submission continues to recover
 its original JobId without deleting its inputs. Live, unknown or uncertain jobs
 block cleanup and duplicate submission. An entirely obsolete compound queue may
 be archived only after every saved child is verified terminal or unsubmitted;
-an active entry without a child identity remains unresolved.
+an active entry without a child identity remains unresolved. For an interrupted
+child with `launching=true` and no JobId, run the existing interrupted-submission
+reconciliation before deciding whether an obsolete queue can be archived.
+Recover logged/native JobIds and verify all children terminate, or positively
+establish no launch client, JobServer history or unexplained calculation
+artifacts after the registration grace period. Never submit obsolete compounds
+while reconciling that queue; failed/ambiguous queries retain it with the cause.
 
 A LigPrep file with zero current mapped compounds is an input error, not proof
 that all Glide molecules scientifically failed. Keep claims retryable and stop.
