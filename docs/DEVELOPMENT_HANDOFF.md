@@ -228,7 +228,9 @@ when starting at iteration 3. Iteration 4 and later infer their generation cores
 from exactly the selected finite Prime elites of the preceding iteration
 (`gbsa-elite-count`, 20 in EGFR), after completion gates. If `elite-mcs` is absent,
 store `reference-mcs` as `initial_elite_mcs` in the iteration-0 bootstrap snapshot
-and use it once for the first generation. Row 0 does not consume that application.
+and use it once for the project's first generation. Earlier generated rows or
+scaffold snapshots, including legacy ones, prevent fallback reapplication to
+a continuing project. Row 0 does not consume that application.
 Preserve the saved fallback on restart; explicit `elite-mcs` takes precedence. If both
 are absent, infer the first generation core from iteration-0 references.
 Persist `supplied_elite_mcs` in the immutable generation snapshot; resumes and
@@ -239,8 +241,9 @@ for later-generation attachment analysis and TL from the original prior.
 The generation scaffold must contain the fixed docking core and support elite
 decomposition/LibInvent attachments. Publish separate generation/docking files
 in `iterN/scaffold/`. Existing legacy cores remain immutable; missing original
-files stop recovery rather than changing live calculations. Iteration 0 has no
-generation stage. See SPEC section 6 for the current input policy.
+files stop recovery rather than changing live calculations. Logs label recorded user elite cores as `saved elite-mcs`, explicitly noting
+when the current TOML omits or differs from that input; preserve the snapshot
+when configuration changes. Iteration 0 has no generation stage. See SPEC section 6 for the current input policy.
 
 ### User MCS without attachment points
 

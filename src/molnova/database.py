@@ -495,6 +495,17 @@ def elite_mcs_was_used(path, supplied):
                        'SELECT snapshot FROM iteration_scaffold WHERE iteration>0'))
 
 
+def prior_generation_exists(path, iteration):
+    """Recognize pre-marker generation history as well as current snapshots."""
+    iteration_scaffold(path, 0)
+    with connect(path) as conn:
+        return conn.execute(
+            'SELECT 1 FROM compound WHERE iteration>0 AND iteration<? '
+            'UNION ALL SELECT 1 FROM iteration_scaffold WHERE iteration>0 AND iteration<? LIMIT 1',
+            (iteration, iteration),
+        ).fetchone() is not None
+
+
 def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]:
     with connect(path) as conn:
         return conn.execute(

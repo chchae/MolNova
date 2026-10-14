@@ -90,7 +90,12 @@ def log_iteration_mcs(args, iteration, snapshot=None):
         elif source == 'user_initial_mcs':
             source = 'user supplied'
         elif source == 'user_elite_mcs':
-            source = 'user supplied elite-mcs'
+            source = 'saved elite-mcs'
+            current = getattr(args, 'elite_mcs_smarts', None)
+            if current is None:
+                source += '; absent from current TOML'
+            elif current != snapshot.get('supplied_elite_mcs', snapshot['mcs_smarts']):
+                source += '; current TOML differs'
         elif source == 'reference_mcs_fallback':
             source = 'reference-mcs fallback for generation'
         elif source == 'iteration0_references':
@@ -130,6 +135,10 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False):
         if 'initial_elite_mcs' not in initial and getattr(args, 'initial_mcs_smarts', None) is not None:
             # Older row-zero snapshots already define the original reference core.
             fallback = initial['mcs_smarts']
+        if database.prior_generation_exists(args.db_path, iteration):
+            # Bootstrap fallback belongs to the project's first generation,
+            # including legacy iterations without the new application marker.
+            fallback = None
         supplied = explicit_elite if explicit_elite is not None else fallback
         use_supplied = supplied is not None and not database.elite_mcs_was_used(args.db_path, supplied)
         if iteration == 1:

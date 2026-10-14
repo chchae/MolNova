@@ -263,7 +263,7 @@ def test_default_log_shows_initial_and_elite_cores_on_create_and_resume(
                                    create=True)
         initial = database.iteration_scaffold(project.db_path, 0)['mcs_smarts']
         generation = project.generation_mcs_smarts
-        source = 'user supplied elite-mcs' if supplied else 'iteration 1 elites'
+        source = 'saved elite-mcs' if supplied else 'iteration 1 elites'
         assert (initial == generation) if supplied else (initial != generation)
         output = capsys.readouterr().out
         assert f'[MCS] Initial docking constraint: {initial}' in output
@@ -370,15 +370,15 @@ def test_incompatible_supplied_generation_core_is_not_consumed(project):
     assert database.iteration_scaffold(project.db_path, 0) == initial
 
 
-def test_reference_fallback_applies_once_when_starting_at_iteration_three(project):
+def test_reference_fallback_is_not_reapplied_to_existing_project(project):
     project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
     elites = database.iteration_gbsa_elites(project.db_path, 2, 2)
     prepare_iteration_scaffold(project, 3, elites, create=True)
     saved = database.iteration_scaffold(project.db_path, 3)
-    assert saved['source'] == 'reference_mcs_fallback'
-    assert saved['mcs_smarts'] == project.initial_mcs_smarts
+    assert saved['source'] == 'previous_iteration_elites'
+    assert saved['mcs_smarts'] != project.initial_mcs_smarts
     prepare_iteration_scaffold(project, 4, [(*r[:3], 3, *r[4:]) for r in elites], create=True)
     assert database.iteration_scaffold(project.db_path, 4)['source'] == 'previous_iteration_elites'
     assert project.mcs_smarts == project.initial_mcs_smarts
@@ -455,13 +455,14 @@ reference-mcs = "c1ccccc1"
 def test_iteration_zero_saves_reference_as_initial_elite_fallback(project):
     from molnova.chemistry.scaffold import _initial_scaffold
     project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
     saved = _initial_scaffold(project)
     assert saved['initial_elite_mcs'] == project.initial_mcs_smarts
     assert not database.elite_mcs_was_used(project.db_path, project.initial_mcs_smarts)
     # The bootstrap default survives changes to TOML before the first generation.
     project.initial_mcs_smarts = 'invalid changed reference'
-    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
-    prepare_iteration_scaffold(project, 2, elites, create=True)
+    prepare_iteration_scaffold(project, 1, create=True)
     assert project.generation_mcs_smarts == saved['initial_elite_mcs']
     assert project.mcs_smarts == saved['mcs_smarts']
     assert database.iteration_scaffold(project.db_path, 0) == saved
@@ -475,3 +476,59 @@ def test_iteration_zero_preserves_explicit_initial_elite_input(project):
     assert saved['initial_elite_mcs'] == project.elite_mcs_smarts
     assert saved['mcs_smarts'] == project.initial_mcs_smarts
     assert not database.elite_mcs_was_used(project.db_path, project.elite_mcs_smarts)
+
+
+def test_saved_elite_mcs_log_reports_absent_current_input_and_keeps_snapshot(project, monkeypatch, capsys):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    elites = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    capsys.readouterr()
+    project.elite_mcs_smarts = None
+    with monkeypatch.context() as patch:
+        patch.setattr(_core, 'prepare_libinvent_scaffold', lambda *a, **k: pytest.fail('saved generation changed'))
+        prepare_iteration_scaffold(project, 2, elites, create=True)
+    output = capsys.readouterr().out
+    assert 'generation core (saved elite-mcs; absent from current TOML)' in output
+    assert 'user supplied elite-mcs' not in output
+    assert database.iteration_scaffold(project.db_path, 2) == saved
+    prepare_iteration_scaffold(project, 3, [(*r[:3], 2, *r[4:]) for r in elites], create=True)
+    assert database.iteration_scaffold(project.db_path, 3)['source'] == 'previous_iteration_elites'
+
+
+def test_saved_elite_mcs_log_reports_changed_current_input(project, capsys):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    project.elite_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    prepare_iteration_scaffold(project, 2, database.iteration_gbsa_elites(project.db_path, 1, 2), create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    capsys.readouterr()
+    project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
+    log_iteration_mcs(project, 2)
+    assert 'generation core (saved elite-mcs; current TOML differs)' in capsys.readouterr().out
+    assert database.iteration_scaffold(project.db_path, 2) == saved
+
+
+def test_legacy_iteration_four_without_elite_input_uses_iteration_three_elites(project):
+    project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
+    initial = dict(mcs_smarts=project.initial_mcs_smarts,
+                   scaffold_smiles=project.initial_mcs_smarts,
+                   source='user_initial_mcs', source_ids=[1, 2, 3])
+    database.iteration_scaffold(project.db_path, 0, initial)
+    database.iteration_scaffold(project.db_path, 1, initial)
+    elites = [(*r[:3], 3, *r[4:]) for r in database.iteration_gbsa_elites(project.db_path, 1, 2)]
+    prepare_iteration_scaffold(project, 4, elites, create=True)
+    saved = database.iteration_scaffold(project.db_path, 4)
+    assert saved['source'] == 'previous_iteration_elites'
+    assert saved['source_ids'] == [r[0] for r in elites]
+    assert saved['mcs_smarts'] != project.initial_mcs_smarts
+    assert 'supplied_elite_mcs' not in saved
+    assert database.iteration_scaffold(project.db_path, 0) == initial
+
+
+def test_prior_snapshot_without_inserted_compounds_also_consumes_bootstrap(project):
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
+    database.iteration_scaffold(project.db_path, 1, {'source': 'legacy_project_scaffold'})
+    assert database.prior_generation_exists(project.db_path, 2)
+    assert not database.prior_generation_exists(project.db_path, 1)

@@ -175,7 +175,11 @@ Apply it once to the first new generation snapshot started with that value,
 even when the iteration number is greater than 1. Starting at iteration 3 uses
 it for iteration 3 TL/sampling; iteration 4 derives its MCS from iteration 3
 elites. **Confirmed fallback:** when `elite-mcs` is absent, use `reference-mcs`
-as the first generation's effective elite MCS, once. Record this bootstrap
+as the project's first generation effective elite MCS, once. Existing preceding
+generated compounds or scaffold snapshots, including legacy rows without the
+application marker, establish that bootstrap generation has already occurred.
+Therefore missing `elite-mcs` in a continuing project uses preceding-iteration
+elites rather than reapplying the reference fallback. Record this bootstrap
 default as `initial_elite_mcs` in the iteration-0 snapshot when initializing the
 cores; row 0 does not consume the one-time generation application. A saved
 iteration-0 fallback is retained across later reference TOML changes. An explicit
@@ -190,8 +194,9 @@ Persist the effective supplied value as `supplied_elite_mcs` in the immutable
 SQLite generation snapshot. Resumes, failed TL/sampling and replenishment reuse
 that snapshot; unchanged TOML values do not reapply the input each cycle. A new
 supplied value applies once at the next new generation snapshot. Existing
-snapshots/jobs remain unchanged; old snapshots without the explicit application
-marker do not consume the new one-time policy. Use the generation scaffold for
+snapshots/jobs remain unchanged. Old snapshots without the explicit application
+marker do not consume a newly explicit `elite-mcs`, but do establish prior
+generation for the reference fallback. Use the generation scaffold for
 both TL and sampling. Nearest-reference filtering and core mapping use the
 fixed docking constraint, not the generation MCS. Generation scaffolds must
 contain that constraint and support LibInvent attachments/decomposition; an
@@ -211,7 +216,10 @@ is created or restored, including completed-generation resumes. The supervisor
 must retain these summaries before the work-start marker and on idle workers,
 without marking an idle worker active or starting calculation timers.
 When an older iteration preserves a different Glide core, label that constraint
-separately. Reporting saved cores must not recompute MCS or change scores/jobs.
+separately. Reporting saved cores must not recompute MCS or change scores/jobs. For `user_elite_mcs` snapshots, log the source as
+`saved elite-mcs`, with `absent from current TOML` or `current TOML differs`
+when appropriate. The label describes stored provenance, not current input.
+Removing/changing a TOML input does not replace an existing generation snapshot.
 Resume/replenish the same iteration from that snapshot, never recomputing
 its core beneath compounds or live jobs. Existing pre-upgrade iterations
 retain their original project-level `mcs.smarts` and

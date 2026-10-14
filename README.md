@@ -213,11 +213,15 @@ Starting at a new iteration 3 uses `elite-mcs` once for that generation's
 TL/sampling. Iteration 4 calculates its generation MCS from iteration 3 Prime
 MM-GBSA elites (`gbsa-elite-count`). Without `elite-mcs`, use `reference-mcs`
 as the initial elite MCS in the iteration-0 snapshot, then use it for the first
-generation once. If both are absent, derive the first core
+generation once. In a continuing project, earlier generation history (including
+legacy rows without a new marker) prevents this fallback from being applied
+again: absent `elite-mcs` uses the preceding elites. If both are absent, derive the first core
 from original references. The example SMARTS must match your project's inputs.
 SQLite records the effective supplied value, so restarts and unchanged TOML
 values do not apply it again. A new supplied value applies once at the next new
-cycle. Existing iterations retain their saved cores and jobs. Completion gates
+cycle. Existing iterations retain their saved cores and jobs. Logs label restored
+inputs as `saved elite-mcs` and note when the current TOML omits or differs
+from that saved value. Completion gates
 and TL from the original prior remain unchanged.
 
 Generation scaffolds must contain the fixed docking constraint and support
