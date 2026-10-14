@@ -228,6 +228,18 @@ TL vocabulary preflight runs in the configured REINVENT runtime: local Python or
 
 Read generated CSV, accept valid RDKit molecules, canonicalize isomeric SMILES, remove internal and DB-wide duplicates (including references), and atomically insert only remaining target-count. Names follow `GEN_I<iteration:02d>_<sequence:06d>`; structure titles use CMPID. Repeat sampling within an underfilled iteration; zero novel insertions while under target is an error.
 
+**Confirmed local SA scoring change (2026-10-14):** after each generation
+batch is inserted, the generation worker calculates the unmodified RDKit bundled
+SA score for every missing `sa_score` in that iteration, independently of the
+AiZynthFinder switch. Re-running an explicitly selected completed generation
+iteration also backfills missing scores. `sa-score-cpus` is a positive integer
+(default 1); local process count is capped by CPU affinity/availability and batch
+size. Calculation processes receive SMILES only; the generation worker writes
+the validated ID/score batch through `database.py`. Failed scoring retains inserted
+compounds for retry. Existing scores, workflow states, failure details and other
+scientific results are preserved. SA scoring does not filter molecules or change
+selection rankings. No remote SA calculation is enabled by this change.
+
 ## 7. Local/SSH execution and synthetic assessment — documented baseline
 
 Local adapters invoke installed `reinvent`/`aizynthcli`. SSH adapters keep SQLite local, use noninteractive authentication and normal host-key checks, unique remote directories, and remote env/bin executables. Upload required inputs, retain exact remote configuration and diagnostic logs, download successful outputs through temporary files and atomic rename. Failed remote commands must not import stale local results. Remote files remain for diagnosis. SSH mode does not require a local installation of the remote calculator.
@@ -239,6 +251,30 @@ JSON/JSON.gz input contains a `data` list, canonicalizable `target`, and either 
 Compute RDKit bundled SA score locally (1–10, lower easier), saving before route search and preserving it if route search fails. Keep existing SA values, fill missing scores on reassessment/import, and do not rerun completed searches solely to backfill SA. Imports into docked/GBSA-complete/failed rows preserve scientific scores, workflow state, and failure details.
 
 ## 8. LigPrep and Glide — documented baseline
+
+**Confirmed fresh-calculation file policy (2026-10-14):** starting new
+LigPrep, Glide or Prime work must clear previous working artifacts before
+rebuilding the inputs and submitting calculations. Move old artifacts out of the
+active calculation path into a timestamped archive; never use a cached file
+alone to complete new work. LigPrep verifies logged/saved parents and children
+before clearing its old directory, and writes the current `CMPID_<id>` inputs
+after cleanup. Glide treats newly LigPrepped groups as new work: retire verified
+terminal records/results before fresh submission, even if input bytes match.
+Prime rebuilds its PV and extracts its receptor from the current grid for every
+new queue, unless an explicit receptor input is configured; preserve that input.
+Completed score-bearing queue history remains available for final-coordinate
+publication. Polling/restart of the same saved submission continues to recover
+its original JobId without deleting its inputs. Live, unknown or uncertain jobs
+block cleanup and duplicate submission. An entirely obsolete compound queue may
+be archived only after every saved child is verified terminal or unsubmitted;
+an active entry without a child identity remains unresolved.
+
+A LigPrep file with zero current mapped compounds is an input error, not proof
+that all Glide molecules scientifically failed. Keep claims retryable and stop.
+LigPrep may retry the historical exact `No LigPrep structures for reference group`
+Glide failure when docking/Prime/FEP scores are all absent, preserving SA and
+other scientific values; unrelated terminal failures remain terminal.
+
 
 LigPrep normally uses one iteration job. Input rows are `<SMILES> CMPID_<id>`. Command shape:
 

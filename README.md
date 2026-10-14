@@ -212,6 +212,16 @@ SQLite preserves both cores across restart. Files in `iterN/scaffold/` include
 constraint is also published as `output/docking_mcs.smarts`.
 Existing iterations retain the scaffold and docking core they already used.
 
+New LigPrep, Glide and Prime calculations clear old working files before
+building fresh inputs. Old files are moved to timestamped archives outside the
+active input/result paths. A cached result alone cannot satisfy new work.
+Saved jobs from the same submission are recovered on restart; live or uncertain
+jobs retain their files until JobServer reconciliation establishes termination.
+For an iteration affected by the old missing-LigPrep-input bug, rerun
+`molnova run project.toml --iteration N`: LigPrep retries that specific unscored
+failure and rebuilds inputs for the current compound IDs. Existing scientific
+scores and unrelated terminal failures are preserved.
+
 Glide uses reference-guided constrained SP docking. MCS-compatible iteration-0
 references are ranked by Morgan radius-2/2048-bit Tanimoto similarity. Prepared
 ligands are grouped by the selected reference and submitted with `-HOST` and
@@ -400,7 +410,16 @@ least one solved route was found, and `0` means none were found within the
 configured search limits and stock. A value of `0` is not proof that a compound
 is impossible to synthesize.
 
-The same stage calculates RDKit's bundled SA score and stores it in
+Generation always calculates RDKit's bundled SA score locally after inserting
+new compounds, even when `synthetic-feasibility-enabled = false`, and stores it
+in `compound.sa_score`. Set `sa-score-cpus = 8` to use up to eight local
+calculation processes (default 1, capped by available CPUs and compound count).
+The generation worker alone writes scores to SQLite. Re-running
+`molnova generate project.toml --iteration N` fills missing scores even when
+that iteration has already reached its target count, preserving existing scores,
+workflow states and failure details. SA scores do not filter compounds.
+
+The synthetic feasibility stage also fills missing RDKit SA scores in
 `compound.sa_score` (1–10; lower means easier synthetic accessibility). SA scores
 are saved before AiZynthFinder runs, so a route-search failure preserves them.
 Existing SA scores are retained. Re-running the stage also fills missing SA

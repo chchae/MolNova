@@ -191,6 +191,13 @@ def aizynth_process_count(config: dict[str, Any]) -> int:
     return value
 
 
+def sa_score_process_count(config: dict[str, Any]) -> int:
+    value = config.get('sa-score-cpus', 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError('sa-score-cpus must be a positive integer')
+    return value
+
+
 def gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
     settings = {}
     for key, default, minimum in (("gbsa-license-retry-seconds", 300, 1),

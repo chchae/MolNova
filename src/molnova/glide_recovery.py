@@ -27,6 +27,18 @@ def save_record(directory, record):
     pending.replace(path)
 
 
+def discard_terminal_results(directory):
+    """Caller has verified termination; retain JobId evidence and clear old results."""
+    directory = Path(directory)
+    if record_file(directory).exists():
+        record_file(directory).replace(directory / f'glide_job.previous-{time.time_ns()}.json')
+    for pattern in ('glide_constrained*.log', '*_lib.maegz', 'best_poses.maegz', 'docking_scores.tsv'):
+        for path in directory.glob(pattern):
+            if path.is_file():
+                path.unlink()
+    print(f'Removed previous Glide results in {directory.name}; starting a fresh calculation.', flush=True)
+
+
 def enforce_timeout(suite, directory, record, timeout_seconds):
     """Stop a timed-out native tree; retain claims until every job terminates."""
     if not record or not record.get('job_id'):
@@ -102,13 +114,8 @@ def group_status(suite, directory, log_file, output_file, live=None, timeout_sec
             record['downloaded'] = True
             save_record(directory, record)
         return parent['status']
-    # Legacy files without JobId are usable only after the global live-job check.
-    if output_file.exists() and output_file.stat().st_size:
-        return 'DONE'
+    # A result file without a submission identity cannot satisfy new work.
     if log_file.exists():
-        text = log_file.read_text(errors='replace')
-        if 'Finished at:' in text:
-            return 'DONE'
         return 'UNKNOWN'
     return None
 
@@ -127,7 +134,10 @@ def submit(suite, command, directory):
             if any(j.get('status') not in TERMINAL for j in job_details(suite, existing['job_id'], directory)):
                 raise RuntimeError('Glide group saved job still running')
         archive = directory / f'previous-{time.time_ns()}'
-        old = list(directory.glob('*_lib.maegz')) + list(directory.glob('glide_constrained*.log'))
+        old = [path for path in directory.glob('glide_constrained*')
+               if path.name != 'glide_constrained.in']
+        old += [path for name in ('best_poses.maegz', 'docking_scores.tsv', 'glide_launch.log')
+                if (path := directory / name).exists()]
         if old:
             archive.mkdir()
             for path in old:

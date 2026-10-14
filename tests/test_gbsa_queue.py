@@ -237,13 +237,13 @@ def test_supervisor_refill_interval(stage, interval, expected, tmp_path, monkeyp
         assert conn.execute('SELECT finished_at FROM stage_timing').fetchone() == (None,)
 
 
-def test_obsolete_queue_is_retained_for_external_job_reconciliation(tmp_path, monkeypatch):
+def test_obsolete_unsubmitted_queue_is_archived_for_fresh_calculation(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
     with sqlite3.connect(args.db_path) as conn:
         conn.execute('DELETE FROM compound')
-    with pytest.raises(prime.PrimeReconciliationPending, match='obsolete compound queue'):
-        prime.reconcile_saved_job(root, args.db_path, 1)
-    assert prime.load_job(root) == record
+    assert prime.reconcile_saved_job(root, args.db_path, 1) is None
+    assert prime.load_job(root) is None
+    assert len(list(root.parent.glob('mmgbsa.stale-*'))) == 1
     assert not launches
 
 

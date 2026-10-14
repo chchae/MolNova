@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
-from molnova.ligprep_recovery import load_job, job_file
+from molnova.ligprep_recovery import load_job, job_file, prepare_new_calculation
 from molnova.states import CompoundState as State
 from molnova import _core as c
 from molnova import database
@@ -25,16 +25,7 @@ def _run_stage(args, requested_iteration):
         print(f"Iteration {iteration}: LigPrep waiting: {reason}.")
         return
 
-    with c.open_sqlite(args.db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id,name,smiles FROM compound
-                        WHERE iteration=? AND state IN ('generated','ligprep_running')
-                            AND (?=0 OR synthetic_feasibility IS NOT NULL)
-            ORDER BY id
-                        """,
-                        (iteration, int(args.synthetic_feasibility_enabled)),
-        ).fetchall()
+    rows = database.ligprep_pending_rows(args.db_path, iteration, args.synthetic_feasibility_enabled)
     outdir = args.output / f"iter{iteration}" / "ligprep"
     active = load_job(outdir)
     if not rows:
@@ -53,6 +44,9 @@ def _run_stage(args, requested_iteration):
         print(f"Iteration {iteration}: no LigPrep-pending compounds.")
         return
 
+    outdir.mkdir(parents=True, exist_ok=True)
+    if active is None or not set(active['compound_ids']) & {row[0] for row in rows}:
+        active = prepare_new_calculation(args.schrodinger, outdir, [row[0] for row in rows])
     if active is not None:
         rows = [row for row in rows if row[0] in active["compound_ids"]]
 
@@ -60,7 +54,7 @@ def _run_stage(args, requested_iteration):
         database.claim_compounds(
             args.db_path,
             [row[0] for row in rows],
-            expected_state=(State.GENERATED, State.LIGPREP_RUNNING),
+            expected_state=(State.GENERATED, State.LIGPREP_RUNNING, State.FAILED),
             claimed_state=State.LIGPREP_RUNNING,
         )
     )

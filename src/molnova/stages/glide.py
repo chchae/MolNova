@@ -12,7 +12,7 @@ from molnova import database
 from molnova.config import glide_group_resources, schrodinger_job_options
 from molnova.stages._logging import work_started, timed_stage, format_elapsed
 from molnova.states import CompoundState as State
-from molnova.glide_recovery import group_status, load_record, record_file
+from molnova.glide_recovery import group_status, load_record, record_file, discard_terminal_results
 from molnova.schrodinger_guard import active_jobs, belongs_to_directory, SubmissionBlocked, job_details, TERMINAL
 
 
@@ -169,6 +169,7 @@ def _run_stage(args, ns):
     # Assign nearest reference for any still-undocked compounds.
     c.assign_reference_compounds(iteration, args)
     groups = query_groups(iteration, args.db_path)
+    fresh_references = database.fresh_glide_references(args.db_path, iteration)
 
     claimed_groups = {}
     for reference_id, compounds in groups.items():
@@ -201,6 +202,9 @@ def _run_stage(args, ns):
     group_ligand_files = c.split_ligprep_by_reference(
         args.schrodinger, ligprep_file, groups, glide_root
     )
+    if not group_ligand_files:
+        raise RuntimeError('LigPrep output contains no current compound IDs; '
+                           'rerun LigPrep for this iteration. Glide claims remain retryable.')
     ref_extractor = c.create_reference_extractor(glide_root)
     score_extractor = c.create_score_extractor(glide_root)
     merger = c.create_best_pose_merger(glide_root)
@@ -228,6 +232,9 @@ def _run_stage(args, ns):
 
         status = group_status(args.schrodinger, gdir, log_file, output_file, live,
                               timeout_seconds=getattr(args, 'glide_job_timeout', 1800))
+        if refid in fresh_references and status in TERMINAL:
+            discard_terminal_results(gdir)
+            status = None
         if status in ('RUNNING', 'UNKNOWN'):
             mark_group(args.db_path, compounds, State.GLIDE_RUNNING)
             jobs.append(job)

@@ -117,6 +117,20 @@ retains seven slots, individual refill and immediate score persistence. Poll
 MM-GBSA at most every five seconds. `--once` stops at the first incomplete/failed
 stage; later stages run only after verified completion. FEP remains export/import.
 
+Generation now always stores missing local RDKit SA scores after inserting a
+batch, independently of AiZynthFinder. `sa-score-cpus` defaults to 1 and enables
+local process parallelism when increased. An explicit generation rerun backfills
+missing scores even at target count; scores/states/results already present are
+preserved, and scoring failures leave generated compounds available for retry.
+
+New LigPrep/Glide/Prime calculations clear stale working artifacts from the
+active path before rebuilding inputs. Verified terminal historical work is
+archived; same-submission restarts recover JobIds, and live/uncertain jobs block
+cleanup. Zero mapped LigPrep IDs cannot complete Glide. The specific historical
+missing-LigPrep-input failure can be retried through LigPrep without resetting
+other failures or scores. Entirely obsolete Prime queues are archived only after
+all saved child jobs are verified terminal/unsubmitted. See SPEC section 8.
+
 ## 6. SQLite
 
 Use:

@@ -143,9 +143,22 @@ def reconcile_saved_job(directory, db_path, iteration):
             f"Iteration {iteration}: saved Prime job mixes current and obsolete compound IDs; "
             "files retained for reconciliation.")
     if record.get("mode") == "compound_queue_v1":
-        raise PrimeReconciliationPending(
-            f"Iteration {iteration}: obsolete compound queue retained for job reconciliation.")
-    if record.get("job_id"):
+        for cid in record['compound_ids']:
+            folder = Path(directory) / record['run_dir'] / f'CMPID_{cid}'
+            child = load_job(folder)
+            if child is not None:
+                if child.get('job_id'):
+                    jobs = _job_details(child, folder)
+                    if any(job.get('status') not in {'DONE', 'FAILED', 'CANCELED', 'STOPPED'} for job in jobs):
+                        raise PrimeReconciliationPending(
+                            f'Iteration {iteration}: obsolete compound queue has live jobs; files retained.')
+                elif child.get('launching'):
+                    raise PrimeReconciliationPending(
+                        f'Iteration {iteration}: obsolete compound queue has an uncertain launch; files retained.')
+            elif record['entries'][str(cid)] == 'active':
+                raise PrimeReconciliationPending(
+                    f'Iteration {iteration}: obsolete compound queue has no active child JobId; files retained.')
+    elif record.get("job_id"):
         jobs = _job_details(record, directory)
         status = next(job["status"] for job in jobs if job["jobId"] == record["job_id"])
         if any(job.get("status") not in {"DONE", "FAILED", "CANCELED", "STOPPED"} for job in jobs):

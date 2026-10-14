@@ -15,6 +15,27 @@ MAX_ACTIVE = 7
 MODE = 'compound_queue_v1'
 
 
+def prepare_new_calculation(args, directory):
+    """Remove stale working files before building a new PV; preserve scored history."""
+    directory = Path(directory)
+    if prime.load_job(directory) is not None or any(directory.glob('queue-*/CMPID_*/prime_job.json')):
+        raise RuntimeError('MM-GBSA submissions still require recovery; working files retained.')
+    from molnova.schrodinger_guard import active_jobs, belongs_to_directory
+    if any(directory.iterdir()) and any(
+            belongs_to_directory(job, directory) for job in active_jobs(args.schrodinger)):
+        raise RuntimeError('MM-GBSA native jobs still running; working files retained.')
+    source = getattr(args, 'mmgbsa_receptor', None)
+    keep = Path(source).resolve() if source is not None else None
+    files = [path for path in directory.iterdir() if path.is_file()
+             and not path.name.endswith('.completed.json') and path.resolve() != keep]
+    if files:
+        archive = directory / f'previous-{time.time_ns()}'
+        archive.mkdir()
+        for path in files:
+            path.replace(archive / path.name)
+        print(f'Cleared {len(files)} previous MM-GBSA working files; building fresh inputs.', flush=True)
+
+
 def prepare_inputs(args, directory, record):
     """Split the validated PV into receptor + exactly one original ligand."""
     script = directory / '_split_mmgbsa_queue.py'

@@ -5,6 +5,7 @@ import sqlite3
 from molnova import _core as c
 from molnova import database
 from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration_mcs
+from molnova.chemistry.sa_score import calculate_sa_scores
 from molnova.stages._logging import work_started, timed_stage
 
 
@@ -32,6 +33,19 @@ def choose_iteration(args, requested):
     return next_iteration if next_iteration <= args.max_iteration else None
 
 
+def store_iteration_sa_scores(args, iteration):
+    compounds = database.missing_sa_scores(args.db_path, iteration)
+    if not compounds:
+        return 0
+    cpus = getattr(args, 'sa_score_cpus', 1)
+    work_started(f'Iteration {iteration}: calculating local RDKit SA scores '
+                 f'for {len(compounds)} compounds (CPU limit={cpus}).')
+    scores = calculate_sa_scores(compounds, cpus)
+    updated = database.store_sa_scores(args.db_path, scores)
+    print(f'Iteration {iteration}: RDKit SA scores stored for {updated} compounds.', flush=True)
+    return updated
+
+
 @timed_stage("Generate stage")
 def _run_stage(args, requested_iteration):
     iteration = choose_iteration(args, requested_iteration)
@@ -46,6 +60,7 @@ def _run_stage(args, requested_iteration):
     remaining = max(0, args.target_count - n)
     if remaining == 0:
         log_iteration_mcs(args, iteration)
+        store_iteration_sa_scores(args, iteration)
         print(
             f"Iteration {iteration} already has the target "
             f"{args.target_count} compounds; generation skipped."
@@ -123,6 +138,7 @@ def _run_stage(args, requested_iteration):
         target_count=remaining,
         db_path=args.db_path,
     )
+    store_iteration_sa_scores(args, iteration)
     if inserted == 0:
         raise RuntimeError(
             f"Iteration {iteration} remains below target-count "

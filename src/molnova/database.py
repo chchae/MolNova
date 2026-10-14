@@ -493,6 +493,28 @@ def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]
         ).fetchall()
 
 
+def ligprep_pending_rows(path, iteration, synthetic_enabled):
+    """Include only the known missing-input Glide failure for preparation retry."""
+    with connect(path) as conn:
+        return conn.execute(
+            "SELECT id,name,smiles FROM compound WHERE iteration=? "
+            "AND (state IN (?,?) OR (state=? AND failed_stage='glide' "
+            "AND failure_message='No LigPrep structures for reference group' "
+            "AND docking_score IS NULL AND gbsa_score IS NULL AND fep_score IS NULL)) "
+            "AND (?=0 OR synthetic_feasibility IS NOT NULL) ORDER BY id",
+            (iteration, State.GENERATED, State.LIGPREP_RUNNING, State.FAILED, int(synthetic_enabled)),
+        ).fetchall()
+
+
+def fresh_glide_references(path, iteration):
+    with connect(path) as conn:
+        return {row[0] for row in conn.execute(
+            'SELECT DISTINCT similar_to FROM compound WHERE iteration=? '
+            'AND state=? AND docking_score IS NULL AND similar_to IS NOT NULL',
+            (iteration, State.LIGPREPPED),
+        )}
+
+
 def store_sa_scores(path: str | Path, scores: Iterable[tuple[int, float]]) -> int:
     """Persist a score batch atomically, preserving existing results and states."""
     with connect(path) as conn:

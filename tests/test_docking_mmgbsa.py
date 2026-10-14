@@ -336,6 +336,7 @@ def test_glide_zero_pose_detection_requires_finished_log(tmp_path, text, expecte
 
 def test_glide_recovers_completed_job_without_poses(monkeypatch, tmp_path):
     from molnova import schrodinger_guard
+    from molnova import glide_recovery
     monkeypatch.setattr(glide, "active_jobs", lambda *a: [])
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
@@ -354,6 +355,9 @@ def test_glide_recovers_completed_job_without_poses(monkeypatch, tmp_path):
     (group / "glide_constrained.log").write_text(
         "Docking job produced no poses; not writing output.maegz\nFinished at: Wed Oct 7"
     )
+    glide_recovery.save_record(group, {'job_id': 'finished', 'downloaded': True})
+    monkeypatch.setattr(glide_recovery, 'job_details', lambda *a: [
+        {'jobId': 'finished', 'status': 'DONE'}])
     monkeypatch.setattr(_core, "assign_reference_compounds", lambda *a: None)
     monkeypatch.setattr(_core, "split_ligprep_by_reference", lambda *a: {1: ligand})
     monkeypatch.setattr(_core, "submit_glide", lambda *a: pytest.fail("resubmitted terminal job"))
@@ -412,6 +416,9 @@ def test_glide_keeps_current_jobs_and_results_after_restart(tmp_path):
 
 
 def test_glide_submits_new_job_instead_of_importing_legacy_results(monkeypatch, tmp_path):
+    from molnova import glide_recovery
+    monkeypatch.setattr(glide_recovery, 'job_details', lambda *a: [
+        {'jobId': 'fresh', 'status': 'DONE'}])
     monkeypatch.setattr(glide, "active_jobs", lambda *a: [])
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
@@ -440,6 +447,7 @@ def test_glide_submits_new_job_instead_of_importing_legacy_results(monkeypatch, 
     submits = []
     def submit(*a, **kw):
         submits.append(a)
+        glide_recovery.save_record(group, {'job_id': 'fresh', 'downloaded': True})
         output.write_text('CMPID_2 new docking result')
         return {}
     monkeypatch.setattr(_core, 'submit_glide', submit)

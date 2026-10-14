@@ -121,7 +121,7 @@ def load_project_toml(filename):
         )
 
     base = filename.parent
-    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count
+    from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count, sa_score_process_count
     remote_reinvent = remote_reinvent_settings(config)
     remote_aizynth = remote_aizynth_settings(config)
 
@@ -185,6 +185,7 @@ def load_project_toml(filename):
         "aizynth_config": aizynth_config,
         "aizynth_cli": aizynth_cli,
         "aizynth_nproc": aizynth_process_count(config),
+        "sa_score_cpus": sa_score_process_count(config),
         "remote_aizynth": remote_aizynth,
         "mmgbsa_receptor": (
             resolve_path(config["mmgbsa-receptor"])
@@ -4303,6 +4304,8 @@ def run_iteration_mmgbsa(
         parents=True,
         exist_ok=True,
     )
+    from molnova.gbsa_queue import prepare_new_calculation
+    prepare_new_calculation(args, mmgbsa_dir)
 
     top_tsv = (
         mmgbsa_dir
@@ -4360,12 +4363,12 @@ def run_iteration_mmgbsa(
                 f"MM-GBSA receptor not found: {receptor_source}"
             )
 
-        shutil.copy2(
-            receptor_source,
-            receptor_file,
-        )
+        if receptor_source.resolve() != receptor_file.resolve():
+            shutil.copy2(receptor_source, receptor_file)
 
-    elif not receptor_file.exists():
+    else:
+        # This is a new queue, not recovery. Re-extract from the current grid.
+        receptor_file.unlink(missing_ok=True)
         extractor = (
             create_grid_receptor_extractor(
                 mmgbsa_dir
@@ -4392,6 +4395,7 @@ def run_iteration_mmgbsa(
         mmgbsa_dir
         / "mmgbsa_input.maegz"
     )
+    pv_file.unlink(missing_ok=True)
 
     pv_command = [args.schrodinger / 'run', pv_builder, receptor_file,
                   best_poses, ids_file, pv_file]

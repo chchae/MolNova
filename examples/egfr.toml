@@ -21,6 +21,7 @@ sample-size = 30000                 # 한 번의 샘플링 수
 target-count = 10000               # iteration당 신규 화합물 목표 수
 elite-tl-epochs = 5
 gbsa-elite-count = 20              # 직전 iteration의 Prime 점수로 선택할 TL elite 수
+sa-score-cpus = 1                 # 생성 직후 로컬 RDKit SA score 계산 프로세스 수
 
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
 reinvent-ssh-host = "tensor"
@@ -37,7 +38,7 @@ aizynth-remote-work-dir = "/home1/astrazeneca/AiZynthFinder/molnova-runs"
 aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 
 # 5. LigPrep
-ligprep-cpus = 64
+ligprep-cpus = 124
 ligprep-ph = 7.4
 ligprep-pht = 1.0
 ligprep-max-states = 2

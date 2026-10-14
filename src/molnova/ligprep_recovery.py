@@ -24,6 +24,38 @@ def _save(directory, record):
     temporary.replace(path)
 
 
+def prepare_new_calculation(suite, directory, compound_ids):
+    """Clear old LigPrep artifacts only after verifying all saved/logged jobs ended."""
+    from molnova.schrodinger_guard import job_details, active_jobs, belongs_to_directory, TERMINAL
+    directory = Path(directory)
+    record = load_job(directory)
+    if record is not None and set(record['compound_ids']) == set(compound_ids):
+        return record  # The same submission still requires recovery/DB commit.
+    if any(directory.iterdir()) and any(
+            belongs_to_directory(job, directory) for job in active_jobs(suite)):
+        raise RuntimeError('Previous LigPrep job is still running; files retained for reconciliation.')
+    job_ids = set()
+    if record is not None:
+        if not record.get('job_id'):
+            raise RuntimeError('Uncertain LigPrep launch; files retained for reconciliation.')
+        job_ids.add(record['job_id'])
+    logs = list(directory.glob('*.log'))
+    for log in logs:
+        job_ids.update(re.findall(r'^JobId\s*:\s*(\S+)', log.read_text(errors='replace'),
+                                 re.IGNORECASE | re.MULTILINE))
+    if logs and not job_ids:
+        raise RuntimeError('Legacy LigPrep logs have no JobId; files retained for reconciliation.')
+    for job_id in job_ids:
+        if any(job.get('status') not in TERMINAL for job in job_details(suite, job_id, directory)):
+            raise RuntimeError('Previous LigPrep job is still running; files retained for reconciliation.')
+    if any(directory.iterdir()):
+        archived = directory.with_name(f'{directory.name}.previous-{time.time_ns()}')
+        directory.rename(archived)
+        directory.mkdir()
+        print(f'Cleared previous LigPrep files to {archived.name}; starting a fresh calculation.', flush=True)
+    return None
+
+
 def run_or_recover(command, directory, compound_ids, output):
     """Return False while a saved job is live; never repeat an uncertain launch."""
     directory, output = Path(directory), Path(output)
