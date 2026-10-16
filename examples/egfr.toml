@@ -17,7 +17,7 @@ max-iteration = 100
 host = "t41-cpu:128"
 
 # 3. REINVENT / LibInvent 생성과 transfer learning
-sample-size = 30000                 # 한 번의 샘플링 수
+sample-size = 100000                # 유효성·중복·druglikeness 선별 전 한 번의 샘플링 수
 target-count = 10000               # iteration당 신규 화합물 목표 수
 elite-tl-epochs = 5
 gbsa-elite-count = 20              # 직전 iteration의 Prime 점수로 선택할 TL elite 수
