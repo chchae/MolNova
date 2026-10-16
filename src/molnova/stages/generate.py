@@ -2,10 +2,15 @@
 import argparse
 from pathlib import Path
 import sqlite3
+import csv
+import os
+import tempfile
+import time
 from molnova import _core as c
 from molnova import database
 from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration_mcs
-from molnova.chemistry.sa_score import calculate_sa_scores
+from molnova.chemistry.descriptors import calculate_rdkit_descriptors_batch
+from molnova.chemistry.druglike import filter_druglike
 from molnova.stages._logging import work_started, timed_stage
 
 
@@ -33,17 +38,53 @@ def choose_iteration(args, requested):
     return next_iteration if next_iteration <= args.max_iteration else None
 
 
-def store_iteration_sa_scores(args, iteration):
-    compounds = database.missing_sa_scores(args.db_path, iteration)
+def store_iteration_descriptors(args, iteration):
+    compounds = database.missing_rdkit_descriptors(args.db_path, iteration)
     if not compounds:
         return 0
     cpus = getattr(args, 'sa_score_cpus', 1)
-    work_started(f'Iteration {iteration}: calculating local RDKit SA scores '
+    work_started(f'Iteration {iteration}: calculating local RDKit properties (including SA score) '
                  f'for {len(compounds)} compounds (CPU limit={cpus}).')
-    scores = calculate_sa_scores(compounds, cpus)
-    updated = database.store_sa_scores(args.db_path, scores)
-    print(f'Iteration {iteration}: RDKit SA scores stored for {updated} compounds.', flush=True)
+    scores = calculate_rdkit_descriptors_batch(compounds, cpus)
+    updated = database.store_rdkit_descriptors(args.db_path, scores)
+    print(f'Iteration {iteration}: RDKit properties stored for {updated} compounds.', flush=True)
     return updated
+
+
+def insert_druglike_batch(csv_file, iteration, target_count, db_path, cpus=1):
+    csv_file = Path(csv_file)
+    generated = c.read_generated_smiles(csv_file)
+    novel = database.novel_generated_smiles(db_path, generated)
+    print(f'Already in DB      : {len(generated) - len(novel)}', flush=True)
+    work_started(f'Iteration {iteration}: calculating RDKit properties for '
+                 f'{len(novel)} valid novel molecules before druglikeness selection (CPU limit={cpus}).')
+    properties = calculate_rdkit_descriptors_batch(
+        [(i, smiles, None) for i, smiles in enumerate(novel)], cpus)
+    rows = [dict(values, batch_index=i, smiles=novel[i],
+                 qed=values['rdk_qed'], sa_score=values['rdk_sa_score'],
+                 ro5_violations=values['rdk_ro5_violations']) for i, values in properties]
+    selected = filter_druglike(rows)
+    # Retain each batch's accepted/rejected inputs; indices are not SQLite IDs.
+    report = csv_file.parent / f'druglike_selection-{time.time_ns()}.csv'
+    fields = ['batch_index', 'smiles', *database.RDK_DESCRIPTOR_TYPES,
+              'druglike_selected', 'druglike_reject_reason']
+    fd, temporary = tempfile.mkstemp(dir=report.parent, prefix=report.name + '.')
+    try:
+        with os.fdopen(fd, 'w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(selected)
+        os.replace(temporary, report)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    inserted = database.insert_generated_candidates(db_path, iteration, target_count, selected)
+    ro5_rejected = sum(row['druglike_reject_reason'] == 'ro5_violations' for row in selected)
+    accepted = sum(row['druglike_selected'] for row in selected)
+    print(f'Iteration {iteration}: druglikeness input={len(rows)}, RO5 rejected={ro5_rejected}, '
+          f'QED rank rejected={len(rows) - ro5_rejected - accepted}, accepted={accepted}, '
+          f'inserted={inserted}.', flush=True)
+    print(f'Druglikeness report: {report}', flush=True)
+    return inserted
 
 
 def select_iteration_sa_compounds(args, iteration):
@@ -73,7 +114,7 @@ def _run_stage(args, requested_iteration):
     remaining = max(0, args.target_count - n)
     if remaining == 0:
         log_iteration_mcs(args, iteration)
-        store_iteration_sa_scores(args, iteration)
+        store_iteration_descriptors(args, iteration)
         select_iteration_sa_compounds(args, iteration)
         print(
             f"Iteration {iteration} already has the target "
@@ -149,15 +190,16 @@ def _run_stage(args, requested_iteration):
     inserted = c.insert_generated(
         csv_file=generated,
         iteration=iteration,
-        target_count=remaining,
+        target_count=args.target_count,
         db_path=args.db_path,
+        cpus=getattr(args, 'sa_score_cpus', 1),
     )
-    store_iteration_sa_scores(args, iteration)
+    store_iteration_descriptors(args, iteration)
     select_iteration_sa_compounds(args, iteration)
     if inserted == 0:
         raise RuntimeError(
             f"Iteration {iteration} remains below target-count "
-            f"({n}/{args.target_count}) and no novel compounds were inserted."
+            f"({n}/{args.target_count}) and no novel druglike compounds were inserted."
         )
     print(f"Iteration {iteration}: inserted {inserted} novel compounds.")
 

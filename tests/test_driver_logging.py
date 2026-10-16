@@ -49,6 +49,7 @@ def test_mcs_summaries_survive_supervisor_setup_filter(tmp_path, capsys, active)
     script = "print('setup message')\n"
     script += "print('[MCS] Initial docking constraint: c1ccccc1')\n"
     script += "print('[MCS] Iteration 2 generation core (iteration 1 elites): Cc1ccccc1')\n"
+    script += "print('[MCS] Iteration 2 generation scaffold SMILES: [*:0]c1ccc([*:1])cc1')\n"
     if active:
         script += f"print({WORK_STARTED!r})\nprint('Sampling')\n"
     else:
@@ -58,6 +59,7 @@ def test_mcs_summaries_survive_supervisor_setup_filter(tmp_path, capsys, active)
     output = capsys.readouterr().out
     assert output.count('[MCS] Initial docking constraint: c1ccccc1') == 1
     assert output.count('[MCS] Iteration 2 generation core (iteration 1 elites): Cc1ccccc1') == 1
+    assert output.count('[MCS] Iteration 2 generation scaffold SMILES: [*:0]c1ccc([*:1])cc1') == 1
     assert 'setup message' not in output
     assert WORK_STARTED not in output
     assert ('skip: Generation already complete.' in output) == (not active)

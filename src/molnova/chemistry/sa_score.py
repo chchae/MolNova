@@ -7,11 +7,15 @@ from rdkit import Chem
 
 
 def calculate_sa_score(smiles: str) -> float:
-    from rdkit.Contrib.SA_Score import sascorer
-
     mol = Chem.MolFromSmiles(smiles)
     if mol is None or mol.GetNumAtoms() == 0:
         raise ValueError(f"Cannot calculate SA score for invalid or empty SMILES: {smiles!r}")
+    return calculate_sa_score_for_mol(mol)
+
+
+def calculate_sa_score_for_mol(mol) -> float:
+    from rdkit.Contrib.SA_Score import sascorer
+
     score = float(sascorer.calculateScore(mol))
     if not math.isfinite(score) or not 1 <= score <= 10:
         raise ValueError(f"RDKit returned an invalid SA score: {score}")

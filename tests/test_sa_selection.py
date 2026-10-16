@@ -110,7 +110,8 @@ def test_new_generation_scores_full_population_then_filters(tmp_path, monkeypatc
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
     csv = tmp_path / 'generated.csv'
-    smiles = ['CCO', 'c1ccccc1', 'CC(=O)O', 'C1CC2CCC1C2']
+    smiles = ['CCO', 'c1ccccc1', 'CC(=O)O', 'C1CC2CCC1C2',
+              'CCN', 'c1ccncc1', 'Oc1ccccc1', 'CCOc1ccccc1']
     csv.write_text('SMILES\n' + '\n'.join(smiles) + '\n')
     args = SimpleNamespace(db_path=db, output=tmp_path, target_count=4,
                            max_iteration=1, libinvent_prior='prior',

@@ -22,7 +22,7 @@ def project(tmp_path):
 
 def test_generation_stores_real_sa_scores_without_aizynth(project, monkeypatch):
     csv = project.output / 'generated.csv'
-    csv.write_text('SMILES\nCCO\nc1ccccc1\n')
+    csv.write_text('SMILES\nCCO\nc1ccccc1\nCCN\nCC(=O)O\n')
     monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: csv)
     generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
@@ -49,24 +49,24 @@ def test_completed_generation_backfills_only_missing_scores(project, monkeypatch
         assert conn.execute('SELECT id,state,docking_score,gbsa_score,failed_stage,failure_message FROM compound').fetchall() == before
         assert conn.execute('SELECT sa_score FROM compound ORDER BY id').fetchall() == [
             (3.25,), (pytest.approx(calculate_sa_score('CC')),), (None,)]
-    monkeypatch.setattr(generate, 'calculate_sa_scores', lambda *a: pytest.fail('rescored'))
+    monkeypatch.setattr(generate, 'calculate_rdkit_descriptors_batch', lambda *a: pytest.fail('rescored'))
     generate._run_stage(project, 1)
 
 
-def test_scoring_failure_retains_generation_for_retry(project, monkeypatch):
+def test_scoring_failure_preserves_sampling_csv_without_partial_insert(project, monkeypatch):
     csv = project.output / 'generated.csv'
-    csv.write_text('SMILES\nCCO\nCC\n')
+    csv.write_text('SMILES\nCCO\nCC\nCCN\nCC(=O)O\n')
     monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: csv)
-    scorer = generate.calculate_sa_scores
+    scorer = generate.calculate_rdkit_descriptors_batch
     def fail(*args):
         raise RuntimeError('scoring failed')
-    monkeypatch.setattr(generate, 'calculate_sa_scores', fail)
+    monkeypatch.setattr(generate, 'calculate_rdkit_descriptors_batch', fail)
     with pytest.raises(RuntimeError, match='scoring failed'):
         generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT count(*),count(sa_score) FROM compound').fetchone() == (2, 0)
-    monkeypatch.setattr(generate, 'calculate_sa_scores', scorer)
-    monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: pytest.fail('resampled'))
+        assert conn.execute('SELECT count(*),count(sa_score) FROM compound').fetchone() == (0, 0)
+    assert csv.exists()
+    monkeypatch.setattr(generate, 'calculate_rdkit_descriptors_batch', scorer)
     generate._run_stage(project, 1)
     assert database.missing_sa_scores(project.db_path, 1) == []
 
@@ -84,7 +84,7 @@ def test_invalid_molecule_never_partially_stores_scores(project):
         conn.executemany("INSERT INTO compound(name,smiles,iteration,state) VALUES (?, ?, 1, 'generated')",
                          [('a', 'CCO'), ('b', 'invalid')])
     with pytest.raises(ValueError, match='invalid or empty'):
-        generate.store_iteration_sa_scores(project, 1)
+        generate.store_iteration_descriptors(project, 1)
     assert len(database.missing_sa_scores(project.db_path, 1)) == 2
 
 

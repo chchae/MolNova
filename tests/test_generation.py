@@ -74,8 +74,9 @@ def test_insert_generated_is_idempotent_for_existing_smiles(tmp_path):
         db_path=args.db_path,
     )
 
-    assert first == 2
-    assert second == 0
+    assert first == 1
+    assert second == 1
+    assert _core.insert_generated(generated, 1, 2, args.db_path) == 0
     with sqlite3.connect(args.db_path) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM compound WHERE iteration=1"

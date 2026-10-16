@@ -6,7 +6,7 @@ import pytest
 from rdkit import Chem
 
 from molnova import _core, database
-from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration_mcs
+from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration_mcs, mcs_display_summary
 from molnova.stages import generate, glide
 
 
@@ -112,11 +112,12 @@ def test_first_generation_uses_reference_core_and_original_prior(project, monkey
     generate._run_stage(project, 1)
 
 
-def test_glide_uses_initial_constraint_instead_of_elite_core(project, monkeypatch):
+def test_glide_uses_initial_constraint_instead_of_elite_core(project, monkeypatch, capsys):
     prepare_iteration_scaffold(project, 2, database.iteration_gbsa_elites(project.db_path, 1, 2),
                                create=True)
     core = project.mcs_smarts
     assert project.generation_mcs_smarts != core
+    capsys.readouterr()
     project.mcs_smarts = 'invalid old core'
     monkeypatch.setattr(database, 'upstream_completion_reason', lambda *a, **k: None)
     def assign(iteration, args):
@@ -126,6 +127,10 @@ def test_glide_uses_initial_constraint_instead_of_elite_core(project, monkeypatc
     monkeypatch.setattr(glide, 'query_groups', lambda *a: {})
     glide._run_stage(project, SimpleNamespace(iteration=2, poll_interval=1,
                                              completion_fraction=0.95, tail_timeout=None))
+    output = capsys.readouterr().out
+    assert f'[MCS] Initial docking constraint: {core}' in output
+    assert 'generation core' not in output
+    assert 'generation scaffold SMILES' not in output
 
 
 def test_explicit_initial_mcs_still_adapts_generation_to_elites(project):
@@ -267,13 +272,18 @@ def test_default_log_shows_initial_and_elite_cores_on_create_and_resume(
         assert (initial == generation) if supplied else (initial != generation)
         output = capsys.readouterr().out
         assert f'[MCS] Initial docking constraint: {initial}' in output
-        assert f'[MCS] Iteration 2 generation core ({source}): {generation}' in output
+        summary = mcs_display_summary(generation)
+        label = 'generation core summary' if summary != generation else 'generation core'
+        assert f'[MCS] Iteration 2 {label} ({source}): {summary}' in output
+        scaffold_smiles = database.iteration_scaffold(project.db_path, 2)['scaffold_smiles']
+        assert f'[MCS] Iteration 2 generation scaffold SMILES: {scaffold_smiles}' in output
         monkeypatch.setattr(_core, 'prepare_libinvent_scaffold',
                             lambda *a, **k: pytest.fail('logging recalculated MCS'))
         prepare_iteration_scaffold(project, 2)
         resumed_output = capsys.readouterr().out
         assert f'[MCS] Initial docking constraint: {initial}' in resumed_output
-        assert f'[MCS] Iteration 2 generation core ({source}): {generation}' in resumed_output
+        assert f'[MCS] Iteration 2 {label} ({source}): {summary}' in resumed_output
+        assert f'[MCS] Iteration 2 generation scaffold SMILES: {scaffold_smiles}' in resumed_output
     finally:
         _logging._log_level.reset(token)
 
@@ -289,6 +299,7 @@ def test_finished_generation_still_logs_saved_cores_without_recalculation(projec
     output = capsys.readouterr().out
     assert '[MCS] Initial docking constraint: c1ccccc1' in output
     assert '[MCS] Iteration 1 generation core (saved legacy scaffold): c1ccccc1' in output
+    assert '[MCS] Iteration 1 generation scaffold SMILES: [*:0]c1ccc([*:1])cc1' in output
     assert 'generation skipped' in output
 
 
@@ -299,6 +310,11 @@ def test_legacy_log_distinguishes_initial_core_from_preserved_glide_core(project
     output = capsys.readouterr().out
     assert '[MCS] Initial docking constraint: c1ccccc1' in output
     assert '[MCS] Iteration 2 preserved Glide constraint: Cc1ccccc1' in output
+    capsys.readouterr()
+    log_iteration_mcs(project, 2, legacy, include_generation=False)
+    docking_output = capsys.readouterr().out
+    assert '[MCS] Iteration 2 preserved Glide constraint: Cc1ccccc1' in docking_output
+    assert 'generation core' not in docking_output
 
 
 def test_supplied_core_applies_once_when_starting_after_iteration_one(project, monkeypatch):
@@ -627,3 +643,27 @@ def test_invalid_fixed_flag(value):
     from molnova.config import elite_mcs_fixed
     with pytest.raises(ValueError, match='elite-mcs-fixed'):
         elite_mcs_fixed({'elite-mcs-fixed': value})
+
+
+def test_readable_mcs_log_preserves_original_query_and_scaffold(project, capsys):
+    prepare_iteration_scaffold(project, 2, database.iteration_gbsa_elites(project.db_path, 1, 2), create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    original = saved['mcs_smarts']
+    summary = mcs_display_summary(original)
+    assert len(summary) < len(original)
+    assert Chem.MolFromSmarts(summary) is not None
+    assert '&@' not in summary and '&!R' not in summary
+    output = capsys.readouterr().out
+    assert f'generation core summary (iteration 1 elites): {summary}' in output
+    assert f'generation scaffold SMILES: {saved["scaffold_smiles"]}' in output
+    assert database.iteration_scaffold(project.db_path, 2) == saved
+    assert (project.output / 'iter2/scaffold/mcs.smarts').read_text().strip() == original
+    assert project.generation_mcs_smarts == original
+
+
+def test_summary_preserves_chirality_and_explicit_ring_count_queries():
+    smarts = 'N[C@@H](C)C(=O)O'
+    assert mcs_display_summary(smarts) == smarts
+    # A ring-size/count expression is not the generic MCS ring annotation.
+    smarts = '[#6&R1]1CCCCC1'
+    assert mcs_display_summary(smarts) == smarts

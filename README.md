@@ -240,6 +240,10 @@ needs no attachment points. Generation/docking cores are stored separately in
 `iterN/scaffold/mcs.smarts` and `docking_mcs.smarts`; the fixed constraint is
 also published as `output/docking_mcs.smarts` and never replaced by `elite-mcs`.
 Iteration 0 uses reference poses and has no generation stage.
+Generation logs show both generation SMARTS and the saved LibInvent scaffold
+SMILES, including on restart. Complex RDKit ring predicates are omitted from
+the display-only `generation core summary`; full calculation SMARTS remain in
+SQLite and `iterN/scaffold/mcs.smarts`. Glide logs show docking constraints only.
 
 New LigPrep, Glide and Prime calculations clear old working files before
 building fresh inputs. Old files are moved to timestamped archives outside the
@@ -439,14 +443,39 @@ least one solved route was found, and `0` means none were found within the
 configured search limits and stock. A value of `0` is not proof that a compound
 is impossible to synthesize.
 
-Generation always calculates RDKit's bundled SA score locally after inserting
-new compounds, even when `synthetic-feasibility-enabled = false`, and stores it
-in `compound.sa_score`. Set `sa-score-cpus = 8` to use up to eight local
+Generation first validates and deduplicates the sampled CSV, then calculates
+RDKit properties for every valid novel molecule **before** selecting the DB target.
+Keep RO5 violations<=1 and at most half of that batch (rounded up), ranked by
+QED descending then SA ascending. Equal-score ties keep input order. Insert
+passing molecules in original input order up to the remaining `target-count`,
+with their precomputed properties. Too few passing molecules cause additional
+sampling; zero insertions are reported as an error. No failing RO5 candidates
+are added to fill the target. Save each valid novel batch and its properties,
+selection and rejection reasons in `druglike_selection-<timestamp>.csv` beside
+`generated.csv`. Batch indices in these reports are not SQLite compound IDs.
+
+RDKit calculation runs locally,
+even when `synthetic-feasibility-enabled = false`. Store SA in
+`compound.rdk_sa_score` and retain `sa_score` as a compatibility alias.
+Set `sa-score-cpus = 8` to use up to eight local
 calculation processes (default 1, capped by available CPUs and compound count).
-The generation worker alone writes scores to SQLite. Re-running
-`molnova generate project.toml --iteration N` fills missing scores even when
+The same CPU setting handles all 16 properties; only the generation worker writes
+them to SQLite. Columns are `rdk_sa_score`, `rdk_qed`, `rdk_mw`, `rdk_clogp`,
+`rdk_tpsa`, `rdk_hbd`, `rdk_hba`, `rdk_rotatable_bonds`, `rdk_formal_charge`,
+`rdk_heavy_atoms`, `rdk_aromatic_rings`, `rdk_fraction_csp3`, `rdk_ro5_violations`,
+`rdk_veber_pass`, `rdk_pains_alerts`, and `rdk_brenk_alerts`.
+
+Use average molecular weight, Crippen logP and strict rotatable bonds. RO5 counts
+MW>500, cLogP>5, HBD>5 and HBA>10; Veber is 1 when rotatable bonds<=10 and
+TPSA<=140. PAINS (A/B/C) and Brenk are counts of matching catalog entries, not
+occurrences or exclusion flags. Veber/alerts introduce no additional filters.
+Calculate the original SMILES without neutralizing or stripping salts. Schema
+migration retains old results; generation reruns fill only missing properties.
+See SPEC section 6 for definitions and sources. Re-running
+`molnova generate project.toml --iteration N` fills missing properties even when
 that iteration has already reached its target count, preserving existing scores,
-results and failure details. Once the full iteration is scored,
+results and failure details. The existing later SA acceptance filter remains:
+once the DB iteration reaches its target after druglikeness preselection,
 `sa-accepted-ratio = 0.75` (default) passes only the lowest-SA-score 75% to the
 next stages. For 10,000 generated compounds, 7,500 proceed to LigPrep. The count
 is rounded up for fractional counts, with compound ID breaking score ties. Set

@@ -13,6 +13,30 @@ from molnova import _core
 from molnova.states import CompoundState as State
 
 
+RDK_DESCRIPTOR_TYPES = {
+    'rdk_sa_score': 'REAL', 'rdk_qed': 'REAL', 'rdk_mw': 'REAL',
+    'rdk_clogp': 'REAL', 'rdk_tpsa': 'REAL', 'rdk_hbd': 'INTEGER',
+    'rdk_hba': 'INTEGER', 'rdk_rotatable_bonds': 'INTEGER',
+    'rdk_formal_charge': 'INTEGER', 'rdk_heavy_atoms': 'INTEGER',
+    'rdk_aromatic_rings': 'INTEGER', 'rdk_fraction_csp3': 'REAL',
+    'rdk_ro5_violations': 'INTEGER', 'rdk_veber_pass': 'INTEGER',
+    'rdk_pains_alerts': 'INTEGER', 'rdk_brenk_alerts': 'INTEGER',
+}
+
+
+def ensure_rdkit_descriptor_columns(conn):
+    """Add nullable properties without replacing rows, results or active claims."""
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(compound)')}
+    for name, sql_type in RDK_DESCRIPTOR_TYPES.items():
+        if name not in columns:
+            conn.execute(f'ALTER TABLE compound ADD COLUMN {name} {sql_type}')
+    if 'sa_score' in columns:
+        conn.execute('UPDATE compound SET rdk_sa_score=sa_score '
+                     'WHERE rdk_sa_score IS NULL AND sa_score BETWEEN 1 AND 10')
+        conn.execute('UPDATE compound SET sa_score=rdk_sa_score '
+                     'WHERE sa_score IS NULL AND rdk_sa_score BETWEEN 1 AND 10')
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     return _core.open_sqlite(Path(path))
 
@@ -530,9 +554,83 @@ def missing_sa_scores(path: str | Path, iteration: int) -> list[tuple[int, str]]
     with connect(path) as conn:
         return conn.execute(
             "SELECT id, smiles FROM compound "
-            "WHERE iteration=? AND iteration>0 AND sa_score IS NULL ORDER BY id",
+            "WHERE iteration=? AND iteration>0 AND COALESCE(rdk_sa_score,sa_score) IS NULL ORDER BY id",
             (iteration,),
         ).fetchall()
+
+
+def missing_rdkit_descriptors(path, iteration):
+    missing = ' OR '.join(f'{name} IS NULL' for name in (*RDK_DESCRIPTOR_TYPES, 'sa_score'))
+    with connect(path) as conn:
+        return conn.execute(
+            'SELECT id,smiles,COALESCE(rdk_sa_score,sa_score) FROM compound '
+            f'WHERE iteration=? AND iteration>0 AND ({missing}) ORDER BY id', (iteration,),
+        ).fetchall()
+
+
+def novel_generated_smiles(path, smiles):
+    with connect(path) as conn:
+        existing = {_core.canonicalize_smiles(row[0]) for row in conn.execute('SELECT smiles FROM compound')}
+    return [value for value in smiles if value not in existing]
+
+
+def insert_generated_candidates(path, iteration, target_count, candidates):
+    """Recheck duplicates and atomically cap the iteration at its total target."""
+    if iteration <= 0:
+        raise ValueError('Generated candidates require a positive iteration')
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        existing = {_core.canonicalize_smiles(row[0]) for row in conn.execute('SELECT smiles FROM compound')}
+        names = {row[0] for row in conn.execute('SELECT name FROM compound')}
+        count = conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
+        remaining = max(0, target_count - count)
+        inserted = sequence = 0
+        columns = tuple(RDK_DESCRIPTOR_TYPES)
+        for row in candidates:
+            if inserted >= remaining:
+                break
+            smiles = row['smiles']
+            if not row['druglike_selected'] or smiles in existing:
+                continue
+            sequence += 1
+            name = f'GEN_I{iteration:02d}_{sequence:06d}'
+            while name in names:
+                sequence += 1
+                name = f'GEN_I{iteration:02d}_{sequence:06d}'
+            values = [row[column] for column in columns]
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError('Nonfinite RDKit property in generated candidate')
+            marks = ','.join('?' for _ in range(len(columns) + 5))
+            conn.execute(
+                f'INSERT INTO compound(name,smiles,iteration,state,sa_score,{",".join(columns)}) '
+                f'VALUES ({marks})',
+                [name, smiles, iteration, State.GENERATED, row['rdk_sa_score'], *values],
+            )
+            existing.add(smiles)
+            names.add(name)
+            inserted += 1
+        return inserted
+
+
+def store_rdkit_descriptors(path, results):
+    """Commit a complete property batch, filling only missing values."""
+    columns = tuple(RDK_DESCRIPTOR_TYPES)
+    assignments = ','.join(
+        'rdk_sa_score=COALESCE(rdk_sa_score,sa_score,?)' if name == 'rdk_sa_score'
+        else f'{name}=COALESCE({name},?)' for name in columns)
+    missing = ' OR '.join(f'{name} IS NULL' for name in (*columns, 'sa_score'))
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        updated = 0
+        for cid, values in results:
+            if set(values) != set(columns) or not all(math.isfinite(value) for value in values.values()):
+                raise ValueError(f'Incomplete or nonfinite RDKit properties for compound {cid}')
+            updated += conn.execute(
+                f'UPDATE compound SET {assignments},sa_score=COALESCE(sa_score,rdk_sa_score,?),'
+                f'modified_at=CURRENT_TIMESTAMP WHERE id=? AND iteration>0 AND ({missing})',
+                [*(values[name] for name in columns), values['rdk_sa_score'], cid],
+            ).rowcount
+        return updated
 
 
 def apply_sa_filter(path, iteration, target_count, ratio):
@@ -559,8 +657,8 @@ def apply_sa_filter(path, iteration, target_count, ratio):
         if saved:
             return saved
         rows = conn.execute(
-            'SELECT id,sa_score,state,docking_score,amber_gbsa_score,gbsa_score,fep_score '
-            'FROM compound WHERE iteration=? ORDER BY sa_score,id', (iteration,),
+            'SELECT id,COALESCE(rdk_sa_score,sa_score),state,docking_score,amber_gbsa_score,gbsa_score,fep_score '
+            'FROM compound WHERE iteration=? ORDER BY COALESCE(rdk_sa_score,sa_score),id', (iteration,),
         ).fetchall()
         if len(rows) < target_count:
             return None
@@ -610,9 +708,10 @@ def store_sa_scores(path: str | Path, scores: Iterable[tuple[int, float]]) -> in
         updated = 0
         for compound_id, score in scores:
             updated += conn.execute(
-                "UPDATE compound SET sa_score=?, modified_at=CURRENT_TIMESTAMP "
-                "WHERE id=? AND iteration>0 AND sa_score IS NULL",
-                (score, compound_id),
+                "UPDATE compound SET rdk_sa_score=COALESCE(rdk_sa_score,sa_score,?), "
+                "sa_score=COALESCE(sa_score,rdk_sa_score,?), modified_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND iteration>0 AND (sa_score IS NULL OR rdk_sa_score IS NULL)",
+                (score, score, compound_id),
             ).rowcount
         return updated
 
@@ -636,9 +735,10 @@ def import_synthetic_results(path, iteration, results, sa_scores):
             ).rowcount
         for compound_id, score in sa_scores:
             conn.execute(
-                "UPDATE compound SET sa_score=?, modified_at=CURRENT_TIMESTAMP "
-                "WHERE id=? AND iteration=? AND sa_score IS NULL",
-                (score, compound_id, iteration),
+                "UPDATE compound SET rdk_sa_score=COALESCE(rdk_sa_score,sa_score,?), "
+                "sa_score=COALESCE(sa_score,rdk_sa_score,?), modified_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND iteration=? AND (sa_score IS NULL OR rdk_sa_score IS NULL)",
+                (score, score, compound_id, iteration),
             )
         return updated
 

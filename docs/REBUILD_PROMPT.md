@@ -245,7 +245,20 @@ the initial `output/docking_mcs.smarts` from row 0.
 **Confirmed MCS logging (2026-10-14):** at the default `log_level=1`,
 show `[MCS] Initial docking constraint: <SMARTS>` and
 `[MCS] Iteration N generation core (<source>): <SMARTS>` when a scaffold
-is created or restored, including completed-generation resumes. The supervisor
+is created or restored in generation, including completed-generation resumes.
+**Confirmed log update (2026-10-16):** generation also prints
+`[MCS] Iteration N generation scaffold SMILES: <stored scaffold_smiles>` beside
+the generation SMARTS. Use the recorded attachment-bearing LibInvent scaffold,
+without converting query SMARTS into a guessed molecule. Glide prints docking
+constraints only (including preserved legacy constraints); suppress its generation
+core and scaffold SMILES summaries. These are reporting changes only.
+For readable generation logs, omit generic atom `&R`/`&!R` and bond
+`&@`/`&!@` predicates from the display string when the result parses as SMARTS.
+Label changed strings `generation core summary` to distinguish a relaxed display
+from the actual query. Preserve chirality and specific ring-count expressions.
+Full SMARTS remain in SQLite and `iterN/scaffold/mcs.smarts`; MCS search,
+scientific matching and the docking constraint retain the original conditions.
+The supervisor
 must retain these summaries before the work-start marker and on idle workers,
 without marking an idle worker active or starting calculation timers.
 When an older iteration preserves a different Glide core, label that constraint
@@ -274,25 +287,96 @@ Observed REINVENT settings: sampling `run_type="sampling"`, `device="cuda:0"`, u
 
 TL vocabulary preflight runs in the configured REINVENT runtime: local Python or the SSH host's environment Python, loading the original prior on CPU. Use its token pattern and both true scaffold/decoration vocabularies, plus the installed input reader's column restrictions. Filter before train/validation splitting; record exclusions in `elite_skipped.tsv` and vocabulary metadata in `elite_vocabulary.json`. Do not change molecule strings, database rows, score fields, elite ranking, or select replacement elites implicitly. Keep the minimum of two usable pairs; stop with a diagnostic if filtering leaves fewer.
 
-Read generated CSV, accept valid RDKit molecules, canonicalize isomeric SMILES, remove internal and DB-wide duplicates (including references), and atomically insert only remaining target-count. Names follow `GEN_I<iteration:02d>_<sequence:06d>`; structure titles use CMPID. Repeat sampling within an underfilled iteration; zero novel insertions while under target is an error.
+Read generated CSV, reject invalid/empty RDKit molecules, canonicalize isomeric
+SMILES, and remove internal and DB-wide duplicates (including references).
+**Confirmed druglikeness preselection (2026-10-16):** calculate all 16 RDKit
+properties for that valid novel batch before capping it at `target-count` or
+inserting rows. Apply the user-supplied `filter_druglike` policy: for N inputs,
+keep at most `ceil(N/2)` molecules with `rdk_ro5_violations<=1`, ranked by QED
+descending and SA ascending. Equal QED/SA ties retain input order. The quota is
+half of all valid novel inputs, not half of the RO5-passing subset. Do not relax
+RO5 or fill the quota with failing molecules when too few pass. Return results
+in original input order, annotating `druglike_selected` and rejection reason
+`ro5_violations` or `qed_rank` (None for selected inputs).
 
-**Confirmed local SA scoring change (2026-10-14):** after each generation
-batch is inserted, the generation worker calculates the unmodified RDKit bundled
+In one SQLite write transaction, recheck DB-wide duplicates and the current
+iteration count, then insert passing molecules in their original input order
+up to the remaining iteration target, together with all computed properties.
+The final target cap preserves that input order; it does not rerank the passing
+half a second time. Names follow `GEN_I<iteration:02d>_<sequence:06d>`; structure
+titles use CMPID. Keep one row per admitted original molecule; preselection
+rejects are not inserted into `compound`. Save all valid novel batch inputs,
+16 properties and selection/reason in unique `druglike_selection-<timestamp>.csv`
+reports beside `generated.csv`; `batch_index` identifies the batch input, not a
+SQLite/CMPID identifier. Reports describe preselection before the final DB cap.
+Sampling CSV remains intact; property failures create no partially inserted
+batch. New rows already contain descriptors, avoiding a second calculation.
+Retain existing compounds/results and backfill missing legacy properties only.
+Repeat sampling within an underfilled iteration; zero druglike insertions while
+under target is an error. The existing later SA acceptance filter remains a
+separate gate, controlled by `sa-accepted-ratio` (default .75).
+
+**Confirmed local SA scoring change (2026-10-14; calculation order superseded
+by druglikeness preselection above):** the generation worker calculates the unmodified RDKit bundled
 SA score for every missing `sa_score` in that iteration, independently of the
 AiZynthFinder switch. Re-running an explicitly selected completed generation
 iteration also backfills missing scores. `sa-score-cpus` is a positive integer
 (default 1); local process count is capped by CPU affinity/availability and batch
-size. Calculation processes receive SMILES only; the generation worker writes
-the validated ID/score batch through `database.py`. Failed scoring retains inserted
-compounds for retry. Existing scores, workflow states, failure details and other
+size. Calculation processes receive molecular inputs only; the generation worker writes
+the validated values through `database.py`. Preselection scoring failures retain
+the sampling CSV; legacy property-backfill failures retain existing compounds for retry. Existing scores, workflow states, failure details and other
 scientific results are preserved. No remote SA calculation is enabled by this change.
+
+**Confirmed RDKit property extension (2026-10-16):** after sampling, calculate
+the following properties for every valid novel input before druglikeness
+preselection. Store them in nullable `compound` columns for molecules admitted
+to the DB, before the later SA acceptance filter:
+
+| Field | Type / calculation |
+| --- | --- |
+| `rdk_sa_score` | REAL; unmodified bundled RDKit SA score, 1–10 |
+| `rdk_qed` | REAL; default RDKit weighted QED |
+| `rdk_mw` | REAL; average molecular weight, `Descriptors.MolWt` (g/mol) |
+| `rdk_clogp` | REAL; Wildman–Crippen `MolLogP` |
+| `rdk_tpsa` | REAL; RDKit default TPSA (Å²; default excludes S/P contributions) |
+| `rdk_hbd`, `rdk_hba` | INTEGER; RDKit Lipinski donor/acceptor counts |
+| `rdk_rotatable_bonds` | INTEGER; explicit RDKit Strict definition |
+| `rdk_formal_charge` | INTEGER; signed total formal charge |
+| `rdk_heavy_atoms` | INTEGER; number of nonhydrogen atoms |
+| `rdk_aromatic_rings` | INTEGER; RDKit aromatic ring count |
+| `rdk_fraction_csp3` | REAL; fraction of carbon atoms that are sp3 |
+| `rdk_ro5_violations` | INTEGER 0–4; count MW>500, cLogP>5, HBD>5, HBA>10 |
+| `rdk_veber_pass` | INTEGER 0/1; strict rotatable bonds<=10 AND TPSA<=140 |
+| `rdk_pains_alerts` | INTEGER; count of matching RDKit PAINS A/B/C catalog entries |
+| `rdk_brenk_alerts` | INTEGER; count of matching RDKit BRENK catalog entries |
+
+Use original generated SMILES, without salt stripping, neutralization or LigPrep
+state selection. Alerts count matched filter types, not substructure occurrences;
+zero means no match in that catalog. RO5/QED/SA participate in the preselection
+above; Veber and alerts are stored/report-only and add no rejection rules. `sa-score-cpus` now controls the whole property batch;
+subprocesses receive SMILES and an optional existing SA value and never write DB.
+Calculate the batch before committing through `database.py`; invalid inputs/results
+retain sampling inputs and existing rows for retry without partial batch writes.
+
+Add fields non-destructively; copy existing valid legacy `sa_score` into missing
+`rdk_sa_score`. Retain `sa_score` as a compatibility alias, and fill missing aliases
+in either direction, including synthetic SA imports. Never overwrite an existing
+value or scientific state/failure diagnostic. SA ranking uses `rdk_sa_score`, with
+legacy fallback for unbackfilled rows. Existing frozen acceptance selections stay
+unchanged. An explicit generation rerun backfills missing properties even at target
+count and on completed/rejected rows; it does not resample completed iterations or
+recalculate nonmissing properties. Reference iteration 0 is not newly calculated.
+Definitions: [RDKit descriptors](https://www.rdkit.org/docs/source/rdkit.Chem.rdMolDescriptors.html),
+[filter catalogs](https://rdkit.org/docs/source/rdkit.Chem.rdfiltercatalog.html),
+[Lipinski](https://doi.org/10.1016/S0169-409X(96)00423-1),
+[Veber](https://pubmed.ncbi.nlm.nih.gov/12036371/).
 
 **Confirmed SA acceptance filter (2026-10-14, latest user update):** after
 the full generated iteration reaches `target-count` and all SA scores are valid,
 accept the lowest-SA-score fraction configured by `sa-accepted-ratio` (default
 0.75; a finite number with `0 < ratio <= 1`). Rank by SA score ascending, then
 compound ID; keep `ceil(compound_count * ratio)` compounds. `target-count` still
-counts all generated compounds, before filtering. Store excluded rows and scores
+counts compounds admitted after druglikeness preselection, before SA filtering. Store excluded rows and scores
 in state `sa_rejected`; they do not enter synthetic assessment, LigPrep, Glide
 or GBSA, and count as processed for completion gates. Freeze the ratio/counts
 in SQLite `iteration_sa_selection` and commit rejected states in that same write

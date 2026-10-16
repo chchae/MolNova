@@ -164,7 +164,7 @@ def _run_stage(args, ns):
         return
 
     from molnova.chemistry.scaffold import prepare_iteration_scaffold
-    prepare_iteration_scaffold(args, iteration)
+    prepare_iteration_scaffold(args, iteration, include_generation=False)
 
     # Assign nearest reference for any still-undocked compounds.
     c.assign_reference_compounds(iteration, args)

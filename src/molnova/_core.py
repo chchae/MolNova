@@ -238,6 +238,8 @@ def create_sqlite_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_compound_similar_to "
         "ON compound(similar_to)"
     )
+    from molnova.database import ensure_rdkit_descriptor_columns
+    ensure_rdkit_descriptor_columns(conn)
 
 
 
@@ -270,6 +272,9 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE compound ADD COLUMN {name} {sql_type}"
             )
+
+    from molnova.database import ensure_rdkit_descriptor_columns
+    ensure_rdkit_descriptor_columns(conn)
 
     # Refresh columns after migration so legacy status columns can be used once
     # to infer the new single state.
@@ -627,8 +632,10 @@ def run_command(
 
 
 def canonicalize_smiles(smiles: str) -> str | None:
+    if not isinstance(smiles, str) or not smiles.strip():
+        return None
     mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
+    if mol is None or mol.GetNumAtoms() == 0:
         return None
     return Chem.MolToSmiles(
         mol,
@@ -2541,96 +2548,10 @@ def get_existing_canonical_smiles(cur):
     return existing
 
 
-def insert_generated(
-    csv_file,
-    iteration,
-    target_count,
-    db_path,
-):
-    generated = read_generated_smiles(
-        csv_file
-    )
-
-    inserted = 0
-    duplicate_db = 0
-
-    with db_connect(db_path) as conn:
-        with conn.cursor() as cur:
-            cur.execute("BEGIN IMMEDIATE")
-            existing = get_existing_canonical_smiles(
-                cur
-            )
-
-            sequence = 1
-
-            for smiles in generated:
-                if inserted >= target_count:
-                    break
-
-                if smiles in existing:
-                    duplicate_db += 1
-                    continue
-
-                while True:
-                    name = (
-                        f"GEN_I{iteration:02d}_"
-                        f"{sequence:06d}"
-                    )
-
-                    cur.execute(
-                        '''
-                        SELECT 1
-                        FROM compound
-                        WHERE name = %s
-                        ''',
-                        (name,),
-                    )
-
-                    if cur.fetchone() is None:
-                        break
-
-                    sequence += 1
-
-                cur.execute(
-                    '''
-                    INSERT INTO compound (
-                        name,
-                        smiles,
-                        iteration,
-                        dG_exp,
-                        docking_score,
-                        state,
-                        similar_to,
-                        similarity
-                    )
-                    VALUES (
-                        %s,
-                        %s,
-                        %s,
-                        NULL,
-                        NULL,
-                        'generated',
-                        NULL,
-                        NULL
-                    )
-                    ''',
-                    (
-                        name,
-                        smiles,
-                        iteration,
-                    ),
-                )
-
-                existing.add(smiles)
-                inserted += 1
-                sequence += 1
-
-    print()
-    print(f"REINVENT unique    : {len(generated)}")
-    print(f"Already in DB      : {duplicate_db}")
-    print(f"Inserted           : {inserted}")
-
-    return inserted
+def insert_generated(csv_file, iteration, target_count, db_path, cpus=1):
+    """Compatibility entry point for filtered generation batch persistence."""
+    from molnova.stages.generate import insert_druglike_batch
+    return insert_druglike_batch(csv_file, iteration, target_count, db_path, cpus)
 
 
 def get_reference_groups(iteration, db_path):

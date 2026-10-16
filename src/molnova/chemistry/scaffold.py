@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import os
 import tempfile
+import re
 from rdkit import Chem
 
 infer_mcs_smarts = _core.infer_mcs_smarts_from_iteration0
@@ -70,7 +71,16 @@ def _initial_scaffold(args):
     return initial
 
 
-def log_iteration_mcs(args, iteration, snapshot=None):
+def mcs_display_summary(smarts):
+    """Relax explicit RDKit ring predicates for display, never for calculations."""
+    summary = re.sub(r'&!?R(?=[\]&])', '', smarts)
+    summary = re.sub(r'([-:=#~])&!?@', r'\1', summary)
+    if summary != smarts and Chem.MolFromSmarts(summary) is not None:
+        return summary
+    return smarts
+
+
+def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True):
     """Display recorded cores without calculating or changing scientific work."""
     if not getattr(args, 'iteration_mcs', getattr(args, 'automatic_mcs', False)):
         return
@@ -83,7 +93,7 @@ def log_iteration_mcs(args, iteration, snapshot=None):
                       else getattr(args, 'initial_mcs_smarts', None))
     if initial_smarts:
         print(f'[MCS] Initial docking constraint: {initial_smarts}', flush=True)
-    if snapshot:
+    if snapshot and include_generation:
         source = snapshot['source']
         if source == 'previous_iteration_elites':
             source = f'iteration {iteration - 1} elites'
@@ -104,15 +114,21 @@ def log_iteration_mcs(args, iteration, snapshot=None):
             source = 'initial references'
         elif source == 'legacy_project_scaffold':
             source = 'saved legacy scaffold'
-        print(f'[MCS] Iteration {iteration} generation core ({source}): '
-              f"{snapshot['mcs_smarts']}", flush=True)
+        summary = mcs_display_summary(snapshot['mcs_smarts'])
+        label = 'generation core summary' if summary != snapshot['mcs_smarts'] else 'generation core'
+        print(f'[MCS] Iteration {iteration} {label} ({source}): '
+              f'{summary}', flush=True)
+        if snapshot.get('scaffold_smiles'):
+            print(f'[MCS] Iteration {iteration} generation scaffold SMILES: '
+                  f"{snapshot['scaffold_smiles']}", flush=True)
+    if snapshot:
         docking_smarts = snapshot.get('docking_mcs_smarts', snapshot['mcs_smarts'])
         if docking_smarts != initial_smarts:
             print(f'[MCS] Iteration {iteration} preserved Glide constraint: '
                   f'{docking_smarts}', flush=True)
 
 
-def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False):
+def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, include_generation=True):
     """Adapt generation to elites while keeping the initial docking constraint."""
     if not getattr(args, 'iteration_mcs', getattr(args, 'automatic_mcs', False)):
         return
@@ -205,4 +221,4 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False):
     args.mcs_smarts = docking_smarts
     args.libinvent_scaffold_smiles = snapshot['scaffold_smiles']
     args.libinvent_scaffold_file = directory / 'libinvent_scaffold.smi'
-    log_iteration_mcs(args, iteration, snapshot)
+    log_iteration_mcs(args, iteration, snapshot, include_generation=include_generation)

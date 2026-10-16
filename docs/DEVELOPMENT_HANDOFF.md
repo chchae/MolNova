@@ -117,17 +117,35 @@ retains seven slots, individual refill and immediate score persistence. Poll
 MM-GBSA at most every five seconds. `--once` stops at the first incomplete/failed
 stage; later stages run only after verified completion. FEP remains export/import.
 
-Generation now always stores missing local RDKit SA scores after inserting a
-batch, independently of AiZynthFinder. `sa-score-cpus` defaults to 1 and enables
+Generation validates/canonicalizes/deduplicates the full sampled batch first,
+then computes all 16 `rdk_` properties before DB target-count selection.
+Druglikeness preselection keeps RO5<=1 and at most ceil(valid novel count/2),
+ranked by QED descending then SA ascending (stable input ties). Return the
+annotated selection in input order; insert passing rows in that order up to the
+remaining iteration target. Recheck duplicates and target in one transaction;
+insert descriptors with new compounds instead of recalculating after insertion.
+Save per-batch `druglike_selection-<timestamp>.csv` (including rejected rows,
+properties and reasons) beside the sampling CSV. Batch indices are not DB IDs.
+A property failure leaves sampling inputs and existing DB contents intact.
+Underfilled iterations sample again; zero accepted insertions raise an error.
+This remains independent of AiZynthFinder. See SPEC section 6 for field
+names/types and exact descriptor/alert definitions. `rdk_sa_score` is canonical;
+keep legacy `sa_score` as a compatibility alias and migrate/backfill missing
+values without changing existing results, states or failure diagnostics. The
+same local CPU limit handles the full property batch; calculations finish before
+an atomic DB update. Completed generation reruns backfill missing properties,
+including rejected/processed compounds; iteration-0 references are not calculated.
+Only RO5/QED/SA enter druglikeness selection; Veber/alerts are report-only. The
+existing subsequent SA acceptance filter remains separately configured. `sa-score-cpus` defaults to 1 and enables
 local process parallelism when increased. An explicit generation rerun backfills
 missing scores even at target count; scores/states/results already present are
-preserved, and scoring failures leave generated compounds available for retry.
+preserved, and scoring failures retain sampling inputs/existing compounds for retry.
 After the full iteration is scored, `sa-accepted-ratio` (default 0.75, range
 `0 < ratio <= 1`) keeps `ceil(count * ratio)` compounds ordered by SA score/ID.
 Persist the selection in `iteration_sa_selection` and mark excluded rows
 `sa_rejected` atomically; preserve their scores and exclude them from all later
 stages and synthetic readiness checks. Target count remains the total generated
-population. Reuse the saved selection on restart/config changes. Never apply
+population admitted after druglikeness preselection. Reuse the saved selection on restart/config changes. Never apply
 a new filter to iteration 0 or legacy iterations with downstream work/results.
 
 New LigPrep/Glide/Prime calculations clear stale working artifacts from the
@@ -254,7 +272,14 @@ decomposition/LibInvent attachments. Publish separate generation/docking files
 in `iterN/scaffold/`. Existing legacy cores remain immutable; missing original
 files stop recovery rather than changing live calculations. Logs label recorded user elite cores as `saved elite-mcs`, explicitly noting
 when the current TOML omits or differs from that input; preserve the snapshot
-when configuration changes. Iteration 0 has no generation stage. See SPEC section 6 for the current input policy.
+when configuration changes. Generation logs display the stored scaffold SMILES
+beside the generation SMARTS, including resumed/completed generation. Glide logs
+only docking constraints; suppress generation core/SMILES in that stage.
+Generation may display a relaxed SMARTS summary with generic ring annotations
+omitted; label it `generation core summary`. Full queries remain in SQLite and
+`mcs.smarts`; preserve scientific MCS/matching conditions, stereochemistry and
+specific ring-count queries. Reporting never recomputes cores or changes scientific results.
+Iteration 0 has no generation stage. See SPEC section 6 for the current input policy.
 
 ### User MCS without attachment points
 
