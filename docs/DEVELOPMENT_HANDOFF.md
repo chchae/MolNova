@@ -139,7 +139,12 @@ keep legacy `sa_score` as a compatibility alias and migrate/backfill missing
 values without changing existing results, states or failure diagnostics. The
 same local CPU limit handles the full property batch; calculations finish before
 an atomic DB update. Completed generation reruns backfill missing properties,
-including rejected/processed compounds; iteration-0 references are not calculated.
+including rejected/processed compounds. Initial reference import also calculates
+all 16 properties. Opening an existing project fills missing iteration-0
+properties from DB SMILES without rereading MAEGZ; use `sa-score-cpus` and commit
+only after the complete batch calculates successfully. Keep existing values,
+scientific scores, states and failure diagnostics. References undergo neither
+druglikeness selection nor SA acceptance filtering; retain their entire population.
 Only RO5/QED/SA enter druglikeness selection; Veber/alerts are report-only. The
 existing subsequent SA acceptance filter remains separately configured. `sa-score-cpus` defaults to 1 and enables
 local process parallelism when increased. An explicit generation rerun backfills

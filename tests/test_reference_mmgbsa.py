@@ -163,6 +163,11 @@ def test_new_reference_import_retains_input_gbsa_score(tmp_path, monkeypatch):
     c.import_reference_poses_to_sqlite(tmp_path / 'db.sqlite', tmp_path / 'poses.maegz', suite)
     with sqlite3.connect(tmp_path / 'db.sqlite') as conn:
         assert conn.execute('SELECT name,gbsa_score FROM compound ORDER BY id').fetchall() == [('known', -42), ('missing', None)]
+        columns = ','.join(database.RDK_DESCRIPTOR_TYPES)
+        rows = conn.execute(f'SELECT {columns},sa_score,state FROM compound ORDER BY id').fetchall()
+        assert len(rows) == 2
+        assert all(value is not None for row in rows for value in row[:-1])
+        assert all(row[0] == row[-2] and row[-1] == 'reference' for row in rows)
 
 
 @pytest.mark.parametrize('requested, expected', [(0, [0]), (2, [0, 2])])

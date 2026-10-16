@@ -1,4 +1,4 @@
-"""RDKit properties of original generated SMILES, before structure preparation."""
+"""RDKit properties of original reference and generated SMILES."""
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 import math
@@ -78,3 +78,18 @@ def calculate_rdkit_descriptors_batch(compounds, cpus=1):
             chunksize = max(1, len(compounds) // (workers * 4))
             values = list(pool.map(_calculate_input, inputs, chunksize=chunksize))
     return list(zip(ids, values))
+
+
+def store_reference_descriptors(db_path, cpus=1):
+    """Fill missing reference metadata without filtering or changing workflow state."""
+    from molnova import database
+
+    compounds = database.missing_rdkit_descriptors(db_path, 0)
+    if not compounds:
+        return 0
+    print(f'Iteration 0: calculating local RDKit properties for {len(compounds)} '
+          f'reference compounds (CPU limit={cpus}).', flush=True)
+    results = calculate_rdkit_descriptors_batch(compounds, cpus)
+    updated = database.store_rdkit_descriptors(db_path, results)
+    print(f'Iteration 0: reference RDKit properties stored for {updated} compounds.', flush=True)
+    return updated

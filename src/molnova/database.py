@@ -564,7 +564,7 @@ def missing_rdkit_descriptors(path, iteration):
     with connect(path) as conn:
         return conn.execute(
             'SELECT id,smiles,COALESCE(rdk_sa_score,sa_score) FROM compound '
-            f'WHERE iteration=? AND iteration>0 AND ({missing}) ORDER BY id', (iteration,),
+            f'WHERE iteration=? AND ({missing}) ORDER BY id', (iteration,),
         ).fetchall()
 
 
@@ -627,7 +627,7 @@ def store_rdkit_descriptors(path, results):
                 raise ValueError(f'Incomplete or nonfinite RDKit properties for compound {cid}')
             updated += conn.execute(
                 f'UPDATE compound SET {assignments},sa_score=COALESCE(sa_score,rdk_sa_score,?),'
-                f'modified_at=CURRENT_TIMESTAMP WHERE id=? AND iteration>0 AND ({missing})',
+                f'modified_at=CURRENT_TIMESTAMP WHERE id=? AND ({missing})',
                 [*(values[name] for name in columns), values['rdk_sa_score'], cid],
             ).rowcount
         return updated

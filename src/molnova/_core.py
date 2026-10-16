@@ -389,6 +389,7 @@ def import_reference_poses_to_sqlite(
     db_path,
     reference_poses,
     schrodinger,
+    sa_score_cpus=1,
 ):
     """Create the SQLite DB and load iteration=0 from the reference MAEGZ."""
 
@@ -509,6 +510,9 @@ def import_reference_poses_to_sqlite(
     else:
         conn.close()
 
+    from molnova.chemistry.descriptors import store_reference_descriptors
+    store_reference_descriptors(db_path, sa_score_cpus)
+
     print()
     print("SQLite project database initialized")
     print("-" * 70)
@@ -521,6 +525,7 @@ def initialize_project_database(
     db_path,
     reference_poses,
     schrodinger,
+    sa_score_cpus=1,
 ):
     db_path = Path(db_path).resolve()
 
@@ -561,6 +566,9 @@ def initialize_project_database(
             with open_sqlite(db_path) as conn:
                 ensure_schema_columns(conn)
 
+            from molnova.chemistry.descriptors import store_reference_descriptors
+            store_reference_descriptors(db_path, sa_score_cpus)
+
             print()
             print("Using existing SQLite project database")
             print("-" * 70)
@@ -595,6 +603,7 @@ def initialize_project_database(
         db_path,
         reference_poses,
         schrodinger,
+        sa_score_cpus=sa_score_cpus,
     )
 
 FP_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(
@@ -4752,6 +4761,7 @@ def configure_project(project_toml, schrodinger=None):
         db_path=args.db_path,
         reference_poses=args.reference_poses,
         schrodinger=args.schrodinger,
+        sa_score_cpus=getattr(args, 'sa_score_cpus', 1),
     )
 
     with open_sqlite(args.db_path) as conn:

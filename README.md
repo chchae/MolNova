@@ -471,11 +471,17 @@ even when `synthetic-feasibility-enabled = false`. Store SA in
 `compound.rdk_sa_score` and retain `sa_score` as a compatibility alias.
 Set `sa-score-cpus = 8` to use up to eight local
 calculation processes (default 1, capped by available CPUs and compound count).
-The same CPU setting handles all 16 properties; only the generation worker writes
-them to SQLite. Columns are `rdk_sa_score`, `rdk_qed`, `rdk_mw`, `rdk_clogp`,
+The same CPU setting handles all 16 properties; calculations finish before
+writing the batch to SQLite. Columns are `rdk_sa_score`, `rdk_qed`, `rdk_mw`, `rdk_clogp`,
 `rdk_tpsa`, `rdk_hbd`, `rdk_hba`, `rdk_rotatable_bonds`, `rdk_formal_charge`,
 `rdk_heavy_atoms`, `rdk_aromatic_rings`, `rdk_fraction_csp3`, `rdk_ro5_violations`,
 `rdk_veber_pass`, `rdk_pains_alerts`, and `rdk_brenk_alerts`.
+
+Iteration-0 input references also receive all 16 `rdk_` properties during import.
+Opening an existing project fills missing reference properties from its stored
+SMILES, using `sa-score-cpus`. Existing properties, scientific scores and workflow
+states are preserved. References are retained in full without druglikeness or
+SA acceptance filtering.
 
 Use average molecular weight, Crippen logP and strict rotatable bonds. RO5 counts
 MW>500, cLogP>5, HBD>5 and HBA>10; Veber is 1 when rotatable bonds<=10 and

@@ -351,7 +351,17 @@ value or scientific state/failure diagnostic. SA ranking uses `rdk_sa_score`, wi
 legacy fallback for unbackfilled rows. Existing frozen acceptance selections stay
 unchanged. An explicit generation rerun backfills missing properties even at target
 count and on completed/rejected rows; it does not resample completed iterations or
-recalculate nonmissing properties. Reference iteration 0 is not newly calculated.
+recalculate nonmissing properties.
+
+**Confirmed reference property extension (2026-10-16):** initial reference import
+also computes all 16 `rdk_` properties from the imported original SMILES. Opening
+an existing project backfills missing iteration-0 properties from DB SMILES,
+without requiring the original MAEGZ again. Use `sa-score-cpus` and the same
+local RDKit calculator; calculate the whole missing batch before committing.
+Preserve existing property values, the legacy SA alias, IDs, states, failure
+records and scientific scores. A failed batch retains reference rows for retry.
+References are measured only: apply neither druglikeness selection nor SA
+acceptance filtering, and never create an iteration-0 acceptance selection.
 Definitions: [RDKit descriptors](https://www.rdkit.org/docs/source/rdkit.Chem.rdMolDescriptors.html),
 [filter catalogs](https://rdkit.org/docs/source/rdkit.Chem.rdfiltercatalog.html),
 [Lipinski](https://doi.org/10.1016/S0169-409X(96)00423-1),

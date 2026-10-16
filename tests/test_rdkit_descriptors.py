@@ -92,6 +92,50 @@ def test_parallel_and_serial_calculation_match(monkeypatch):
     assert descriptors.calculate_rdkit_descriptors_batch([], 1) == []
 
 
+def test_existing_references_backfill_without_filtering_or_result_changes(project, monkeypatch):
+    with database.connect(project.db_path) as conn:
+        conn.executemany(
+            'INSERT INTO compound(name,smiles,iteration,state,sa_score,rdk_qed,'
+            'dG_exp,docking_score,gbsa_score,failed_stage,failure_message) '
+            'VALUES (?, ?, 0, ?, ?, ?, -10,-8,-40,?,?)',
+            [('a', 'CCO', 'gbsa_running', 3.25, .123, None, None),
+             ('b', 'C' * 36, 'failed', None, None, 'gbsa', 'keep'),
+             ('c', 'c1ccc(O)c(O)c1', 'gbsa_done', None, None, None, None)],
+        )
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('gen','C',1,'generated')")
+        original = conn.execute('SELECT id,name,smiles,iteration,state,dG_exp,docking_score,'
+                                'gbsa_score,failed_stage,failure_message FROM compound ORDER BY id').fetchall()
+    # Existing DB must work without reopening the original MAEGZ or Schrödinger.
+    _core.initialize_project_database(project.db_path, project.output / 'missing.maegz',
+                                      project.output / 'missing-suite')
+    assert database.missing_rdkit_descriptors(project.db_path, 0) == []
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT id,name,smiles,iteration,state,dG_exp,docking_score,'
+                            'gbsa_score,failed_stage,failure_message FROM compound ORDER BY id').fetchall() == original
+        assert conn.execute("SELECT rdk_sa_score,sa_score,rdk_qed FROM compound WHERE name='a'").fetchone() == (3.25, 3.25, .123)
+        assert conn.execute("SELECT rdk_ro5_violations FROM compound WHERE name='b'").fetchone() == (2,)
+        assert conn.execute('SELECT rdk_mw FROM compound WHERE iteration=1').fetchone() == (None,)
+        assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='iteration_sa_selection'").fetchone() == (0,)
+    monkeypatch.setattr(descriptors, 'calculate_rdkit_descriptors_batch', lambda *a: pytest.fail('recalculated'))
+    _core.initialize_project_database(project.db_path, project.output / 'missing.maegz',
+                                      project.output / 'missing-suite')
+
+
+def test_reference_property_failure_preserves_rows_for_retry(project):
+    with database.connect(project.db_path) as conn:
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,state) VALUES (?, ?, 0, 'reference')",
+                         [('a', 'CCO'), ('b', 'invalid')])
+    with pytest.raises(ValueError, match='invalid or empty'):
+        _core.initialize_project_database(project.db_path, project.output / 'missing.maegz',
+                                          project.output / 'missing-suite')
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT count(*),count(rdk_mw),count(sa_score) FROM compound').fetchone() == (2, 0, 0)
+        conn.execute("UPDATE compound SET smiles='CC' WHERE name='b'")
+    _core.initialize_project_database(project.db_path, project.output / 'missing.maegz',
+                                      project.output / 'missing-suite')
+    assert database.missing_rdkit_descriptors(project.db_path, 0) == []
+
+
 def test_invalid_molecule_retains_generated_rows_without_partial_properties(project):
     with database.connect(project.db_path) as conn:
         conn.executemany("INSERT INTO compound(name,smiles,iteration,state) VALUES (?, ?, 1, 'generated')",
