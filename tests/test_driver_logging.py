@@ -166,3 +166,17 @@ def test_amber_download_preserves_artifacts_and_filters_console(tmp_path, monkey
     amber_gbsa.download_logs(tmp_path, record)
     assert (folder / 'CMPID_1/calculation.log').read_bytes() == payload
     assert ('ligand minimization detail' in capsys.readouterr().out) == (level >= 3)
+
+
+def test_quiet_work_start_keeps_supervisor_protocol_and_queue_summary(tmp_path, capsys):
+    script = "from molnova.stages._logging import work_started\n"
+    script += "work_started('recovering saved MM-GBSA job', level=2)\n"
+    script += "print('Iteration 1: MM-GBSA running=186, saved=14, queue active=7, waiting=179, limit=7, scores updated=0.')\n"
+    from pathlib import Path
+    # The subprocess must import the current source checkout.
+    root = Path(__file__).resolve().parents[1]
+    script = f'import sys; sys.path.insert(0, {str(root / "src")!r})\n' + script
+    assert stream_process('mmgbsa', [sys.executable, '-c', script], root, threading.Event()) == 0
+    output = capsys.readouterr().out
+    assert output == ('[mmgbsa  ] Iteration 1: MM-GBSA running=186, saved=14, queue active=7, '
+                      'waiting=179, limit=7, scores updated=0.\n')

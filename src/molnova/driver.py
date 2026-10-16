@@ -11,7 +11,7 @@ from pathlib import Path
 
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import WORK_STARTED, format_elapsed
+from molnova.stages._logging import WORK_STARTED, format_elapsed, progress
 
 BASE_STAGES = [
     ("generate", "molnova.stages.generate"),
@@ -258,7 +258,12 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                     print(f"[driver  ] iteration {iteration}: {stage} complete "
                           f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
                 break
-            print(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
+            routine_gbsa_poll = (rc == 0 and stage in {'mmgbsa', 'mmgbsa-recovery'}
+                                 and reason.startswith(('MM-GBSA still running for ',
+                                                        'reference MM-GBSA still running for ',
+                                                        'Existing Prime claims still running')))
+            report = progress if routine_gbsa_poll else print
+            report(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
             if once:
                 return False
             stop.wait(interval)

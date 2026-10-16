@@ -528,6 +528,21 @@ Output DB: `output/<project>.sqlite`. Iteration artifacts include `iter0/mmgbsa/
 
 `status` reports iteration/state counts; docking/GBSA/FEP counts and minima; synthetic assessed and solved counts. Supervisor prints startup configuration once, suppresses repeated initialization noise, and prints concise idle skip reasons. **Confirmed console verbosity change (2026-10-13):** flat TOML `log_level` defaults to 1 (`log-level` is an alias; conflicting values are rejected). Accept integers >=1, excluding bool. Level 1 shows stage/iteration summaries and total completion times; level 2 also shows worker invocation timing and stage-internal progress; level >=3 displays individual compound/reference-group docking, Prime and external-command output. Amber native per-compound logs display at level >=3 after artifact download; they are not a live remote stream. Failure summaries and tracebacks remain visible at every level. This applies to supervised and standalone stages; filtering never changes result persistence, JobId checkpointing, queue refill or scientific state. Retain native logs and save suppressed helper-command output in `molnova_commands.log`, Prime launch output in `prime_launch.log`, and Glide launch output in `glide_launch.log` in the corresponding work directory. Concise pose-merge logging is an observed uncommitted change, not a scientific constraint.
 
+**Confirmed terse MM-GBSA polling (2026-10-16):** each normal level-1 compound
+queue pass prints one line containing iteration-wide `running` (GBSA_RUNNING
+compound rows) and `saved` (finite persisted GBSA scores), plus this queue's
+`active`, `waiting`, project queue `limit`, and `scores updated` in that pass.
+The running count includes queued waiting claims; saved includes earlier queues
+and existing scores from the same iteration, not only this pass's new results.
+Suppress repeated worker recovery/submitted messages and routine driver
+still-running pending lines at level 1; retain them at level >=2. Quiet worker
+starts must still emit the supervisor work marker and start invocation timing.
+Failure, uncertain-launch, query/transfer and submission-blocking diagnostics
+remain visible at every level. Legacy batches retain one running line when no
+compound-queue summary is available. Completion checks, polling intervals,
+seven-job refill and scientific state are unchanged.
+
+
 Active invocation duration, including errors, is `HH:MM:SS.s`; keep idle polls concise. Distinguish native calculation time from worker duration. Queue manifests/archives store started_at/finished_at and report total wall time including waiting, collection, and restart downtime. Legacy queue start can be recovered from its nanosecond run-directory timestamp. This queue timing feature is present in reviewed uncommitted code/docs/tests.
 
 Confirmed addition requested on 2026-10-12: after MM-GBSA completes, publish

@@ -404,3 +404,46 @@ def test_legacy_completed_batch_publishes_native_coordinates(tmp_path, monkeypat
     assert c.run_iteration_mmgbsa(1, args, root.parent, root.parent / 'glide') == 2
     assert (root / 'mmgbsa_final.maegz').read_bytes() == b'native coordinates and properties'
     assert prime.load_job(root) is None
+
+
+@pytest.mark.parametrize('level', [1, 2])
+def test_supervised_queue_poll_has_one_terse_line_with_all_progress_counts(tmp_path, monkeypatch, capsys, level):
+    from molnova import driver
+    from molnova.stages import _logging
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
+    args.target_count = 10
+    args.gbsa_input_count = 10
+    args.synthetic_feasibility_enabled = False
+    def worker(stage, command, cwd, stop):
+        mmgbsa._run_stage(args, 1)
+        return 0
+    monkeypatch.setattr(driver, 'stream_process', worker)
+    token = _logging.set_log_level(level)
+    try:
+        for saved in [0, 1]:
+            if saved:
+                completed.add(2)
+            assert not driver.supervise_iteration(args, tmp_path / 'project.toml', 1,
+                                                 [('mmgbsa', 'molnova.stages.mmgbsa')],
+                                                 30, driver.StopFlag(), once=True)
+            output = capsys.readouterr().out
+            summary = (f'Iteration 1: MM-GBSA running={10-saved}, saved={saved}, '
+                       f'queue active=7, waiting={3-saved}, limit=7, scores updated={saved}.')
+            assert summary in output
+            if level == 1:
+                assert output.strip() == summary
+            else:
+                assert 'recovering saved MM-GBSA job' in output
+                assert 'submitted/running' in output
+                assert 'mmgbsa pending:' in output
+    finally:
+        _logging._log_level.reset(token)
+
+
+def test_progress_counts_exclude_nonfinite_scores_and_other_iterations(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=3)
+    with database.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state='gbsa_done',gbsa_score=-40 WHERE id=1")
+        conn.execute("UPDATE compound SET state='gbsa_done',gbsa_score=? WHERE id=2", (float('inf'),))
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,gbsa_score) VALUES ('other','C',2,'gbsa_done',-50)")
+    assert database.mmgbsa_progress_counts(args.db_path, 1) == (1, 1)

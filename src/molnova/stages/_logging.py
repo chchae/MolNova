@@ -28,13 +28,14 @@ def progress(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def work_started(message):
+def work_started(message, *, level=1):
     timing = _timer.get()
     if timing is not None and timing["start"] is None:
         timing["start"] = time.monotonic()
     if os.environ.get("MOLNOVA_SUPERVISED") == "1":
         print(WORK_STARTED, flush=True)
-    print(message, flush=True)
+    if enabled(level):
+        print(message, flush=True)
 
 
 def format_elapsed(seconds):

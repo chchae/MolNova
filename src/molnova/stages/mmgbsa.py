@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 from molnova import _core as c
 from molnova import database
-from molnova.stages._logging import work_started, timed_stage
+from molnova.stages._logging import work_started, timed_stage, progress
 from molnova.states import CompoundState as State
 from molnova.prime_async import (PrimeAtomTypingError, PrimeReconciliationPending,
                                 load_job, reconcile_saved_job)
@@ -93,7 +93,7 @@ def _run_stage(args, requested_iteration):
               "compounds ready to claim; checking on the next poll.")
         return
     action = "recovering saved MM-GBSA job" if active else "starting MM-GBSA"
-    work_started(f"Iteration {iteration}: {action} for {len(pending)} compounds.")
+    work_started(f"Iteration {iteration}: {action} for {len(pending)} compounds.", level=2)
     try:
         updated = c.run_iteration_mmgbsa(
             iteration=iteration,
@@ -132,7 +132,10 @@ def _run_stage(args, requested_iteration):
         raise
 
     if updated is None:
-        print(f"Iteration {iteration}: MM-GBSA submitted/running; results will be recovered on a later worker run.")
+        record = load_job(directory)
+        # A compound-queue pass already prints its active/waiting summary.
+        report = progress if record and record.get('mode') == 'compound_queue_v1' else print
+        report(f"Iteration {iteration}: MM-GBSA submitted/running; results will be recovered on a later worker run.")
         return
 
     # IDs that were selected but produced no GBSA score become retryable docked compounds.

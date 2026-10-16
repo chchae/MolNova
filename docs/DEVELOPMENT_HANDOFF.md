@@ -113,7 +113,12 @@ A zero subprocess exit is not completion. Check SQLite state and native JobServe
 parent/child completion before advancing; retry only the current incomplete stage.
 Preserve durable submission recovery and the cross-project submission mutex.
 Glide groups still execute in parallel and persist each completed group; MM-GBSA
-retains seven slots, individual refill and immediate score persistence. Poll
+retains seven slots, individual refill and immediate score persistence. At log level 1, normal queue polls
+show a single line: iteration-wide running claims and saved finite scores, queue
+active/waiting/limit, and newly updated scores. Move repeated recovering/submitted
+messages and routine driver still-running pending messages to level 2. Preserve
+work-start protocol/timers, completion gates and all diagnostic/error output.
+ Poll
 MM-GBSA at most every five seconds. `--once` stops at the first incomplete/failed
 stage; later stages run only after verified completion. FEP remains export/import.
 

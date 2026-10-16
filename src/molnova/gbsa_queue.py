@@ -246,7 +246,9 @@ def poll_queue(iteration, args, directory, record):
     refill()
     active = sum(state == 'active' for state in record['entries'].values())
     pending = sum(state == 'pending' for state in record['entries'].values())
-    print(f'Iteration {iteration}: MM-GBSA queue active={active}, waiting={pending}, '
+    running, saved = database.mmgbsa_progress_counts(args.db_path, iteration)
+    print(f'Iteration {iteration}: MM-GBSA running={running}, saved={saved}, '
+          f'queue active={active}, waiting={pending}, '
           f'limit={MAX_ACTIVE}, scores updated={updated}.', flush=True)
     if active or pending:
         return None

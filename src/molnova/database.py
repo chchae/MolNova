@@ -780,6 +780,16 @@ def has_running_mmgbsa(path, iteration):
                             (iteration, State.GBSA_RUNNING)).fetchone() is not None
 
 
+def mmgbsa_progress_counts(path, iteration):
+    """Read iteration-wide running claims and finite persisted GBSA results."""
+    with connect(path) as conn:
+        rows = conn.execute('SELECT state,gbsa_score FROM compound WHERE iteration=?',
+                            (iteration,)).fetchall()
+    running = sum(state == State.GBSA_RUNNING for state, _ in rows)
+    saved = sum(score is not None and math.isfinite(score) for _, score in rows)
+    return running, saved
+
+
 def stage_completion_reason(path, iteration, stage, target_count, input_count,
                             synthetic_enabled=False, amber_keep_count=None):
     """Driver readiness from persisted state, never worker exit status alone."""

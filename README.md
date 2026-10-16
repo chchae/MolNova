@@ -193,6 +193,18 @@ log_level = 1 # default; log-level is also accepted
 - `2`: also worker invocation timing and stage-internal progress.
 - `3` or higher: also per-compound/group docking, Prime, downloaded Amber logs and external commands.
 
+At level 1, a routine MM-GBSA queue poll is summarized in one line:
+
+```text
+[mmgbsa  ] Iteration 1: MM-GBSA running=186, saved=14, queue active=7, waiting=179, limit=7, scores updated=0.
+```
+
+`running` counts all `gbsa_running` compounds in the iteration (including queued
+waiting claims); `saved` counts its finite DB scores, including previous queue
+passes. `active` and `waiting` describe the current queue; `scores updated` is
+this pass's newly persisted results. Level 2 retains detailed recovery/pending
+messages, and errors/reconciliation diagnostics remain visible at every level.
+
 The same setting applies to standalone stages. Amber native logs display after download rather than during remote execution. Native logs are retained;
 suppressed helper output is saved in `molnova_commands.log`, with launch output
 in `prime_launch.log` and `glide_launch.log` in their work directories.
