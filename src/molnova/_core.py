@@ -1002,18 +1002,22 @@ def infer_mcs_smarts_from_iteration0(references, timeout=60):
             "for automatic MCS extraction."
         )
 
-    result = rdFMCS.FindMCS(
-        mols,
-        maximizeBonds=True,
-        threshold=1.0,
-        timeout=timeout,
-        verbose=False,
-        matchValences=False,
-        ringMatchesRingOnly=True,
-        completeRingsOnly=True,
-        atomCompare=rdFMCS.AtomCompare.CompareElements,
-        bondCompare=rdFMCS.BondCompare.CompareOrder,
-    )
+    parameters = rdFMCS.MCSParameters()
+    parameters.MaximizeBonds = True
+    parameters.Threshold = 1.0
+    parameters.Timeout = timeout
+    parameters.Verbose = False
+    parameters.AtomTyper = rdFMCS.AtomCompare.CompareElements
+    parameters.BondTyper = rdFMCS.BondCompare.CompareOrder
+    parameters.AtomCompareParameters.MatchValences = False
+    parameters.AtomCompareParameters.RingMatchesRingOnly = True
+    parameters.BondCompareParameters.RingMatchesRingOnly = True
+    # The FindMCS completeRingsOnly keyword applies to bonds only. Also
+    # require complete rings for atoms, or a lone substituent-ring atom can
+    # enter the core and become a non-ring aromatic atom during templating.
+    parameters.AtomCompareParameters.CompleteRingsOnly = True
+    parameters.BondCompareParameters.CompleteRingsOnly = True
+    result = rdFMCS.FindMCS(mols, parameters)
 
     if result.canceled:
         raise RuntimeError(
