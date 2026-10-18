@@ -73,11 +73,17 @@ def run_remote(config_file, output_file, settings, *, remote_model):
     config_file.with_suffix(".remote.toml").write_text(rendered, encoding="utf-8")
     _ssh(settings, f"cat > {quote(str(remote_config))}", input=rendered.encode())
     env_bin = str(PurePosixPath(settings["env"]) / "bin")
+    executable = quote(env_bin + '/reinvent')
+    if config["run_type"] == "transfer_learning":
+        launcher = remote_dir / "reinvent_launcher.py"
+        source = Path(__file__).with_name("reinvent_launcher.py").read_bytes()
+        _ssh(settings, f"cat > {quote(str(launcher))}", input=source)
+        executable = f"{quote(env_bin + '/python')} {quote(str(launcher))}"
     log_name = "sampling.log" if config["run_type"] == "sampling" else "elite_transfer_learning.log"
     command = (
         f"cd {quote(str(remote_dir))} && "
         f"export PATH={quote(env_bin)}:\"$PATH\" && "
-        f"{quote(env_bin + '/reinvent')} -l {quote(log_name)} {quote(str(remote_config))}"
+        f"{executable} -l {quote(log_name)} {quote(str(remote_config))}"
     )
     execution_log = config_file.parent / f"{config_file.stem}.ssh.log"
     print(f"Running REINVENT on {settings['host']}:{remote_dir}", flush=True)

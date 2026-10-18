@@ -47,8 +47,10 @@ def test_remote_tl_uses_original_prior_and_uploads_local_model_for_sampling(tmp_
     train.write_text("[*]c1ccccc1\tC*\n")
     valid.write_text(train.read_text())
     uploads = []
+    commands = []
 
     def ssh(settings, command, **kwargs):
+        commands.append((command, kwargs))
         if "stdin" in kwargs:
             uploads.append(kwargs["stdin"].read())
         if "stdout" in kwargs:
@@ -62,10 +64,37 @@ def test_remote_tl_uses_original_prior_and_uploads_local_model_for_sampling(tmp_
     config = tomllib.loads((tmp_path / "elite_transfer_learning.remote.toml").read_text())
     assert config["parameters"]["input_model_file"] == "/remote/priors/original.prior"
     assert uploads == [train.read_bytes(), valid.read_bytes()]
+    execution = next(cmd for cmd, _ in commands if "export PATH=" in cmd)
+    assert "/remote/env/bin/python" in execution
+    assert "reinvent_launcher.py" in execution
+    assert any("reinvent_launcher.py" in cmd and b"preserve_encoder_dimensions" in kw.get("input", b"")
+               for cmd, kw in commands)
     _core.run_libinvent_sampling(tmp_path, model, train, 8, remote=REMOTE)
     assert uploads[-1] == model.read_bytes()
     sampling = tomllib.loads((tmp_path / "sampling.remote.toml").read_text())
     assert sampling["parameters"]["model_file"].startswith("/remote/jobs/")
+
+
+def test_local_tl_uses_reinvent_environment_and_shape_compatibility(tmp_path, monkeypatch):
+    train, valid = tmp_path / "train.smi", tmp_path / "valid.smi"
+    train.write_text("[*]C\t*C\n")
+    valid.write_text("[*]C\t*N\n")
+    monkeypatch.setattr(_core.shutil, "which", lambda _: "/calculator/bin/reinvent")
+
+    def run(command):
+        assert command[:2] == [Path("/calculator/bin/python"),
+                               Path(reinvent_remote.__file__).with_name("reinvent_launcher.py")]
+        config = tomllib.loads(Path(command[-1]).read_text())
+        assert config["parameters"]["input_model_file"] == "/original.prior"
+        Path(config["parameters"]["output_model_file"]).write_bytes(b"trained")
+
+    monkeypatch.setattr(_core, "run_command", run)
+    model = _core.run_libinvent_elite_transfer_learning(
+        tmp_path, Path("/original.prior"), train, valid, 1,
+    )
+    assert model.read_bytes() == b"trained"
+    assert train.read_text() == "[*]C\t*C\n"
+    assert valid.read_text() == "[*]C\t*N\n"
 
 
 def test_remote_failure_does_not_accept_stale_local_output(tmp_path, monkeypatch):

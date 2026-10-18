@@ -387,6 +387,17 @@ The SA heuristic is a selection criterion, not proof of a feasible synthesis rou
 
 Local adapters invoke installed `reinvent`/`aizynthcli`. SSH adapters keep SQLite local, use noninteractive authentication and normal host-key checks, unique remote directories, and remote env/bin executables. Upload required inputs, retain exact remote configuration and diagnostic logs, download successful outputs through temporary files and atomic rename. Failed remote commands must not import stale local results. Remote files remain for diagnosis. SSH mode does not require a local installation of the remote calculator.
 
+**Implementation compatibility (2026-10-18):** LibInvent TL runs through a
+standalone launcher in the selected REINVENT environment, uploaded alongside SSH
+inputs. It restores the encoder's documented `(batch, sequence, dimensions)`
+output and `(layers, batch, dimensions)` hidden/cell shapes after upstream
+squeezing. This supports singleton training/validation batches and singleton
+final batches without duplicating/dropping pairs, changing the split, skipping
+TL, or modifying the installed REINVENT package. Original-prior selection,
+vocabulary checks and all completion gates remain unchanged. Tests exercise
+actual optional REINVENT encoder/decoder forward/backward passes; they do not
+establish end-to-end production training or scientific ranking quality.
+
 Synthetic assessment runs after generation before LigPrep when enabled. AiZynthFinder YAML supplies policy and stock; default `--nproc 8`. Store `NULL` for unassessed, 1 for at least one solved route, 0 for none within the configured search. Both 0 and 1 proceed to LigPrep; this is an assessment, not a filter, and 0 is not proof of impossibility.
 
 JSON/JSON.gz input contains a `data` list, canonicalizable `target`, and either `number_of_solved_routes` or `is_solved`. Match by canonical SMILES in the selected iteration. Reject unknown/duplicate targets or conflicting existing assessments atomically; identical reimports are idempotent.

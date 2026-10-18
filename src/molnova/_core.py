@@ -2149,7 +2149,8 @@ def run_libinvent_elite_transfer_learning(
 
     run_command(
         [
-            reinvent,
+            Path(reinvent).resolve().with_name("python"),
+            Path(__file__).with_name("reinvent_launcher.py"),
             "-l",
             run_dir / "elite_transfer_learning.log",
             config_file,
