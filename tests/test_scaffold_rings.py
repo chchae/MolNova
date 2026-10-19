@@ -51,3 +51,38 @@ def test_automatic_scaffold_retains_shared_complete_substituent_ring(tmp_path):
     assert all(_core.decompose_elite_for_libinvent(Chem.MolToSmiles(ref['mol']),
                                                 info['scaffold_smiles']) is not None
                for ref in references)
+
+
+@pytest.mark.parametrize('smiles, count', [
+    (['c1ccccc1', 'c1ccccc1'], 0),
+    (['Clc1ccccc1', 'Fc1ccccc1'], 1),
+])
+def test_insufficient_attachment_sites_report_supported_recovery(tmp_path, capsys, smiles, count):
+    references = [dict(id=i, name=f'elite{i}', mol=Chem.MolFromSmiles(smi))
+                  for i, smi in enumerate(smiles)]
+
+    with pytest.raises(RuntimeError, match='Fewer than two variable positions') as error:
+        _core.prepare_libinvent_scaffold(references, None, tmp_path)
+
+    # The readable core must be visible even when attachment analysis fails
+    # before an iteration snapshot can be saved or logged.
+    lines = capsys.readouterr().out.splitlines()
+    original_index = next(i for i, line in enumerate(lines) if line.startswith('MCS SMARTS '))
+    original = lines[original_index].split(': ', 1)[1]
+    summary = lines[original_index + 1]
+    assert summary.startswith('MCS SMARTS summary  : ')
+    assert '&@' not in summary and '&!@' not in summary
+    assert '&R' not in summary and '&!R' not in summary
+    assert Chem.MolFromSmarts(summary.split(': ', 1)[1]) is not None
+    assert '&@' in original
+
+    message = str(error.value)
+    assert f'({count} found across 2 input ligands)' in message
+    assert 'elite-mcs in the project TOML' in message
+    assert '[*:0] and [*:1]' in message
+    assert 'fixed docking core' in message
+    assert 'not reapplied in adaptive mode' in message
+    assert '--mcs-smarts' not in message
+    assert '--attachment-query-indices' not in message
+    assert not (tmp_path / 'libinvent_scaffold.smi').exists()
+    assert not (tmp_path / 'mcs.smarts').exists()

@@ -80,6 +80,44 @@ def mcs_display_summary(smarts):
     return smarts
 
 
+def _previous_scaffold_fallback(args, iteration, inputs, docking_smarts, error):
+    """Reuse only N-1's saved scaffold, after checking every selected elite."""
+    previous = database.iteration_scaffold(args.db_path, iteration - 1)
+    try:
+        if previous is None:
+            raise RuntimeError(f'iteration {iteration - 1} has no saved scaffold')
+        query, scaffold = _validate(previous)
+        dummies = [atom for atom in scaffold.GetAtoms() if atom.GetAtomicNum() == 0]
+        if (len(dummies) != 2 or sorted(atom.GetAtomMapNum() for atom in dummies) != [0, 1]
+                or any(atom.GetDegree() != 1 or
+                       atom.GetBonds()[0].GetBondType() != Chem.BondType.SINGLE for atom in dummies)):
+            raise RuntimeError('saved scaffold needs exactly two terminal single-bond attachments [*:0]/[*:1]')
+        if not scaffold.HasSubstructMatch(query, useChirality=False):
+            raise RuntimeError('saved scaffold does not contain its saved generation core')
+        docking_query = Chem.MolFromSmarts(docking_smarts)
+        if docking_query is None or not scaffold.HasSubstructMatch(docking_query, useChirality=False):
+            raise RuntimeError('saved scaffold does not contain the fixed docking core')
+        incompatible = [ref['id'] for ref in inputs
+                        if _core.decompose_elite_for_libinvent(
+                            Chem.MolToSmiles(ref['mol'], isomericSmiles=True),
+                            previous['scaffold_smiles']) is None]
+        if incompatible:
+            raise RuntimeError(f'saved scaffold cannot decompose selected elite IDs {incompatible}')
+    except (KeyError, ValueError, RuntimeError) as validation_error:
+        raise RuntimeError(
+            f'{error} Iteration {iteration}: previous-scaffold fallback rejected: {validation_error}.'
+        ) from error
+    return {
+        'mcs_smarts': previous['mcs_smarts'],
+        'scaffold_smiles': previous['scaffold_smiles'],
+        'source': 'previous_iteration_scaffold_fallback',
+        'source_ids': [ref['id'] for ref in inputs],
+        'fallback_from_iteration': iteration - 1,
+        'fallback_reason': 'insufficient_attachment_sites',
+        'attempted_mcs_smarts': error.mcs_smarts,
+    }
+
+
 def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True):
     """Display recorded cores without calculating or changing scientific work."""
     if not getattr(args, 'iteration_mcs', getattr(args, 'automatic_mcs', False)):
@@ -114,6 +152,11 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
             source = 'initial references'
         elif source == 'legacy_project_scaffold':
             source = 'saved legacy scaffold'
+        elif source == 'previous_iteration_scaffold_fallback':
+            source = f"previous scaffold fallback from iteration {snapshot['fallback_from_iteration']}"
+        if snapshot.get('fallback_reason') == 'insufficient_attachment_sites':
+            print(f"[MCS] Iteration {iteration}: automatic MCS had fewer than two attachment sites; "
+                  f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
         summary = mcs_display_summary(snapshot['mcs_smarts'])
         label = 'generation core summary' if summary != snapshot['mcs_smarts'] else 'generation core'
         print(f'[MCS] Iteration {iteration} {label} ({source}): '
@@ -179,14 +222,22 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
             snapshot = dict(original)
             snapshot['fixed_from_iteration'] = original.get('fixed_from_iteration', original_iteration)
         else:
-            with tempfile.TemporaryDirectory() as temporary:
-                info = _core.prepare_libinvent_scaffold(
-                    inputs, supplied if use_supplied else None, Path(temporary), mcs_timeout=args.mcs_timeout,
+            try:
+                with tempfile.TemporaryDirectory() as temporary:
+                    info = _core.prepare_libinvent_scaffold(
+                        inputs, supplied if use_supplied else None, Path(temporary), mcs_timeout=args.mcs_timeout,
+                    )
+            except _core.InsufficientAttachmentSitesError as error:
+                if use_supplied or iteration == 1:
+                    raise
+                snapshot = _previous_scaffold_fallback(
+                    args, iteration, inputs, initial['mcs_smarts'], error,
                 )
-            snapshot = {
-                'mcs_smarts': info['mcs_smarts'], 'scaffold_smiles': info['scaffold_smiles'],
-                'source': source, 'source_ids': [ref['id'] for ref in inputs],
-            }
+            else:
+                snapshot = {
+                    'mcs_smarts': info['mcs_smarts'], 'scaffold_smiles': info['scaffold_smiles'],
+                    'source': source, 'source_ids': [ref['id'] for ref in inputs],
+                }
             if use_supplied:
                 snapshot['supplied_elite_mcs'] = supplied
             if fixed:

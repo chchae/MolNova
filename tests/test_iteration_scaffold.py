@@ -239,6 +239,138 @@ def test_scaffold_snapshot_is_atomic_and_immutable(project):
     assert results[0] == results[1] == database.iteration_scaffold(project.db_path, 2)
 
 
+@pytest.fixture
+def fallback_project(project):
+    project.initial_mcs_smarts = 'c1ccccc1'
+    database.iteration_scaffold(project.db_path, 0,
+                                dict(mcs_smarts='c1ccccc1', source='user_initial_mcs', initial_elite_mcs=None))
+    previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1',
+                    source='user_elite_mcs', source_ids=[1, 2], supplied_elite_mcs='previous supplied value')
+    database.iteration_scaffold(project.db_path, 1, previous)
+    elites = [(100, 'A', 'COc1ccc(Cl)cc1', 1, -10, -40),
+              (101, 'B', 'COc1ccc(F)cc1', 1, -9, -30)]
+    return project, elites, previous
+
+
+@pytest.mark.parametrize('identical', [False, True])
+def test_insufficient_automatic_attachments_reuse_previous_scaffold_and_resume(
+        fallback_project, monkeypatch, capsys, identical):
+    project, elites, previous = fallback_project
+    if identical:
+        elites[1] = (*elites[1][:2], elites[0][2], *elites[1][3:])
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    snapshot = database.iteration_scaffold(project.db_path, 2)
+    assert snapshot['source'] == 'previous_iteration_scaffold_fallback'
+    assert snapshot['source_ids'] == [100, 101]
+    assert snapshot['fallback_from_iteration'] == 1
+    assert snapshot['fallback_reason'] == 'insufficient_attachment_sites'
+    assert snapshot['mcs_smarts'] == previous['mcs_smarts']
+    assert snapshot['scaffold_smiles'] == previous['scaffold_smiles']
+    assert snapshot['attempted_mcs_smarts'] != previous['mcs_smarts']
+    assert snapshot['docking_mcs_smarts'] == project.initial_mcs_smarts
+    assert 'supplied_elite_mcs' not in snapshot
+    assert database.iteration_scaffold(project.db_path, 1) == previous
+    assert 'reusing validated scaffold from iteration 1' in capsys.readouterr().out
+    assert all(_core.decompose_elite_for_libinvent(row[2], snapshot['scaffold_smiles']) for row in elites)
+    with database.connect(project.db_path) as conn:
+        assert conn.execute("SELECT gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'gbsa_done')
+
+    project.libinvent_scaffold_file.unlink()
+    project.elite_mcs_smarts = '[*:0]Nc1ccc([*:1])cc1'
+    monkeypatch.setattr(_core, 'prepare_libinvent_scaffold', lambda *a, **k: pytest.fail('recomputed on resume'))
+    monkeypatch.setattr(_core, 'decompose_elite_for_libinvent', lambda *a: pytest.fail('revalidated on resume'))
+    prepare_iteration_scaffold(project, 2, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) == snapshot
+    assert project.libinvent_scaffold_file.read_text().strip() == previous['scaffold_smiles']
+    assert 'previous scaffold fallback from iteration 1' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('problem, message', [
+    ('missing', 'no saved scaffold'),
+    ('incompatible', 'cannot decompose selected elite IDs'),
+    ('docking_core', 'does not contain the fixed docking core'),
+    ('attachments', 'exactly two terminal single-bond attachments'),
+    ('invalid', 'Invalid saved MCS/scaffold'),
+])
+def test_rejected_previous_scaffold_stops_without_snapshot_or_result_changes(
+        fallback_project, problem, message):
+    project, elites, previous = fallback_project
+    damaged = dict(previous)
+    if problem == 'incompatible':
+        damaged['scaffold_smiles'] = '[*:0]Nc1ccc([*:1])cc1'
+    elif problem == 'docking_core':
+        damaged.update(mcs_smarts='C1CCCCC1', scaffold_smiles='[*:0]C1CCC([*:1])CC1')
+    elif problem == 'attachments':
+        damaged['scaffold_smiles'] = '[*:0]c1ccccc1'
+    elif problem == 'invalid':
+        damaged['mcs_smarts'] = 'invalid'
+    with database.connect(project.db_path) as conn:
+        # Simulate absent/corrupt historical data only in this isolated fixture.
+        conn.execute('DELETE FROM iteration_scaffold WHERE iteration=1')
+    if problem != 'missing':
+        database.iteration_scaffold(project.db_path, 1, damaged)
+    with pytest.raises(RuntimeError, match=message):
+        prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) is None
+    assert not (project.output / 'iter2/scaffold').exists()
+    with database.connect(project.db_path) as conn:
+        assert conn.execute("SELECT gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'gbsa_done')
+
+
+@pytest.mark.parametrize('problem', ['timeout', 'supplied', 'sanitization'])
+def test_fallback_does_not_mask_other_errors_or_replace_supplied_core(fallback_project, monkeypatch, problem):
+    project, elites, previous = fallback_project
+    if problem == 'timeout':
+        monkeypatch.setattr(_core.rdFMCS, 'FindMCS', lambda *a, **k: SimpleNamespace(canceled=True))
+        message = 'timed out'
+    elif problem == 'supplied':
+        project.elite_mcs_smarts = 'COc1ccccc1'
+        message = 'Fewer than two variable positions'
+    else:
+        def fail_sanitization(*args):
+            raise RuntimeError('Unable to sanitize LibInvent scaffold')
+        monkeypatch.setattr(_core, 'build_libinvent_scaffold', fail_sanitization)
+        elites[1] = (*elites[1][:2], 'NCc1ccc(F)cc1', *elites[1][3:])
+        message = 'Unable to sanitize'
+    with pytest.raises(RuntimeError, match=message):
+        prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) is None
+
+
+def test_fallback_training_uses_current_elites_and_original_prior(fallback_project, monkeypatch):
+    project, elites, previous = fallback_project
+    with database.connect(project.db_path) as conn:
+        for name, smiles in [('E1', elites[0][2]), ('E2', elites[1][2])]:
+            conn.execute('UPDATE compound SET smiles=? WHERE name=?', (smiles, name))
+    selected = database.iteration_gbsa_elites(project.db_path, 1, 2)
+    calls = []
+
+    def training(rows, scaffold, directory, **kwargs):
+        assert rows == selected
+        assert scaffold == previous['scaffold_smiles']
+        assert kwargs['prior_file'] == project.libinvent_prior
+        calls.append('pairs')
+        return None, 'train', 'valid', 2
+
+    def transfer(**kwargs):
+        assert kwargs['prior_file'] == project.libinvent_prior
+        calls.append('TL')
+        return 'new-model'
+
+    def sample(**kwargs):
+        assert kwargs['libinvent_prior'] == 'new-model'
+        assert kwargs['scaffold_file'].read_text().strip() == previous['scaffold_smiles']
+        calls.append('sampling')
+        return 'generated.csv'
+
+    monkeypatch.setattr(_core, 'write_elite_libinvent_training_files', training)
+    monkeypatch.setattr(_core, 'run_libinvent_elite_transfer_learning', transfer)
+    monkeypatch.setattr(_core, 'run_libinvent_sampling', sample)
+    monkeypatch.setattr(_core, 'insert_generated', lambda **kwargs: 3)
+    generate._run_stage(project, 2)
+    assert calls == ['pairs', 'TL', 'sampling']
+
+
 @pytest.mark.parametrize('supplied', [None, '[*:0]c1ccc([*:1])cc1'])
 def test_project_initialization_defers_core_calculations(project, monkeypatch, supplied):
     cfg = dict(project='project', toml_file=project.output / 'project.toml',

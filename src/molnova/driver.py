@@ -237,6 +237,8 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
             database.start_stage_timer(args.db_path, iteration, timed_stage)
         interval = min(poll_interval, 5) if stage in {"mmgbsa", "mmgbsa-recovery"} else poll_interval
         cmd = [sys.executable, "-m", module, str(project_toml), "--iteration", str(iteration)]
+        if stage == 'generate' and getattr(args, 'cli_elite_mcs', None) is not None:
+            cmd += ['--elite-mcs', args.cli_elite_mcs]
         while not stop.is_set():
             rc = stream_process(stage, cmd, project_toml.parent, stop)
             if stop.is_set():
@@ -276,6 +278,7 @@ def main(argv=None):
     )
     p.add_argument("project_toml", type=Path)
     p.add_argument("--iteration", type=int, help="Iteration to run; default: oldest unfinished, or next new iteration")
+    p.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
     p.add_argument(
         "--poll-interval",
         type=int,
@@ -295,7 +298,9 @@ def main(argv=None):
     project_toml = ns.project_toml.expanduser().resolve()
 
     # Configure once so the DB exists and project name is known.
-    args = c.configure_project(project_toml)
+    overrides = {'elite_mcs': ns.elite_mcs} if ns.elite_mcs is not None else {}
+    args = c.configure_project(project_toml, **overrides)
+    args.cli_elite_mcs = ns.elite_mcs
 
     # One driver per project DB. Prevent accidental duplicate supervisors.
     lock_path = database.lock_path(args.db_path, "driver")

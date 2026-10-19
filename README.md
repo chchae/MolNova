@@ -222,6 +222,18 @@ elite-mcs = "[*:0]Oc1ccc([*:1])cc1" # optional first generation core
 elite-mcs-fixed = false           # default: adapt MCS from preceding elites
 ```
 
+You can override TOML `elite-mcs` for an invocation from the command line:
+
+```bash
+molnova run egfr.toml --iteration 49 --elite-mcs '[*:0]Oc1ccc([*:1])cc1'
+molnova generate egfr.toml --iteration 49 --elite-mcs '[*:0]Oc1ccc([*:1])cc1'
+```
+
+The TOML-only supervisor shorthand also accepts `--elite-mcs`. Quote the SMARTS
+to preserve shell characters. CLI overrides do not edit TOML or replace saved
+iteration scaffolds/fixed cores; the same one-time application policy applies.
+The example SMARTS must be replaced with a core compatible with your project.
+
 Set `elite-mcs-fixed = true` to keep the first generation MCS and its scaffold
 attachment positions across cycles. SQLite preserves that choice across restart
 and later TOML input changes. Fixed mode still trains from the immediately
@@ -245,6 +257,14 @@ cycle. Existing iterations retain their saved cores and jobs. Logs label restore
 inputs as `saved elite-mcs` and note when the current TOML omits or differs
 from that saved value. Completion gates
 and TL from the original prior remain unchanged.
+
+If a new automatic generation MCS has fewer than two attachment boundaries,
+MolNova checks the immediately preceding iteration's saved scaffold. It reuses
+that core and its two attachment positions only if it retains the fixed docking
+core and decomposes every selected elite. Otherwise generation stops with a
+diagnostic. Supplied cores and other MCS errors do not trigger this fallback.
+SQLite records the attempted MCS and fallback source; restarts reuse that choice.
+TL still uses the current preceding-iteration elites and the original prior.
 
 Generation scaffolds must contain the fixed docking constraint and support
 LibInvent attachments and elite decomposition. A docking constraint itself

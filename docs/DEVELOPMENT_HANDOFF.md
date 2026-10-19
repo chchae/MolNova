@@ -307,6 +307,17 @@ pose-template candidate set rather than aborting the project.
 
 ## 10. REINVENT4 / LibInvent
 
+For new automatic generation cores in N>1, fewer than two attachment boundaries
+triggers validation of exactly N-1's saved generation scaffold. Reuse only if
+its core/scaffold is valid, it has exactly two terminal single-bond dummy
+attachments labelled 0/1, contains the saved generation and fixed docking cores,
+and decomposes every selected elite. Otherwise stop; do not try older cores,
+shrink the MCS or replace elites. Supplied cores, initial generation and other
+MCS/scaffold errors do not use this fallback. Persist the failed automatic query,
+fallback source iteration/reason and current elite IDs in the new immutable
+snapshot; resumes restore it. Keep prior snapshots, scientific results/jobs,
+completion gates, fixed pinning, original-prior TL and vocabulary preflight intact.
+
 Iteration 1:
 
     original libinvent.prior

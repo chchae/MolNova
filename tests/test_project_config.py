@@ -120,6 +120,51 @@ def test_cli_shorthand_reads_process_arguments(monkeypatch):
     assert calls == [["input/egfr.toml", "--poll-interval", "30"]]
 
 
+@pytest.mark.parametrize('command', ['run', 'shorthand', 'generate'])
+@pytest.mark.parametrize('override', [None, '[*:0]c1ccc([*:1])cc1'])
+def test_cli_elite_mcs_reaches_generation_without_changing_toml(tmp_path, monkeypatch, command, override):
+    from molnova.stages import generate
+
+    toml = tmp_path / 'project.toml'
+    supplied = '[*:0]Oc1ccc([*:1])cc1'
+    contents = PROJECT_TOML + f'elite-mcs = "{supplied}"\n'
+    toml.write_text(contents)
+
+    def initialize(**kwargs):
+        with database.connect(kwargs['db_path']) as conn:
+            _core.create_sqlite_schema(conn)
+
+    monkeypatch.setattr(_core, 'initialize_project_database', initialize)
+    monkeypatch.setattr(driver, 'reference_work_pending', lambda args: False)
+    monkeypatch.setattr(driver, 'build_stages', lambda *args: [('generate', 'molnova.stages.generate')])
+    monkeypatch.setattr(database, 'stage_completion_reason', lambda *args: None)
+    seen = []
+    monkeypatch.setattr(generate, '_run_stage',
+                        lambda args, iteration: seen.append((args.elite_mcs_smarts, iteration)))
+
+    def worker(stage, cmd, cwd, stop):
+        assert stage == 'generate'
+        generate.main(cmd[3:])
+        return 0
+
+    monkeypatch.setattr(driver, 'stream_process', worker)
+    argv = ([] if command == 'shorthand' else [command]) + [str(toml), '--iteration', '1']
+    if override is not None:
+        argv += ['--elite-mcs', override]
+    cli.main(argv)
+    assert seen == [(override or supplied, 1)]
+    assert toml.read_text() == contents
+
+
+def test_empty_cli_elite_mcs_rejected_before_database_initialization(tmp_path, monkeypatch):
+    toml = tmp_path / 'project.toml'
+    toml.write_text(PROJECT_TOML)
+    monkeypatch.setattr(_core, 'initialize_project_database',
+                        lambda **kwargs: pytest.fail('DB initialized for an empty override'))
+    with pytest.raises(ValueError, match='elite-mcs must be a nonempty'):
+        cli.main(['generate', str(toml), '--elite-mcs', '  '])
+
+
 @pytest.mark.parametrize("absolute_output", [False, True])
 def test_database_uses_output_directory_for_nested_project(tmp_path, absolute_output):
     project = tmp_path / "input" / "egfr.toml"

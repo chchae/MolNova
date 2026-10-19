@@ -14,6 +14,8 @@ def _project_args(ns):
         args += ["--iteration", str(ns.iteration)]
     if getattr(ns, "schrodinger", None) is not None:
         args += ["--schrodinger", str(ns.schrodinger)]
+    if getattr(ns, "elite_mcs", None) is not None:
+        args += ["--elite-mcs", ns.elite_mcs]
     return args
 
 
@@ -89,12 +91,15 @@ def main(argv=None):
     run.add_argument("--poll-interval", type=int, default=30)
     run.add_argument("--once", action="store_true")
     run.add_argument("--iteration", type=int)
+    run.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
 
     for name in ("generate", "ligprep", "glide", "amber-gbsa", "mmgbsa"):
         stage = sub.add_parser(name, help=f"Run {name} stage")
         stage.add_argument("project_toml", type=Path)
         stage.add_argument("--iteration", type=int, required=name == "amber-gbsa")
         stage.add_argument("--schrodinger", type=Path)
+        if name == "generate":
+            stage.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
         if name == "glide":
             stage.add_argument("--poll-interval", type=int, default=30)
             stage.add_argument("--completion-fraction", type=float, default=0.95)
@@ -127,6 +132,8 @@ def main(argv=None):
             args += ["--iteration", str(ns.iteration)]
         if ns.once:
             args.append("--once")
+        if ns.elite_mcs is not None:
+            args += ["--elite-mcs", ns.elite_mcs]
         return driver_main(args)
 
     if ns.command == "status":

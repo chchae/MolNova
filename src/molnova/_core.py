@@ -1044,6 +1044,8 @@ def infer_mcs_smarts_from_iteration0(references, timeout=60):
     print(f"MCS atoms           : {result.numAtoms}")
     print(f"MCS bonds           : {result.numBonds}")
     print(f"MCS SMARTS          : {result.smartsString}")
+    from molnova.chemistry.scaffold import mcs_display_summary
+    print(f"MCS SMARTS summary  : {mcs_display_summary(result.smartsString)}")
 
     return result.smartsString
 
@@ -1052,6 +1054,14 @@ def get_first_core_match(mol, query):
     clean = Chem.RemoveHs(Chem.Mol(mol))
     match = clean.GetSubstructMatch(query, useChirality=False)
     return clean, tuple(match) if match else None
+
+
+class InsufficientAttachmentSitesError(RuntimeError):
+    """A valid core has fewer than two external attachment boundaries."""
+
+    def __init__(self, message, mcs_smarts):
+        super().__init__(message)
+        self.mcs_smarts = mcs_smarts
 
 
 def determine_libinvent_attachment_sites(
@@ -1138,11 +1148,17 @@ def determine_libinvent_attachment_sites(
     )
 
     if len(candidates) < 2:
-        raise RuntimeError(
+        raise InsufficientAttachmentSitesError(
             "Fewer than two variable positions were found around "
-            "the MCS. LibInvent requires two attachment points. "
-            "Use a smaller --mcs-smarts or specify "
-            "--attachment-query-indices i,j."
+            f"the MCS ({len(candidates)} found across {matched} input ligands). "
+            "LibInvent requires two attachment points. "
+            "For a new generation snapshot, set elite-mcs in the project TOML "
+            "to a smaller compatible core or a complete scaffold containing "
+            "[*:0] and [*:1]. It must retain the fixed docking core and support "
+            "elite decomposition. An unchanged elite-mcs already used in an "
+            "earlier snapshot is not reapplied in adaptive mode. "
+            "No scaffold was created; retrying unchanged inputs will not resolve this.",
+            mcs_smarts,
         )
 
     sites = (candidates[0][2], candidates[1][2])
@@ -4729,9 +4745,12 @@ def run_iteration(
 # Modular-stage runtime helpers
 # ============================================================
 
-def configure_project(project_toml, schrodinger=None):
+def configure_project(project_toml, schrodinger=None, *, elite_mcs=None):
     """Load TOML, initialize/migrate SQLite, and prepare common scaffold."""
     cfg = load_project_toml(project_toml)
+    if elite_mcs is not None:
+        from molnova.config import elite_mcs as validate_elite_mcs
+        cfg['elite_mcs_smarts'] = validate_elite_mcs({'elite-mcs': elite_mcs})
     from molnova.stages._logging import set_log_level
     set_log_level(cfg['log_level'])
     sch = Path(

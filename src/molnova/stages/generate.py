@@ -209,9 +209,11 @@ def main(argv=None):
     p.add_argument("project_toml", type=Path)
     p.add_argument("--iteration", type=int)
     p.add_argument("--schrodinger", type=Path)
+    p.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
     ns = p.parse_args(argv)
 
-    args = c.configure_project(ns.project_toml, ns.schrodinger)
+    overrides = {'elite_mcs': ns.elite_mcs} if ns.elite_mcs is not None else {}
+    args = c.configure_project(ns.project_toml, ns.schrodinger, **overrides)
     with database.stage_lock(args.db_path, "generate"):
         _run_stage(args, ns.iteration)
 

@@ -189,6 +189,11 @@ completion/decomposition gates, and retains the iteration-0 docking constraint.
 Logs identify fixed cores as `fixed elite-mcs from iteration N`.
 
 Optional TOML `elite-mcs` is a nonempty SMARTS string used for generation.
+The `run` and `generate` commands (including the TOML-only supervisor shorthand)
+also accept `--elite-mcs 'SMARTS'`. This invocation's CLI value takes precedence
+over TOML without editing it. The supervisor forwards the override only to
+generation workers, including retries. Existing snapshots and fixed cores remain
+immutable; the same one-time application policy applies to CLI and TOML values.
 The following describes the default adaptive mode (`elite-mcs-fixed=false`).
 Apply it once to the first new generation snapshot started with that value,
 even when the iteration number is greater than 1. Starting at iteration 3 uses
@@ -208,6 +213,23 @@ N>1 infer their generation MCS/scaffold from exactly the selected
 `gbsa-elite-count` finite Prime elites of N-1 (20 in EGFR), after existing
 completion gates. Supplied later-generation cores use those same elites for
 attachment analysis and TL. Do not infer from all compounds or pooled history.
+
+**Confirmed attachment fallback (2026-10-19):** for a new iteration N>1,
+if automatic generation MCS inference succeeds but finds fewer than two attachment
+boundaries, validate and reuse exactly N-1's SQLite-saved generation core and
+attachment-bearing scaffold. Require a valid saved core/scaffold, exactly two
+terminal single-bond dummy attachments labelled 0 and 1, containment of both the
+saved generation core and the fixed docking core, and successful decomposition
+of every selected N-1 elite. Do not replace or silently drop elites. Missing or
+incompatible previous scaffolds stop generation; do not search older snapshots
+or guess a smaller core. User-supplied effective cores, initial generation,
+MCS timeout/invalid results and other scaffold errors retain their error behavior.
+Record source `previous_iteration_scaffold_fallback`, current elite `source_ids`,
+`fallback_from_iteration`, `fallback_reason` and `attempted_mcs_smarts` in the
+new immutable snapshot. Do not copy the previous input's application marker.
+Log the fallback on creation/resume; resumes reuse the saved choice without
+recomputing. Preserve completion gates, fixed-core pinning, original-prior TL,
+prior-vocabulary preflight, docking constraints and all existing snapshots/results/jobs.
 
 Persist the effective supplied value as `supplied_elite_mcs` in the immutable
 SQLite generation snapshot. Resumes, failed TL/sampling and replenishment reuse
@@ -242,6 +264,8 @@ For readable generation logs, omit generic atom `&R`/`&!R` and bond
 `&@`/`&!@` predicates from the display string when the result parses as SMARTS.
 Label changed strings `generation core summary` to distinguish a relaxed display
 from the actual query. Preserve chirality and specific ring-count expressions.
+Automatic MCS extraction also prints `MCS SMARTS summary` immediately after
+`MCS SMARTS`, using the same display simplification even if attachment analysis fails.
 Full SMARTS remain in SQLite and `iterN/scaffold/mcs.smarts`; MCS search,
 scientific matching and the docking constraint retain the original conditions.
 The supervisor
@@ -261,8 +285,9 @@ retain the generation core they already used for docking; never change live
 or uncertain jobs. New iterations use the separated-core policy.
 The original reference pose library remains unchanged: the fixed docking
 constraint must match at least one original pose, with no unconstrained fallback. MCS timeout,
-empty/invalid core, fewer than two input molecules or insufficient attachment
-sites remain errors. RDKit's bare map-zero dummy is serialized explicitly as
+empty/invalid core and fewer than two input molecules remain errors. Insufficient
+attachment sites stop generation unless the validated previous-scaffold fallback
+above succeeds. RDKit's bare map-zero dummy is serialized explicitly as
 `[*:0]` before the established scaffold/decoration vocabulary conversion.
 
 Observed automatic MCS settings: at least two input ligands; timeout 60 seconds; threshold 1.0; maximize bonds; element atom comparison; bond-order comparison; ring matches ring only; complete rings for both atoms and bonds; no valence matching. The atom-level complete-ring setting excludes isolated substituent-ring atoms that otherwise break scaffold sanitization or single-bond LibInvent decomposition. Apply this correction only to new automatic MCS searches; supplied cores and saved snapshots remain unchanged. Invalid, empty, or timed-out MCS is an error. Do not invent CLI flags from old diagnostic wording. Exact attachment heuristics require scientific regression fixtures/source, not arbitrary replacement.
