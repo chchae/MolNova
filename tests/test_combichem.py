@@ -330,6 +330,198 @@ def test_zero_attachment_combichem_core_reuses_previous_scaffold(project):
     assert snapshot['fallback_from_iteration'] == 1
 
 
+@pytest.mark.parametrize('smiles', ['CCc1ccc(CC)cc1', 'C[C@H](F)c1ccc(CC)cc1',
+                                    'c1ccc(-c2ccc(CC)cc2)cc1'])
+def test_single_elite_expands_only_sidechain_ch_and_preserves_skeleton(smiles, monkeypatch):
+    previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1')
+    elite = dict(id=100, mol=Chem.MolFromSmiles(smiles))
+    inspected = []
+    def choose(candidates):
+        inspected.extend(candidates)
+        return candidates[0]
+    monkeypatch.setattr(combichem.secrets, 'choice', choose)
+    info = combichem.prepare_single_elite_scaffold(elite, previous, 'c1ccccc1')
+    original = Chem.MolFromSmiles(info['expansion_elite_smiles'])
+    query = Chem.MolFromSmarts(previous['scaffold_smiles'])
+    match = original.GetSubstructMatch(query)
+    old_core = {index for atom, index in zip(query.GetAtoms(), match) if atom.GetAtomicNum() != 0}
+    assert inspected
+    assert all(index not in old_core and original.GetAtomWithIdx(index).GetAtomicNum() == 6
+               and original.GetAtomWithIdx(index).GetTotalNumHs() > 0 for index in inspected)
+    groups = info['expansion_candidate_indices']
+    assert set(groups[0]).isdisjoint(groups[1])
+    for atom in query.GetAtoms():
+        if atom.GetAtomicNum() == 0:
+            label = atom.GetAtomMapNum()
+            root = match[atom.GetIdx()]
+            selected = info['expansion_atom_indices'][label]
+            assert selected in groups[label]
+            if root != selected:
+                assert not (set(Chem.GetShortestPath(original, root, selected)) & old_core)
+    scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert len(combichem.attachment_atoms(scaffold)) == 2
+    assert '[*:0]' in info['scaffold_smiles'] and '[*:1]' in info['scaffold_smiles']
+    assert scaffold.GetNumHeavyAtoms() == original.GetNumHeavyAtoms()
+    # Replacing the new dummy by H reconstructs the exact original stereoisomer.
+    restored = Chem.Mol(scaffold)
+    for index in combichem.attachment_atoms(restored):
+        dummy = restored.GetAtomWithIdx(index)
+        dummy.SetAtomicNum(1)
+        dummy.SetAtomMapNum(0)
+    assert Chem.MolToSmiles(Chem.RemoveHs(restored), isomericSmiles=True) == info['expansion_elite_smiles']
+    product = combichem.assemble(scaffold, [Chem.MolFromSmiles('*C')] * 2)
+    assert product is not None
+    assert Chem.MolFromSmiles(product).GetNumHeavyAtoms() == original.GetNumHeavyAtoms() + 2
+
+
+@pytest.mark.parametrize('smiles, aromatic', [('C[C@H](F)c1ccc(CC)cc1', False),
+                                           ('c1ccc(-c2ccc(CC)cc2)cc1', True)])
+def test_single_elite_chiral_and_aromatic_expansion_sites(smiles, aromatic, monkeypatch):
+    original = Chem.MolFromSmiles(Chem.MolToSmiles(Chem.MolFromSmiles(smiles)))
+    def choose(candidates):
+        return next((index for index in candidates
+                    if (original.GetAtomWithIdx(index).GetIsAromatic() if aromatic else
+                        original.GetAtomWithIdx(index).GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED)), candidates[0])
+    monkeypatch.setattr(combichem.secrets, 'choice', choose)
+    previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1')
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original), previous, 'c1ccccc1')
+    scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    # Attaching hydrogen reconstructs the input, including the selected stereocenter.
+    restored = Chem.Mol(scaffold)
+    for index in combichem.attachment_atoms(restored):
+        dummy = restored.GetAtomWithIdx(index)
+        dummy.SetAtomicNum(1)
+        dummy.SetAtomMapNum(0)
+    assert Chem.MolToSmiles(Chem.RemoveHs(restored), isomericSmiles=True) == info['expansion_elite_smiles']
+    assert combichem.assemble(scaffold, [Chem.MolFromSmiles('*C')] * 2) is not None
+
+
+@pytest.mark.parametrize('smiles', ['Clc1ccc(F)cc1', 'Oc1ccc(N)cc1', 'FC(F)(F)c1ccc(Cl)cc1'])
+def test_single_elite_without_sidechain_ch_stops(smiles):
+    previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1')
+    with pytest.raises(RuntimeError, match='no sidechain C-H'):
+        combichem.prepare_single_elite_scaffold(dict(id=100, mol=Chem.MolFromSmiles(smiles)),
+                                               previous, 'c1ccccc1')
+
+
+@pytest.mark.parametrize('scaffold, smiles, count', [
+    ('[*:0]c1ccccc1', 'CCc1ccccc1', 1),
+    ('[*:0]c1ccc([*:1])cc1', 'CCc1ccc(CC)cc1', 2),
+    ('[*:0]c1cc([*:1])cc([*:2])c1', 'CCc1cc(CC)cc(CC)c1', 3),
+])
+def test_single_elite_keeps_preceding_attachment_count(scaffold, smiles, count):
+    info = combichem.prepare_single_elite_scaffold(
+        dict(id=100, mol=Chem.MolFromSmiles(smiles)),
+        dict(mcs_smarts='c1ccccc1', scaffold_smiles=scaffold), 'c1ccccc1',
+    )
+    mol = Chem.MolFromSmiles(info['scaffold_smiles'])
+    labels = [mol.GetAtomWithIdx(index).GetAtomMapNum() for index in combichem.attachment_atoms(mol)]
+    assert sorted(labels) == list(range(count))
+    assert len(info['expansion_atom_indices']) == len(set(info['expansion_atom_indices'])) == count
+    assert combichem.assemble(mol, [Chem.MolFromSmiles('*C')] * count) is not None
+
+
+def test_single_elite_requires_candidate_in_every_preceding_sidechain(monkeypatch):
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda _: pytest.fail('chose before validating all sidechains'))
+    with pytest.raises(RuntimeError, match='no sidechain C-H.*preceding attachment'):
+        combichem.prepare_single_elite_scaffold(
+            dict(id=100, mol=Chem.MolFromSmiles('CCCc1ccc(Cl)cc1')),
+            dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1'), 'c1ccccc1',
+        )
+
+
+def test_saved_single_attachment_snapshot_is_not_rewritten(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    legacy = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]CCc1ccc(CC)cc1',
+                  source='single_elite_sidechain_expansion', expansion_from_iteration=1,
+                  expansion_atom_index=0, expansion_candidate_indices=[0], source_ids=[100],
+                  docking_mcs_smarts='c1ccccc1', generation_method='combichem')
+    database.iteration_scaffold(project.db_path, 2, legacy)
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda _: pytest.fail('changed saved expansion'))
+    prepare_iteration_scaffold(project, 2, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) == legacy
+
+
+def test_single_elite_snapshot_survives_restart_without_reselecting(project, monkeypatch, capsys):
+    prepare_iteration_scaffold(project, 1, create=True)
+    original = database.iteration_scaffold(project.db_path, 1)
+    project.gbsa_elite_count = 1
+    project.elite_mcs_smarts = None
+    elite = [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40)]
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[-1])
+    prepare_iteration_scaffold(project, 2, elite, create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    assert saved['source'] == 'single_elite_sidechain_expansion'
+    assert saved['source_ids'] == [100]
+    assert saved['expansion_from_iteration'] == 1
+    assert saved['expansion_atom_indices'] == [group[-1] for group in saved['expansion_candidate_indices']]
+    assert len(saved['expansion_atom_indices']) == 2
+    assert saved['docking_mcs_smarts'] == original['docking_mcs_smarts']
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda _: pytest.fail('reselected expansion site'))
+    prepare_iteration_scaffold(project, 2, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) == saved
+    assert database.iteration_scaffold(project.db_path, 1) == original
+    assert 'single elite sidechain C-H expansion from iteration 1' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('previous', [None, dict(mcs_smarts='c1ccccc1',
+                                               scaffold_smiles='[*:0]C1CCCCC1')])
+def test_single_elite_rejects_missing_or_incompatible_previous_scaffold(previous):
+    with pytest.raises(RuntimeError):
+        combichem.prepare_single_elite_scaffold(dict(id=100, mol=Chem.MolFromSmiles('CCc1ccc(CC)cc1')),
+                                               previous, 'c1ccccc1')
+
+
+def test_single_elite_generation_preserves_completion_gate_and_skips_tl(project, monkeypatch):
+    generate._run_stage(project, 1)
+    project.gbsa_elite_count = 1
+    project.elite_mcs_smarts = None
+    started = []
+    monkeypatch.setattr(generate, '_run_combichem', lambda *args: started.append(args[1]))
+    generate._run_stage(project, 2)
+    assert not started
+    assert database.iteration_scaffold(project.db_path, 2) is None
+    with database.connect(project.db_path) as conn:
+        conn.execute("UPDATE compound SET state='gbsa_done',docking_score=-10,gbsa_score=-id WHERE iteration=1")
+    elite = database.iteration_gbsa_elites(project.db_path, 1, 1)[0]
+    generate._run_stage(project, 2)
+    assert started == [2]
+    saved = database.iteration_scaffold(project.db_path, 2)
+    assert saved['source'] == 'single_elite_sidechain_expansion'
+    assert saved['source_ids'] == [elite[0]]
+
+
+def test_single_elite_does_not_bypass_configured_elite_count(project):
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.elite_mcs_smarts = None
+    with pytest.raises(RuntimeError, match='selected preceding-iteration elites'):
+        prepare_iteration_scaffold(project, 2, [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40)], create=True)
+    assert database.iteration_scaffold(project.db_path, 2) is None
+
+
+def test_single_elite_reinvent_retains_automatic_mcs_error(project):
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.sidechain_library = None
+    project.elite_mcs_smarts = None
+    project.gbsa_elite_count = 1
+    with pytest.raises(RuntimeError, match='At least two input ligands'):
+        prepare_iteration_scaffold(project, 2, [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40)], create=True)
+    assert database.iteration_scaffold(project.db_path, 2) is None
+
+
+@pytest.mark.parametrize('fixed', [False, True])
+def test_single_elite_respects_supplied_and_pinned_cores(project, monkeypatch, fixed):
+    project.elite_mcs_fixed = fixed
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.gbsa_elite_count = 1
+    project.elite_mcs_smarts = None if fixed else '[*:0]Cc1ccc([*:1])cc1'
+    monkeypatch.setattr(combichem, 'prepare_single_elite_scaffold',
+                        lambda *a: pytest.fail('replaced supplied/pinned scaffold'))
+    prepare_iteration_scaffold(project, 2, [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40)], create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    assert saved['source'] == ('fixed_elite_mcs' if fixed else 'user_elite_mcs')
+
+
 def test_fixed_combichem_core_stays_pinned_with_fresh_pools_per_iteration(project, monkeypatch):
     project.elite_mcs_fixed = True
     prepare_iteration_scaffold(project, 1, create=True)

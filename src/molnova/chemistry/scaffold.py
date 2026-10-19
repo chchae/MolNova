@@ -158,6 +158,8 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
             source = 'saved legacy scaffold'
         elif source == 'previous_iteration_scaffold_fallback':
             source = f"previous scaffold fallback from iteration {snapshot['fallback_from_iteration']}"
+        elif source == 'single_elite_sidechain_expansion':
+            source = f"single elite sidechain C-H expansion from iteration {snapshot['expansion_from_iteration']}"
         if snapshot.get('fallback_reason') == 'insufficient_attachment_sites':
             problem = ('no attachment sites' if snapshot.get('generation_method') == 'combichem' else
                        'fewer than two attachment sites')
@@ -231,6 +233,14 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
             original_iteration, original = pinned
             snapshot = dict(original)
             snapshot['fixed_from_iteration'] = original.get('fixed_from_iteration', original_iteration)
+        elif method == 'combichem' and iteration > 1 and len(inputs) == 1 and not use_supplied:
+            from molnova.chemistry.combichem import prepare_single_elite_scaffold
+            snapshot = prepare_single_elite_scaffold(
+                inputs[0], database.iteration_scaffold(args.db_path, iteration - 1), initial['mcs_smarts'],
+            )
+            snapshot['expansion_from_iteration'] = iteration - 1
+            if fixed:
+                snapshot['fixed_from_iteration'] = iteration
         else:
             try:
                 with tempfile.TemporaryDirectory() as temporary:

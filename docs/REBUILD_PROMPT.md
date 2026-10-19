@@ -205,6 +205,37 @@ remains unchanged. Record the generation method in new scaffold snapshots and
 reject a generator switch within a saved unfinished iteration; downstream stages
 restore the saved core regardless of the current generator setting.
 
+**Confirmed single-elite combichem expansion (2026-10-19 user change):** for a
+new iteration N>1, when exactly one preceding finite Prime elite is selected and
+no unconsumed supplied core or pinned fixed scaffold applies, skip automatic MCS
+extraction. Require exactly N-1's valid saved generation core/scaffold, containing
+the fixed docking core, and successful decomposition of the elite against it.
+Map the saved attachment-bearing scaffold to the elite and consider only its
+external sidechain atoms. **Confirmed count correction:** create exactly as many
+new attachments as there are dummy atoms in N-1's saved generation scaffold.
+For each preceding attachment label, traverse its own external sidechain without
+entering the saved core. Choose one carbon bearing a replaceable non-isotopic
+hydrogen uniformly within that sidechain, replace one H with a terminal
+single-bond dummy carrying the same label, and retain the elite's entire
+heavy-atom skeleton, charge and specified stereochemistry. Do not pool sidechains
+or borrow another sidechain's candidates to fill missing positions. The new
+generation core describes that retained skeleton; this is sidechain extension,
+not an inferred MCS or terminal-heavy-atom replacement. Stop if any preceding
+attachment's sidechain has no C-H candidate or the preceding scaffold is
+missing/incompatible. Persist source `single_elite_sidechain_expansion`, elite ID,
+canonical elite SMILES, per-label candidate atom index lists
+(`expansion_candidate_indices`), selected indices (`expansion_atom_indices`,
+in label order) and preceding iteration in the immutable SQLite scaffold snapshot;
+indices refer to the recorded canonical SMILES. Resumes reuse this selection
+without randomization. Preserve older single-attachment snapshots and their
+singular metadata as recorded; the new count rule applies only to new snapshots
+and takes its count from exactly N-1, without searching older cycles. Preserve completion and
+configured elite-count gates: one available elite does not satisfy a larger
+`gbsa-elite-count`. Existing snapshots, effective supplied cores and pinned fixed
+scaffolds retain precedence. First-generation reference bootstrap, multi-elite
+combichem and all REINVENT4 behavior remain unchanged. This extension can bias
+successive iterations toward larger molecules; existing filters still apply.
+
 Read the library's first whitespace-delimited field as SMILES (optional trailing
 name is ignored). Accept valid connected molecules with exactly one terminal
 `*`/`[*]` and a single bond to a heavy atom. Carbon-free fragments are allowed.

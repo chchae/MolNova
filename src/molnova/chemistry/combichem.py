@@ -60,6 +60,75 @@ def prepare_scaffold(inputs, supplied, *, mcs_timeout=60):
     return {'mcs_smarts': smarts, 'scaffold_smiles': scaffold_smiles}
 
 
+def prepare_single_elite_scaffold(elite, previous, docking_smarts):
+    """Extend each preceding attachment's sidechain at one C-H of an elite."""
+    if previous is None:
+        raise RuntimeError('Single-elite combichem requires the preceding iteration scaffold')
+    mol = Chem.RemoveHs(Chem.Mol(elite['mol']))
+    smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
+    mol = Chem.MolFromSmiles(smiles)
+    old_core = Chem.MolFromSmarts(previous['mcs_smarts'])
+    old_scaffold = Chem.MolFromSmiles(previous['scaffold_smiles'])
+    docking = Chem.MolFromSmarts(docking_smarts)
+    if (old_core is None or not old_core.GetNumHeavyAtoms() or old_scaffold is None
+            or docking is None or not docking.GetNumHeavyAtoms()):
+        raise RuntimeError('Invalid preceding scaffold/core or docking core for single-elite combichem')
+    old_attachments = attachment_atoms(old_scaffold)
+    if sorted(old_scaffold.GetAtomWithIdx(i).GetAtomMapNum() for i in old_attachments) != list(range(len(old_attachments))):
+        raise RuntimeError('Preceding combichem scaffold needs consecutive attachment labels starting at 0')
+    if (not old_scaffold.HasSubstructMatch(old_core, useChirality=False)
+            or not old_scaffold.HasSubstructMatch(docking, useChirality=False)
+            or not mol.HasSubstructMatch(docking, useChirality=False)
+            or _core.decompose_elite_for_libinvent(smiles, previous['scaffold_smiles']) is None):
+        raise RuntimeError('Single elite is incompatible with the preceding scaffold or fixed docking core')
+    query, by_label, _, dummy_indices, _ = _core._scaffold_attachment_layout(previous['scaffold_smiles'])
+    match = mol.GetSubstructMatch(query, useChirality=False)
+    core_atoms = {index for qidx, index in enumerate(match) if qidx not in dummy_indices}
+    candidate_groups = []
+    for label in range(len(old_attachments)):
+        sidechain = set()
+        pending = [match[by_label[label]['dummy_qidx']]]
+        while pending:
+            index = pending.pop()
+            if index in core_atoms or index in sidechain:
+                continue
+            sidechain.add(index)
+            pending.extend(atom.GetIdx() for atom in mol.GetAtomWithIdx(index).GetNeighbors())
+        candidates = [index for index in sorted(sidechain)
+                      if mol.GetAtomWithIdx(index).GetAtomicNum() == 6
+                      and mol.GetAtomWithIdx(index).GetTotalNumHs() > 0]
+        if not candidates:
+            raise RuntimeError(f'Single-elite combichem found no sidechain C-H expansion site '
+                               f'for preceding attachment {label}')
+        candidate_groups.append(candidates)
+    sites = [secrets.choice(candidates) for candidates in candidate_groups]
+    # Replace a real hydrogen so RDKit retains the ordering at stereocenters.
+    expanded = Chem.AddHs(mol)
+    for label, site in enumerate(sites):
+        hydrogen = next(atom for atom in expanded.GetAtomWithIdx(site).GetNeighbors()
+                        if atom.GetAtomicNum() == 1 and atom.GetIsotope() == 0)
+        hydrogen.SetAtomicNum(0)
+        hydrogen.SetAtomMapNum(label)
+    scaffold = Chem.RemoveHs(expanded)
+    Chem.SanitizeMol(scaffold)
+    attachment_atoms(scaffold)
+    scaffold_smiles = Chem.MolToSmiles(scaffold, isomericSmiles=True)
+    import re
+    scaffold_smiles = re.sub(r'(?<!\[)\*', '[*:0]', scaffold_smiles)
+    # The generation core describes the retained heavy-atom skeleton. Hydrogen
+    # counts at the expansion carbon change when its hydrogen becomes a bond.
+    core = Chem.Mol(mol)
+    for site in sites:
+        core.GetAtomWithIdx(site).SetNumExplicitHs(0)
+    smarts = Chem.MolToSmarts(core)
+    if not scaffold.HasSubstructMatch(Chem.MolFromSmarts(smarts), useChirality=False):
+        raise RuntimeError('Single-elite expansion does not retain its generation core')
+    return dict(mcs_smarts=smarts, scaffold_smiles=scaffold_smiles,
+                source='single_elite_sidechain_expansion', source_ids=[elite['id']],
+                expansion_atom_indices=sites, expansion_elite_smiles=smiles,
+                expansion_candidate_indices=candidate_groups)
+
+
 def load_library(path, report):
     """Validate, canonicalize and deduplicate single-ended fragments."""
     path, report = Path(path), Path(report)
