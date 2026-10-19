@@ -16,29 +16,39 @@ from molnova.chemistry.scaffold import prepare_iteration_scaffold
 from molnova.stages import generate
 
 
-def test_library_carbon_attachment_validation_deduplication_and_audit(tmp_path):
+def test_library_attachment_validation_deduplication_and_audit(tmp_path):
     library = tmp_path / 'edges.smi'
     library.write_text('[*]N\n[*]Cl\n[*]C first\n*C duplicate\n[*]OC\n'
                        '*CC*\n*=C\nnot_a_smiles\n*C.[Na+]\n'
                        '[*]O[Si](C)(C)C\n[*][S+](N(C)C)[O-]\n')
     report = tmp_path / 'rejected.tsv'
     accepted, fingerprint, rejected = combichem.load_library(library, report)
-    assert len(accepted) == 4
-    assert rejected == 7
+    assert len(accepted) == 6
+    assert rejected == 5
     assert len(fingerprint) == 64
-    assert len({row['smiles'] for row in accepted}) == 4
-    assert all(any(atom.GetAtomicNum() == 6 for atom in Chem.MolFromSmiles(row['smiles']).GetAtoms())
-               for row in accepted)
+    assert len({row['smiles'] for row in accepted}) == 6
+    assert {row['line'] for row in accepted} >= {1, 2}
     audit = list(csv.DictReader(report.open(), delimiter='\t'))
-    assert [row['line'] for row in audit if row['reason'] == 'sidechain has no carbon atom'] == ['1', '2']
     assert any(row['reason'] == 'duplicate sidechain' for row in audit)
     assert any(row['line'] == '6' for row in audit)
 
 
-def test_no_carbon_bearing_sidechains_is_an_error(tmp_path):
+def test_carbon_free_sidechains_are_accepted_and_assembled(tmp_path):
     path = tmp_path / 'edges.smi'
     path.write_text('*N\n*O\n*Cl\n')
-    with pytest.raises(RuntimeError, match='No eligible carbon-bearing'):
+    accepted, _, rejected = combichem.load_library(path, tmp_path / 'rejected.tsv')
+    assert len(accepted) == 3
+    assert rejected == 0
+    core = Chem.MolFromSmiles('C[*:0]')
+    products = {combichem.assemble(core, [Chem.MolFromSmiles(row['smiles'])])
+                for row in accepted}
+    assert products == {'CN', 'CO', 'CCl'}
+
+
+def test_no_eligible_sidechains_is_an_error(tmp_path):
+    path = tmp_path / 'edges.smi'
+    path.write_text('*\n*CC*\n*=C\n')
+    with pytest.raises(RuntimeError, match='No eligible sidechains'):
         combichem.load_library(path, tmp_path / 'rejected.tsv')
 
 

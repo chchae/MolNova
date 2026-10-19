@@ -234,8 +234,8 @@ TL or a REINVENT environment. It uses the same core selection, iteration gates,
 druglikeness/SA filters, `target-count`, LigPrep, constrained Glide and GBSA flow.
 The library path is relative to this TOML. Each line begins with a SMILES; an
 optional trailing name is ignored. Eligible fragments have one terminal
-single-bond `*`/`[*]` and at least one carbon atom. Invalid/disconnected fragments,
-multiple attachments, carbon-free rows and duplicates are excluded with a report.
+single-bond `*`/`[*]`. Carbon-free fragments such as `*N`, `*O` and `*Cl` are allowed.
+Invalid/disconnected fragments, multiple attachments and duplicates are excluded with a report.
 
 Combichem supports one or more scaffold attachments and uses every inferred
 attachment position. It independently selects up to 1000 unique fragments per

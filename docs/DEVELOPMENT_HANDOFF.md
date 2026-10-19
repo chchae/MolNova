@@ -311,8 +311,8 @@ Optional local `sidechain-library` selects the combichem generator in the same
 generate worker; absence retains REINVENT4. Combichem has no prior/runtime/TL
 requirement. Use one or more explicit scaffold dummy positions, or every inferred
 boundary, and only single-bond assembly. Choose up to 1000 unique sidechains per
-site with weight 1/heavy-atoms; fragments need exactly one terminal dummy and
-at least one carbon atom. Report invalid/duplicate rows. Traverse the full Cartesian
+site with weight 1/heavy-atoms; fragments need exactly one terminal dummy attached
+to a heavy atom by a single bond. Carbon-free fragments are allowed. Report invalid/duplicate rows. Traverse the full Cartesian
 candidate space lazily, preserving existing descriptor/druglikeness/SA filters
 and target-count. The user confirmed stopping at target-count; do not assemble
 unvisited combinations after reaching it. Persist pools, library identity, seed, ordering, batch size and

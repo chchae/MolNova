@@ -61,7 +61,7 @@ def prepare_scaffold(inputs, supplied, *, mcs_timeout=60):
 
 
 def load_library(path, report):
-    """Validate, canonicalize and deduplicate carbon-bearing single-ended fragments."""
+    """Validate, canonicalize and deduplicate single-ended fragments."""
     path, report = Path(path), Path(report)
     digest = hashlib.sha256()
     accepted, seen = [], set()
@@ -81,8 +81,6 @@ def load_library(path, report):
                 dummies = attachment_atoms(mol)
                 if len(dummies) != 1:
                     raise ValueError('sidechain must have exactly one attachment')
-                if not any(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms()):
-                    raise ValueError('sidechain has no carbon atom')
                 for atom in mol.GetAtoms():
                     atom.SetAtomMapNum(0)
                 canonical = Chem.MolToSmiles(mol, isomericSmiles=True)
@@ -95,7 +93,7 @@ def load_library(path, report):
                 rejected += 1
                 writer.writerow([line_number, smiles, str(error)])
     if not accepted:
-        raise RuntimeError(f'No eligible carbon-bearing sidechains in {path}; see {report}')
+        raise RuntimeError(f'No eligible sidechains in {path}; see {report}')
     return accepted, digest.hexdigest(), rejected
 
 

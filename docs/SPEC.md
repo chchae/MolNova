@@ -180,9 +180,9 @@ restore the saved core regardless of the current generator setting.
 
 Read the library's first whitespace-delimited field as SMILES (optional trailing
 name is ignored). Accept valid connected molecules with exactly one terminal
-`*`/`[*]`, a single bond to a heavy atom, and at least one carbon atom.
+`*`/`[*]` and a single bond to a heavy atom. Carbon-free fragments are allowed.
 Preserve charge, elements and specified stereochemistry. Canonicalize/deduplicate;
-skip invalid, carbon-free, disconnected, multi-ended or duplicate fragments and
+skip invalid, disconnected, multi-ended or duplicate fragments and
 record their source line/SMILES/reason. Stop if no eligible fragments remain.
 Independently draw at most 1000 unique eligible sidechains per attachment,
 without replacement within a site; reuse across sites is allowed. Favor smaller
