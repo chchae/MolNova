@@ -222,6 +222,32 @@ elite-mcs = "[*:0]Oc1ccc([*:1])cc1" # optional first generation core
 elite-mcs-fixed = false           # default: adapt MCS from preceding elites
 ```
 
+To generate by combinatorial sidechain assembly instead of REINVENT4, set:
+
+```toml
+sidechain-library = "./input/edges-50k.smi"
+sample-size = 3000  # combinations attempted per assembly/filtering batch
+```
+
+Omit `sidechain-library` to keep REINVENT4. Combichem runs locally without a prior,
+TL or a REINVENT environment. It uses the same core selection, iteration gates,
+druglikeness/SA filters, `target-count`, LigPrep, constrained Glide and GBSA flow.
+The library path is relative to this TOML. Each line begins with a SMILES; an
+optional trailing name is ignored. Eligible fragments have one terminal
+single-bond `*`/`[*]` and at least one carbon atom. Invalid/disconnected fragments,
+multiple attachments, carbon-free rows and duplicates are excluded with a report.
+
+Combichem supports one or more scaffold attachments and uses every inferred
+attachment position. It independently selects up to 1000 unique fragments per
+site with weight `1/heavy_atoms`, favoring smaller fragments. It explores the
+full Cartesian space in a saved shuffled order, batch by batch, until the filtered
+target is reached. Exhaustion below target leaves generation incomplete.
+Pools and seeds change for new iterations but are saved in SQLite with the
+cursor, library fingerprint and batch size for exact restart. Result insertion
+and cursor movement commit together. Saved parameters/pools survive later library
+or batch-size changes. Do not switch generators within an unfinished saved
+iteration. Artifacts are under `iterN/combichem/`.
+
 You can override TOML `elite-mcs` for an invocation from the command line:
 
 ```bash

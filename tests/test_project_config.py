@@ -165,6 +165,34 @@ def test_empty_cli_elite_mcs_rejected_before_database_initialization(tmp_path, m
         cli.main(['generate', str(toml), '--elite-mcs', '  '])
 
 
+def test_combichem_configuration_needs_no_prior_or_reinvent_environment(tmp_path):
+    toml = tmp_path / 'project.toml'
+    contents = PROJECT_TOML.replace('libinvent-prior = "prior.prior"\n', '')
+    contents = contents.replace('sample-size = 10\n', '')
+    contents += 'sidechain-library = "input/edges-50k.smi"\nreinvent-ssh-host = "invalid host"\n'
+    toml.write_text(contents)
+    settings = _core.load_project_toml(toml)
+    assert settings['generation_method'] == 'combichem'
+    assert settings['sidechain_library'] == tmp_path / 'input/edges-50k.smi'
+    assert settings['libinvent_prior'] is None
+    assert settings['remote_reinvent'] is None
+    assert settings['sample_size'] == 3000
+
+
+@pytest.mark.parametrize('value', ['', ' ', True, 17])
+def test_invalid_sidechain_library_config(tmp_path, value):
+    from molnova.config import generation_settings
+    with pytest.raises(ValueError, match='sidechain-library'):
+        generation_settings({'sidechain-library': value}, tmp_path)
+
+
+@pytest.mark.parametrize('value', [0, -1, True, '1000'])
+def test_invalid_combichem_batch_size(tmp_path, value):
+    from molnova.config import generation_settings
+    with pytest.raises(ValueError, match='sample-size'):
+        generation_settings({'sidechain-library': 'edges.smi', 'sample-size': value}, tmp_path)
+
+
 @pytest.mark.parametrize("absolute_output", [False, True])
 def test_database_uses_output_directory_for_nested_project(tmp_path, absolute_output):
     project = tmp_path / "input" / "egfr.toml"

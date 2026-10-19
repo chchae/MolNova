@@ -34,7 +34,7 @@ Workers are separate subprocesses. Each inspects SQLite, atomically claims eligi
 
 One `compound` row represents one original molecule, not each LigPrep state. Preserve `CMPID_<SQLite compound id>` in calculation structures. Use one state column and centralized definitions; retain failure diagnostics. SQLite uses WAL, busy timeout, and foreign keys. Claims and transitions are atomic; migrations never discard results.
 
-Iteration 1 samples the original LibInvent prior. Later iterations perform short TL from that original prior, rather than recursively fine-tuning the preceding TL model. Preserve scaffold dummy `[*]` versus decoration dummy `*`. Before TL, validate decomposed elite pairs against the configured original prior vocabulary; exclude unsupported-token pairs from training only, record their IDs/reasons, and preserve database compounds and scientific results. A vocabulary lookup failure must stop TL rather than bypass validation.
+For REINVENT4 generation, iteration 1 samples the original LibInvent prior. Later iterations perform short TL from that original prior, rather than recursively fine-tuning the preceding TL model. Preserve scaffold dummy `[*]` versus decoration dummy `*`. Before TL, validate decomposed elite pairs against the configured original prior vocabulary; exclude unsupported-token pairs from training only, record their IDs/reasons, and preserve database compounds and scientific results. A vocabulary lookup failure must stop TL rather than bypass validation. The optional combichem generator described in section 6 assembles local sidechains without REINVENT or TL.
 
 Select the reference pose with highest Morgan radius-2/2048-bit Tanimoto among MCS-compatible iteration-0 references. MCS determines the constrained core; similarity determines the reference pose. Across LigPrep states, retain the minimum Glide score and its corresponding pose. Preserve validated scientific behavior and never invent external program options.
 
@@ -59,7 +59,7 @@ Responsibilities: `config.py` configuration; `database.py` SQL/claims/locks; `st
 
 ## 3. Configuration and project isolation — documented baseline
 
-Current project format is flat TOML. Required keys: `libinvent-prior`, `dock-grid`, `reference-pose`, `out-dir`, `sample-size`, `target-count`, `max-iteration`, `host`.
+Current project format is flat TOML. Required keys: `dock-grid`, `reference-pose`, `out-dir`, `target-count`, `max-iteration`, `host`. REINVENT4 additionally requires `libinvent-prior` and `sample-size`. With `sidechain-library`, combichem needs no prior/REINVENT runtime and uses `sample-size` as a positive assembly-batch size (omission default 3000).
 
 `project` defaults to the TOML filename stem. Database location is `<out-dir>/<project>.sqlite`. On first use, if only the legacy DB beside the TOML exists, copy it using SQLite backup, including committed WAL results; preserve the original. An existing output DB takes precedence and is never overwritten. Driver/stage/migration lock files and WAL/SHM reside beside the output DB.
 
@@ -171,6 +171,67 @@ N+1 generation requires all preceding iterations to satisfy completion: target-c
 
 ## 6. References, MCS, scaffold, and generation — documented baseline
 
+**Confirmed combichem addition (2026-10-20 user interview):** a nonempty local
+`sidechain-library = "./input/edges-50k.smi"` selects combichem; omission retains
+REINVENT4. Resolve the library against the TOML directory. Keep the same
+generation worker, SQLite state model, completion gates and downstream
+synthetic/SA/LigPrep/constrained Glide/optional Amber/Prime processing.
+Combichem performs no REINVENT sampling, TL or prior-vocabulary lookup.
+
+Reuse the existing supplied elite/core policy, reference bootstrap, preceding
+finite Prime elite selection, fixed-core option and immutable scaffold recovery.
+Combichem accepts one or more explicitly supplied terminal dummy attachments.
+For dummy-free supplied or inferred cores, use every detected external attachment
+position, rather than the LibInvent top-two restriction. A single position is
+valid; zero positions may use the same validated N-1 scaffold fallback for a
+new automatic core, with one or more labelled attachments and all elites
+decomposable. Preserve the fixed docking core. Reject non-single attachment
+boundaries. Existing LibInvent behavior, including its two-attachment requirement,
+remains unchanged. Record the generation method in new scaffold snapshots and
+reject a generator switch within a saved unfinished iteration; downstream stages
+restore the saved core regardless of the current generator setting.
+
+Read the library's first whitespace-delimited field as SMILES (optional trailing
+name is ignored). Accept valid connected molecules with exactly one terminal
+`*`/`[*]`, a single bond to a heavy atom, and at least one carbon atom.
+Preserve charge, elements and specified stereochemistry. Canonicalize/deduplicate;
+skip invalid, carbon-free, disconnected, multi-ended or duplicate fragments and
+record their source line/SMILES/reason. Stop if no eligible fragments remain.
+Independently draw at most 1000 unique eligible sidechains per attachment,
+without replacement within a site; reuse across sites is allowed. Favor smaller
+fragments and draw fresh pools for each new iteration, restoring the saved pools
+on restart. **Implementation choice:** weighted sampling without replacement
+uses weight `1/heavy_atoms`, where dummy atoms and hydrogens do not count.
+
+Use the full Cartesian product of these pools as the candidate space. Process
+it lazily in bounded batches until the existing filtered `target-count` is met;
+do not allocate the complete product or implicitly sample a smaller product.
+**Confirmed stopping policy (user choice A):** stop traversal as soon as the
+filtered generated population reaches `target-count`. The full Cartesian
+product is the candidate space; unvisited combinations need not be assembled
+or scored. The current batch may finish, with database insertion capped at the
+remaining target. Final SA-ratio selection still follows the existing policy.
+**Implementation choice:** a random offset and coprime stride permute Cartesian
+indices reproducibly. Remove matched scaffold/sidechain dummies and join their
+neighbors by single bonds using RDKit molzip; sanitize products and retain
+isomeric SMILES. Record attempted combination indices, sidechain source lines and
+assembly outcomes, followed by the existing per-batch descriptor/druglikeness
+reports. Preserve DB-wide uniqueness, full-batch RO5/QED/SA preselection and final
+SA-ratio selection. Zero-insertion batches advance to the next combinations.
+If the product is exhausted below target, report incomplete generation and retain
+all results/cursors; do not bypass downstream readiness or invent compounds.
+
+SQLite `iteration_combichem` stores immutable versioned pools, seed, source
+library path/SHA256, scaffold, weighting, Cartesian ordering and batch size, plus
+a separate cursor. Use TEXT for potentially huge Cartesian indices. Commit
+compound insertions and cursor advancement together; replayed committed batches
+cannot admit previously rejected molecules. Retain cursor/pools on calculation
+failure and recover without reseeding or rereading a changed/missing library.
+Saved batch parameters take precedence on resume. Write derivative plans,
+sidechain exclusions, assembly CSV/TSV and druglikeness reports under
+`iterN/combichem/`; they do not replace SQLite as the source of truth.
+No production docking/GBSA or target-ranking validation follows from RDKit tests.
+
 Import iteration-0 ligands from multi-structure MAEGZ via Schrödinger `utilities/structconvert` to SDF and RDKit canonical isomeric SMILES. Titles become names; empty titles use `REF_<four-digit index>`. Reject duplicate titles and zero usable references. Diagnose unreadable structures; the current receptor guard skips structures with >200 heavy atoms. Preserve experimental values and finite preexisting reference GBSA.
 
 Reference properties: docking `r_i_docking_score`/`docking_score`; experimental `r_csv_dG\_exp`/`r_csv_dG_exp`/`dG_exp`/`r_user_dG_exp`/`r_i_dG_exp` (first readable numeric value, in this order); GBSA `r_psp_MMGBSA_dG_Bind`/`r_psp_MMGBSA_dG_Bind(NS)`/`gbsa_score`. Nonfinite reference GBSA is unscored. No experimental-unit conversion is specified.
@@ -198,7 +259,7 @@ With `false`, use the adaptive policy below: apply an unconsumed supplied input
 once, then recompute from preceding elites on every new cycle. Turning fixed
 mode off affects new snapshots only; existing snapshots/jobs remain immutable.
 Re-enabling fixed mode reuses its previously pinned scaffold. Fixed mode still
-uses immediately preceding elites for TL from the original prior, obeys
+uses immediately preceding elites (for TL from the original prior in REINVENT4), obeys
 completion/decomposition gates, and retains the iteration-0 docking constraint.
 Logs identify fixed cores as `fixed elite-mcs from iteration N`.
 

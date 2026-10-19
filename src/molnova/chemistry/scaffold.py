@@ -88,10 +88,14 @@ def _previous_scaffold_fallback(args, iteration, inputs, docking_smarts, error):
             raise RuntimeError(f'iteration {iteration - 1} has no saved scaffold')
         query, scaffold = _validate(previous)
         dummies = [atom for atom in scaffold.GetAtoms() if atom.GetAtomicNum() == 0]
-        if (len(dummies) != 2 or sorted(atom.GetAtomMapNum() for atom in dummies) != [0, 1]
+        combichem = getattr(args, 'sidechain_library', None) is not None
+        expected = list(range(len(dummies))) if combichem else [0, 1]
+        if (not dummies or (not combichem and len(dummies) != 2)
+                or sorted(atom.GetAtomMapNum() for atom in dummies) != expected
                 or any(atom.GetDegree() != 1 or
                        atom.GetBonds()[0].GetBondType() != Chem.BondType.SINGLE for atom in dummies)):
-            raise RuntimeError('saved scaffold needs exactly two terminal single-bond attachments [*:0]/[*:1]')
+            raise RuntimeError('saved scaffold needs labelled terminal single-bond attachments' if combichem else
+                               'saved scaffold needs exactly two terminal single-bond attachments [*:0]/[*:1]')
         if not scaffold.HasSubstructMatch(query, useChirality=False):
             raise RuntimeError('saved scaffold does not contain its saved generation core')
         docking_query = Chem.MolFromSmarts(docking_smarts)
@@ -155,7 +159,9 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
         elif source == 'previous_iteration_scaffold_fallback':
             source = f"previous scaffold fallback from iteration {snapshot['fallback_from_iteration']}"
         if snapshot.get('fallback_reason') == 'insufficient_attachment_sites':
-            print(f"[MCS] Iteration {iteration}: automatic MCS had fewer than two attachment sites; "
+            problem = ('no attachment sites' if snapshot.get('generation_method') == 'combichem' else
+                       'fewer than two attachment sites')
+            print(f"[MCS] Iteration {iteration}: automatic MCS had {problem}; "
                   f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
         summary = mcs_display_summary(snapshot['mcs_smarts'])
         label = 'generation core summary' if summary != snapshot['mcs_smarts'] else 'generation core'
@@ -177,6 +183,7 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
         return
 
     snapshot = database.iteration_scaffold(args.db_path, iteration)
+    method = 'combichem' if getattr(args, 'sidechain_library', None) is not None else 'reinvent4'
     if snapshot is None and database.iteration_has_compounds(args.db_path, iteration):
         # Pre-upgrade iterations already used the global core. Never change it
         # underneath generated compounds, prepared structures or submitted jobs.
@@ -186,6 +193,9 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
                 f'Iteration {iteration}: existing compounds have no saved scaffold; '
                 'restore the original mcs.smarts and libinvent_scaffold.smi before resuming.'
             )
+    if create and snapshot is not None and snapshot.get('generation_method', 'reinvent4') != method:
+        raise RuntimeError(f'Iteration {iteration}: cannot switch generator for a saved iteration; '
+                           'restore its original generation configuration.')
 
     if snapshot is None:
         if not create:
@@ -224,9 +234,14 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
         else:
             try:
                 with tempfile.TemporaryDirectory() as temporary:
-                    info = _core.prepare_libinvent_scaffold(
-                        inputs, supplied if use_supplied else None, Path(temporary), mcs_timeout=args.mcs_timeout,
-                    )
+                    if method == 'combichem':
+                        from molnova.chemistry.combichem import prepare_scaffold
+                        info = prepare_scaffold(inputs, supplied if use_supplied else None,
+                                                mcs_timeout=args.mcs_timeout)
+                    else:
+                        info = _core.prepare_libinvent_scaffold(
+                            inputs, supplied if use_supplied else None, Path(temporary), mcs_timeout=args.mcs_timeout,
+                        )
             except _core.InsufficientAttachmentSitesError as error:
                 if use_supplied or iteration == 1:
                     raise
@@ -246,8 +261,15 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
             snapshot['source'] = 'fixed_elite_mcs'
             snapshot['elite_mcs_fixed'] = True
         snapshot['docking_mcs_smarts'] = initial['mcs_smarts']
+        snapshot['generation_method'] = method
 
     _, scaffold = _validate(snapshot)
+    if snapshot.get('generation_method') == 'combichem':
+        from molnova.chemistry.combichem import attachment_atoms
+        attachment_atoms(scaffold)
+    elif create and snapshot.get('generation_method') == 'reinvent4':
+        if sum(atom.GetAtomicNum() == 0 for atom in scaffold.GetAtoms()) != 2:
+            raise RuntimeError('REINVENT4 generation requires exactly two scaffold attachments')
     # Old iterations used their generation core for docking. Preserve that
     # exact constraint beneath existing structures/jobs; only new cycles split it.
     docking_smarts = snapshot.get('docking_mcs_smarts', snapshot['mcs_smarts'])

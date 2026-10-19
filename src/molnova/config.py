@@ -6,6 +6,20 @@ from typing import Any
 from molnova import _core
 
 
+def generation_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
+    """Select the generator without requiring a REINVENT runtime for combichem."""
+    value = config.get('sidechain-library')
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise ValueError('sidechain-library must be a nonempty local path')
+    library = (base / Path(value).expanduser()).resolve() if value is not None else None
+    batch = config.get('sample-size', 3000)
+    if library is not None and (isinstance(batch, bool) or not isinstance(batch, int) or batch < 1):
+        raise ValueError('sample-size must be a positive integer for combichem')
+    return {'sidechain_library': library,
+            'generation_method': 'combichem' if library is not None else 'reinvent4',
+            'sample_size': int(batch)}
+
+
 def log_level(config: dict[str, Any]) -> int:
     """Console verbosity; accept the hyphenated spelling for flat TOML consistency."""
     if ('log_level' in config and 'log-level' in config

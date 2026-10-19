@@ -508,6 +508,28 @@ def iteration_has_compounds(path, iteration):
         ).fetchone() is not None
 
 
+def combichem_plan(path, iteration, plan=None):
+    """Persist immutable pools/parameters separately from the atomic cursor."""
+    import json
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        # TEXT cursors also support products larger than SQLite's 64-bit range.
+        conn.execute('CREATE TABLE IF NOT EXISTS iteration_combichem ('
+                     'iteration INTEGER PRIMARY KEY, plan TEXT NOT NULL, next_index TEXT NOT NULL)')
+        if plan is not None:
+            conn.execute('INSERT INTO iteration_combichem(iteration,plan,next_index) VALUES (?,?,?) '
+                         'ON CONFLICT(iteration) DO NOTHING',
+                         (iteration, json.dumps(plan, sort_keys=True), '0'))
+        row = conn.execute('SELECT plan,next_index FROM iteration_combichem WHERE iteration=?',
+                           (iteration,)).fetchone()
+    return dict(json.loads(row[0]), next_index=int(row[1])) if row else None
+
+
+def iteration_compound_count(path, iteration):
+    with connect(path) as conn:
+        return conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
+
+
 def elite_mcs_was_used(path, supplied):
     """Check durable generation snapshots, excluding the fixed docking row."""
     import json
@@ -574,12 +596,27 @@ def novel_generated_smiles(path, smiles):
     return [value for value in smiles if value not in existing]
 
 
-def insert_generated_candidates(path, iteration, target_count, candidates):
+def insert_generated_candidates(path, iteration, target_count, candidates, *, combichem_progress=None):
     """Recheck duplicates and atomically cap the iteration at its total target."""
     if iteration <= 0:
         raise ValueError('Generated candidates require a positive iteration')
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if combichem_progress is not None:
+            start, end = combichem_progress
+            row = conn.execute('SELECT next_index,plan FROM iteration_combichem WHERE iteration=?',
+                               (iteration,)).fetchone()
+            if row is None:
+                raise RuntimeError('Combichem batch has no saved plan')
+            import json
+            total = int(json.loads(row[1])['total_combinations'])
+            if not 0 <= start < end <= total:
+                raise RuntimeError('Invalid combichem batch bounds')
+            current = int(row[0])
+            if current == end:
+                return 0  # Replay after commit: never readmit rejected batch rows.
+            if current != start or end <= start:
+                raise RuntimeError('Stale or invalid combichem batch cursor')
         existing = {_core.canonicalize_smiles(row[0]) for row in conn.execute('SELECT smiles FROM compound')}
         names = {row[0] for row in conn.execute('SELECT name FROM compound')}
         count = conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
@@ -609,6 +646,9 @@ def insert_generated_candidates(path, iteration, target_count, candidates):
             existing.add(smiles)
             names.add(name)
             inserted += 1
+        if combichem_progress is not None:
+            conn.execute('UPDATE iteration_combichem SET next_index=? WHERE iteration=?',
+                         (str(end), iteration))
         return inserted
 
 

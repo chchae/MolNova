@@ -307,6 +307,22 @@ pose-template candidate set rather than aborting the project.
 
 ## 10. REINVENT4 / LibInvent
 
+Optional local `sidechain-library` selects the combichem generator in the same
+generate worker; absence retains REINVENT4. Combichem has no prior/runtime/TL
+requirement. Use one or more explicit scaffold dummy positions, or every inferred
+boundary, and only single-bond assembly. Choose up to 1000 unique sidechains per
+site with weight 1/heavy-atoms; fragments need exactly one terminal dummy and
+at least one carbon atom. Report invalid/duplicate rows. Traverse the full Cartesian
+candidate space lazily, preserving existing descriptor/druglikeness/SA filters
+and target-count. The user confirmed stopping at target-count; do not assemble
+unvisited combinations after reaching it. Persist pools, library identity, seed, ordering, batch size and
+cursor in SQLite; insertion and cursor advancement share a transaction. New
+iterations redraw pools; restart retains them. Exhaustion below target stays
+incomplete. Preserve original core policy, preceding-elite gates, fixed docking,
+downstream workers, scientific results and existing jobs. Saved unfinished
+iterations cannot change generator. See SPEC section 6 for the confirmed policy
+and implementation choices. REINVENT4 behavior below remains unchanged.
+
 For new automatic generation cores in N>1, fewer than two attachment boundaries
 triggers validation of exactly N-1's saved generation scaffold. Reuse only if
 its core/scaffold is valid, it has exactly two terminal single-bond dummy

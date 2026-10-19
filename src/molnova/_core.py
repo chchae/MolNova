@@ -103,16 +103,19 @@ def load_project_toml(filename):
     with filename.open("rb") as f:
         config = tomllib.load(f)
 
+    from molnova.config import generation_settings
+    generation = generation_settings(config, filename.parent)
+
     required = [
-        "libinvent-prior",
         "dock-grid",
         "reference-pose",
         "out-dir",
-        "sample-size",
         "target-count",
         "max-iteration",
         "host",
     ]
+    if generation['generation_method'] == 'reinvent4':
+        required += ['libinvent-prior', 'sample-size']
 
     missing = [key for key in required if key not in config]
     if missing:
@@ -122,7 +125,8 @@ def load_project_toml(filename):
 
     base = filename.parent
     from molnova.config import remote_reinvent_settings, remote_aizynth_settings, aizynth_process_count, sa_score_process_count, sa_accepted_ratio, elite_mcs, elite_mcs_fixed
-    remote_reinvent = remote_reinvent_settings(config)
+    remote_reinvent = (remote_reinvent_settings(config)
+                       if generation['generation_method'] == 'reinvent4' else None)
     remote_aizynth = remote_aizynth_settings(config)
 
     def resolve_path(value):
@@ -153,6 +157,7 @@ def load_project_toml(filename):
     output = resolve_path(config["out-dir"])
     from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level
     return {
+        **generation,
         **amber_settings(config, base),
         **gbsa_license_retry_settings(config),
         **schrodinger_cpu_settings(config),
@@ -160,8 +165,9 @@ def load_project_toml(filename):
         "log_level": log_level(config),
         "project": project,
         "db_path": output / f"{project}.sqlite",
-        "libinvent_prior": (Path(config["libinvent-prior"]) if remote_reinvent
-                            else resolve_path(config["libinvent-prior"])),
+        "libinvent_prior": ((Path(config["libinvent-prior"]) if remote_reinvent
+                             else resolve_path(config["libinvent-prior"]))
+                            if generation['generation_method'] == 'reinvent4' else None),
         "remote_reinvent": remote_reinvent,
         "grid": resolve_path(config["dock-grid"]),
         "reference_poses": resolve_path(config["reference-pose"]),
@@ -169,7 +175,7 @@ def load_project_toml(filename):
         "elite_mcs_smarts": elite_mcs(config),
         "elite_mcs_fixed": elite_mcs_fixed(config),
         "output": output,
-        "sample_size": int(config["sample-size"]),
+        "sample_size": generation['sample_size'],
         "target_count": int(config["target-count"]),
         "max_iteration": int(config["max-iteration"]),
         "host": str(config["host"]),
@@ -1068,6 +1074,8 @@ def determine_libinvent_attachment_sites(
     references,
     mcs_smarts,
     override=None,
+    *,
+    all_sites=False,
 ):
     """
     Identify the two MCS atoms most frequently connected to substituents
@@ -1103,6 +1111,7 @@ def determine_libinvent_attachment_sites(
         qidx: [0, 0]
         for qidx in range(n_query)
     }
+    max_external = {qidx: 0 for qidx in range(n_query)}
 
     matched = 0
 
@@ -1130,6 +1139,7 @@ def determine_libinvent_attachment_sites(
             if external:
                 counts[qidx][0] += 1
                 counts[qidx][1] += len(external)
+                max_external[qidx] = max(max_external[qidx], len(external))
 
     if matched != len(references):
         raise RuntimeError(
@@ -1147,7 +1157,11 @@ def determine_libinvent_attachment_sites(
         key=lambda x: (-x[0], -x[1], x[2])
     )
 
-    if len(candidates) < 2:
+    if all_sites and not candidates:
+        raise InsufficientAttachmentSitesError(
+            'No attachment positions were found around the automatic generation core.', mcs_smarts,
+        )
+    if not all_sites and len(candidates) < 2:
         raise InsufficientAttachmentSitesError(
             "Fewer than two variable positions were found around "
             f"the MCS ({len(candidates)} found across {matched} input ligands). "
@@ -1161,10 +1175,11 @@ def determine_libinvent_attachment_sites(
             mcs_smarts,
         )
 
-    sites = (candidates[0][2], candidates[1][2])
+    sites = (tuple(row[2] for row in candidates for _ in range(max_external[row[2]]))
+             if all_sites else (candidates[0][2], candidates[1][2]))
 
     print()
-    print("LibInvent attachment-site analysis")
+    print("Combichem attachment-site analysis" if all_sites else "LibInvent attachment-site analysis")
     print("-" * 70)
 
     for refs_count, bond_count, qidx in candidates:
@@ -1174,7 +1189,7 @@ def determine_libinvent_attachment_sites(
             f"external bonds={bond_count}"
         )
 
-    if len(candidates) > 2:
+    if len(candidates) > 2 and not all_sites:
         print(
             "WARNING: more than two variable boundary positions "
             f"were found; using MCS atoms {sites[0]} and {sites[1]}."
@@ -1187,6 +1202,8 @@ def build_libinvent_scaffold(
     references,
     mcs_smarts,
     attachment_sites,
+    *,
+    require_two=True,
 ):
     """
     Build a concrete LibInvent scaffold with [*:0] and [*:1].
@@ -1269,7 +1286,7 @@ def build_libinvent_scaffold(
     # attachment-zero notation expected by scaffold preparation and TL.
     scaffold_smiles = re.sub(r"(?<!\[)\*", "[*:0]", scaffold_smiles)
 
-    if (
+    if require_two and (
         "[*:0]" not in scaffold_smiles
         or "[*:1]" not in scaffold_smiles
     ):
@@ -1279,7 +1296,7 @@ def build_libinvent_scaffold(
         )
 
     print()
-    print("LibInvent scaffold")
+    print("LibInvent scaffold" if require_two else "Combichem scaffold")
     print("-" * 70)
     print(
         f"Template reference : "
@@ -1287,7 +1304,7 @@ def build_libinvent_scaffold(
     )
     print(
         f"Attachment atoms   : "
-        f"{attachment_sites[0]}, {attachment_sites[1]}"
+        + ', '.join(str(index) for index in attachment_sites)
     )
     print(f"Scaffold SMILES    : {scaffold_smiles}")
 

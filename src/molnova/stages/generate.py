@@ -51,7 +51,7 @@ def store_iteration_descriptors(args, iteration):
     return updated
 
 
-def insert_druglike_batch(csv_file, iteration, target_count, db_path, cpus=1):
+def insert_druglike_batch(csv_file, iteration, target_count, db_path, cpus=1, *, combichem_progress=None):
     csv_file = Path(csv_file)
     generated = c.read_generated_smiles(csv_file)
     novel = database.novel_generated_smiles(db_path, generated)
@@ -77,7 +77,8 @@ def insert_druglike_batch(csv_file, iteration, target_count, db_path, cpus=1):
         os.replace(temporary, report)
     finally:
         Path(temporary).unlink(missing_ok=True)
-    inserted = database.insert_generated_candidates(db_path, iteration, target_count, selected)
+    progress = {'combichem_progress': combichem_progress} if combichem_progress is not None else {}
+    inserted = database.insert_generated_candidates(db_path, iteration, target_count, selected, **progress)
     ro5_rejected = sum(row['druglike_reject_reason'] == 'ro5_violations' for row in selected)
     accepted = sum(row['druglike_selected'] for row in selected)
     print(f'Iteration {iteration}: druglikeness input={len(rows)}, RO5 rejected={ro5_rejected}, '
@@ -98,6 +99,37 @@ def select_iteration_sa_compounds(args, iteration):
     else:
         print(f'Iteration {iteration}: SA selection deferred for incomplete generation '
               'or preserved because downstream work has already started.', flush=True)
+
+
+def _run_combichem(args, iteration, directory):
+    from molnova.chemistry import combichem
+    work_started(f'Iteration {iteration}: starting local combichem generation.')
+    plan = combichem.prepare_plan(args, iteration, directory)
+    from molnova.chemistry.scaffold import _publish
+    import json
+    _publish(directory / 'plan.json', json.dumps(plan, indent=2) + '\n')
+    print(f"Combichem: {len(plan['pools'])} attachment sites; "
+          f"{[len(pool) for pool in plan['pools']]} sidechains; "
+          f"{plan['total_combinations']} Cartesian combinations; "
+          f"library={plan['library_path']}; weight={plan['selection_weight']}.", flush=True)
+    total = int(plan['total_combinations'])
+    start = plan['next_index']
+    while database.iteration_compound_count(args.db_path, iteration) < args.target_count:
+        if start >= total:
+            count = database.iteration_compound_count(args.db_path, iteration)
+            raise RuntimeError(f'Iteration {iteration}: combichem combinations exhausted at '
+                               f'{count}/{args.target_count} compounds; generation remains incomplete.')
+        stop = min(total, start + plan['batch_size'])
+        generated = combichem.write_batch(plan, start, stop, directory)
+        inserted = insert_druglike_batch(
+            generated, iteration, args.target_count, args.db_path, getattr(args, 'sa_score_cpus', 1),
+            combichem_progress=(start, stop),
+        )
+        print(f'Iteration {iteration}: combichem attempted {stop}/{total} combinations, '
+              f'inserted={inserted}.', flush=True)
+        start = stop
+    store_iteration_descriptors(args, iteration)
+    select_iteration_sa_compounds(args, iteration)
 
 
 @timed_stage("Generate stage")
@@ -122,11 +154,14 @@ def _run_stage(args, requested_iteration):
         )
         return
 
-    run_dir = args.output / f"iter{iteration}" / "reinvent"
+    combichem = getattr(args, 'sidechain_library', None) is not None
+    run_dir = args.output / f"iter{iteration}" / ('combichem' if combichem else 'reinvent')
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if iteration == 1:
         prepare_iteration_scaffold(args, iteration, create=True)
+        if combichem:
+            return _run_combichem(args, iteration, run_dir)
         work_started("Iteration 1: starting LibInvent sampling.")
         model = args.libinvent_prior
         print("Iteration 1: sampling original LibInvent prior.")
@@ -151,7 +186,8 @@ def _run_stage(args, requested_iteration):
                       f"{completed_iteration}: {reason}.")
                 return
 
-        work_started(f"Iteration {iteration}: starting elite transfer learning and sampling.")
+        work_started(f"Iteration {iteration}: starting " + (
+            'elite-guided combichem generation.' if combichem else 'elite transfer learning and sampling.'))
         elites = database.iteration_gbsa_elites(
             args.db_path, previous, args.gbsa_elite_count,
         )
@@ -160,6 +196,8 @@ def _run_stage(args, requested_iteration):
                 f"Need {args.gbsa_elite_count} previous MM-GBSA elites; only {len(elites)} available."
             )
         prepare_iteration_scaffold(args, iteration, elites, create=True)
+        if combichem:
+            return _run_combichem(args, iteration, run_dir)
         _, train_file, valid_file, usable = c.write_elite_libinvent_training_files(
             elites, args.libinvent_scaffold_smiles, run_dir,
             prior_file=args.libinvent_prior,
