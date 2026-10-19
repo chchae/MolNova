@@ -850,7 +850,7 @@ all protein/ligand heavy atoms, and the restart was the scoring input. The run h
 
 ## Full calculation-stage elapsed times
 
-After LigPrep, all Glide groups, selected Amber work or final Prime work completes
+After Generate, LigPrep, all Glide groups, selected Amber work or final Prime work completes
 under the supervisor, print the full stage's wall time in HH:MM:SS.s. SQLite
 `stage_timing` checkpoints the first supervised pass and verified completion per
 iteration/stage, surviving polls/restarts and including waiting/recovery/downtime.
@@ -859,6 +859,14 @@ Failure/pause leaves the finish unset; retain the first verified finish on rerun
 Prime recovery starts its timer but does not finish the final Prime stage. Keep
 worker-pass/native-job timings separate. Older pre-timer execution cannot be
 reconstructed; measure from the first newly recorded supervisor pass.
+The same completion line reports result counts and `wall/compound` throughput,
+not an individual runtime. Prime archived single-compound logs add native job
+mean/median/min/max with coverage. Amber new remote results add `elapsed_s`
+(monotonic parameterization/minimization/scoring wall time, excluding shared
+receptor setup/executor waits); old workers/cached results remain valid without
+that field. Missing timings remain n/a; grouped LigPrep/Glide do not pretend to
+provide per-compound runtimes. Summaries only read results and artifacts.
+
 
 
 ## Optional Amber mode — 2026-10-13

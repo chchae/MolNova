@@ -649,12 +649,18 @@ used and the output labels the duration as estimated. Paused iterations retain
 the original start and are not recorded as completed.
 
 
-The supervisor prints each fully completed LigPrep, Glide docking, Amber MM-GBSA
+The supervisor prints each fully completed Generate, LigPrep, Glide docking, Amber MM-GBSA
 and Prime MM-GBSA stage's total elapsed time as `HH:MM:SS.s`. The stage totals
 include waiting, polling, recovery and downtime between restarts; start/finish
 checkpoints are preserved in SQLite. A pending or interrupted worker does not
 finish the stage timer. For work started before stage timing was introduced,
 measurement begins at its first recorded supervisor pass.
+Each completion line includes original-compound result counts and
+`wall/compound`: total stage wall time divided by the processed count, including
+parallelism and waits. This is throughput, not individual runtime. Prime archived
+single-compound logs and new Amber per-compound results additionally supply
+native job mean/median/min/max with timing coverage. Missing timings display
+`n/a`; existing Amber results are preserved without recalculation.
 
 Iteration 0 references use Amber GBSA first when `amber-gbsa-enabled=true`, then Prime for references without a Prime score. Both use `reference-pose`
 and the same prepared receptor; Prime retains its seven-slot MM-GBSA queue. All unscored references are

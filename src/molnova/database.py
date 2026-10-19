@@ -876,6 +876,32 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
 
 
 
+def stage_summary_results(path, iteration, stage):
+    """Read result identities for display only; never claim or change work."""
+    with connect(path) as conn:
+        rows = conn.execute(
+            'SELECT id,state,failed_stage,docking_score,amber_gbsa_score,gbsa_score '
+            'FROM compound WHERE iteration=?', (iteration,),
+        ).fetchall()
+    failure_stage = {'mmgbsa': 'gbsa', 'amber-gbsa': 'amber_gbsa'}.get(stage, stage)
+    failures = {cid for cid, state, failed, *_ in rows
+                if failed == failure_stage and (state == State.FAILED or stage == 'amber-gbsa')}
+    if stage == 'generate':
+        successes = {row[0] for row in rows if row[1] != State.SA_REJECTED}
+    elif stage == 'ligprep':
+        advanced = {State.LIGPREPPED, State.GLIDE_RUNNING, State.DOCKED,
+                    State.AMBER_RUNNING, State.GBSA_RUNNING, State.GBSA_DONE,
+                    State.FEP_RUNNING, State.FEP_DONE}
+        successes = {cid for cid, state, failed, *_ in rows
+                     if state in advanced or
+                     (state == State.FAILED and failed in {'glide', 'amber_gbsa', 'gbsa', 'fep'})}
+    else:
+        column = {'glide': 3, 'amber-gbsa': 4, 'mmgbsa': 5}[stage]
+        successes = {row[0] for row in rows
+                     if row[column] is not None and math.isfinite(row[column])}
+    return successes, failures - successes
+
+
 def start_stage_timer(path, iteration, stage):
     """Keep the first supervised stage start across polls and driver restarts."""
     with connect(path) as conn:

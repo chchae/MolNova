@@ -85,8 +85,11 @@ def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization
         return SimpleNamespace(atoms=[SimpleNamespace(name='N',xx=0,xy=0,xz=0),c,h])
     monkeypatch.setattr(amber_runner,'run',run)
     monkeypatch.setitem(sys.modules,'parmed',SimpleNamespace(load_file=load_file))
+    ticks = iter([10.0, 35.5])
+    monkeypatch.setattr(amber_runner.time, 'monotonic', lambda: next(ticks))
     amber_runner.calculate(tmp_path,{'id':1,'charge':0},'bcc',1)
     result = json.loads((tmp_path/'results/CMPID_1.json').read_text())
+    assert result.pop('elapsed_s') == 25.5
     assert (folder/'input.mol2').read_text() == source
     assert (folder/'complex.inpcrd').read_text() == 'original coordinates'
     programs = [c[0] for c in calls]

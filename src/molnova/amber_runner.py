@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import time
 
 if __package__:
     from .receptor_pdb import CAP_TEMPLATE_NAMES, NORMALIZATION_VERSION, normalize_receptor_pdb
@@ -137,6 +138,7 @@ def calculate(root, entry, charge_method, lock_fd):
     output = root / 'results' / f'CMPID_{cid}.json'
     if output.exists():
         return
+    started = time.monotonic()
     folder = root / f'CMPID_{cid}'
     try:
         for name in ('ligand.mol2', 'ligand.frcmod', 'complex.prmtop', 'complex.inpcrd',
@@ -186,6 +188,7 @@ def calculate(root, entry, charge_method, lock_fd):
         result = {'id': cid, 'score': parse_score(folder / 'FINAL_RESULTS_MMPBSA.dat')}
     except Exception as exc:
         result = {'id': cid, 'error': f'{type(exc).__name__}: {exc}; see CMPID_{cid}/calculation.log'}
+    result['elapsed_s'] = max(0.0, time.monotonic() - started)
     save(output, result)
 
 

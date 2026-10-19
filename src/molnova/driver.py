@@ -21,6 +21,7 @@ BASE_STAGES = [
 ]
 
 CALCULATION_LABELS = {
+    'generate': 'Generate',
     'ligprep': 'LigPrep',
     'glide': 'Glide docking',
     'amber-gbsa': 'Amber MM-GBSA',
@@ -251,10 +252,12 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                 reason = external_completion_reason(args, iteration, stage)
             if reason is None:
                 if stage in CALCULATION_LABELS:
+                    from molnova.stages._summary import completion_summary
                     elapsed = database.finish_stage_timer(args.db_path, iteration, stage)
                     print(f"[driver  ] iteration {iteration}: {CALCULATION_LABELS[stage]} stage complete; "
                           f"total elapsed={format_elapsed(elapsed)} "
-                          "(including waiting, polling and restart recovery).", flush=True)
+                          "(including waiting, polling and restart recovery); "
+                          f"{completion_summary(args, iteration, stage, elapsed)}.", flush=True)
                 else:
                     # Recovery alone does not finish the final Prime candidate set.
                     print(f"[driver  ] iteration {iteration}: {stage} complete "

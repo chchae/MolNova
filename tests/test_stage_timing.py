@@ -17,7 +17,7 @@ def project(tmp_path):
                            amber_keep_count=500, schrodinger=Path('/suite'))
 
 
-@pytest.mark.parametrize('stage,label', [('ligprep','LigPrep'), ('glide','Glide docking'),
+@pytest.mark.parametrize('stage,label', [('generate','Generate'), ('ligprep','LigPrep'), ('glide','Glide docking'),
                                        ('amber-gbsa','Amber MM-GBSA'), ('mmgbsa','Prime MM-GBSA')])
 def test_each_calculation_stage_reports_total_after_verified_completion(tmp_path, monkeypatch, capsys, stage, label):
     args = project(tmp_path)
@@ -29,7 +29,9 @@ def test_each_calculation_stage_reports_total_after_verified_completion(tmp_path
     monkeypatch.setattr(driver,'stream_process',process)
     monkeypatch.setattr(driver,'external_completion_reason',lambda *a:None)
     assert driver.supervise_iteration(args,tmp_path/'p.toml',1,[(stage,'module')],30,driver.StopFlag())
-    assert f'{label} stage complete; total elapsed=01:01:01.5' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert f'{label} stage complete; total elapsed=01:01:01.5' in output
+    assert 'compounds=1 (ok=1, failed=0); wall/compound=3661.50s' in output
     with database.connect(args.db_path) as conn:
         assert conn.execute('SELECT iteration,stage,started_at,finished_at FROM stage_timing').fetchone() == (1,stage,1000,4661.5)
         assert conn.execute('SELECT state,docking_score,amber_gbsa_score,gbsa_score FROM compound').fetchone() == ('gbsa_done',-10,-30,-40)

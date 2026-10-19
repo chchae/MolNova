@@ -151,7 +151,7 @@ Current handoff, driver, and tests specify a single-thread, single-iteration sup
 
 Exit after that iteration; do not automatically advance N+1. Default selection prioritizes missing/recoverable iteration-0 GBSA, otherwise oldest unfinished generated iteration, otherwise next new iteration. Explicit later iterations first process pending reference GBSA. Iteration 0 runs Amber GBSA (when enabled) before Prime MM-GBSA, using supplied reference poses without generation/LigPrep/Glide.
 
-**Confirmed stage timing display:** after a supervised LigPrep, Glide docking,
+**Confirmed stage timing display:** after a supervised Generate, LigPrep, Glide docking,
 Amber MM-GBSA or Prime MM-GBSA stage fully completes, print its total wall time in
 `HH:MM:SS.s`. Persist per-iteration/per-stage start and verified finish in SQLite
 `stage_timing`. Include queue waits, polling, recovery and downtime between
@@ -162,7 +162,20 @@ verified finish on reruns, and never modify scientific state/results for timing.
 Prime recovery starts the Prime timer but cannot finish the final Prime stage.
 The start is the first supervised pass recorded by this implementation; work
 before timing was introduced cannot be reconstructed from compound timestamps.
-Per-worker invocation and per-native-job timings remain distinct from this total.
+Per-worker invocation and per-native-job timings remain distinct from this total. One completion line also reports original-compound
+result counts (ok/failed) and `wall/compound` (full stage wall time divided by
+those counts, a throughput measure rather than individual runtime). Generate
+counts retained molecules, excluding SA rejections; later failures do not erase
+generation/LigPrep completion. Docking/GBSA counts finite scores and separately
+attributes terminal failures to that stage. Prime completed single-compound queue
+logs additionally supply native job mean/median/min/max and timing coverage;
+Amber new remote results record monotonic per-compound elapsed seconds including
+parameterization, minimization and scoring, excluding shared receptor setup and
+executor waiting. Preserve cached results and old workers without adding missing
+times. Missing/invalid timings display n/a or partial coverage, never zero or
+estimated per-compound runtimes. Grouped LigPrep/Glide runtimes are not individual
+compound timings. Diagnostic summaries never submit jobs or change scientific
+results, claims, readiness or completion checks.
 
 Driver/stage locks prevent duplicate local workers. Exit status 0 is insufficient: check DB completion, saved submissions, and native parent/child terminal state. Retry only the incomplete stage. `--once` stops at the first failed/incomplete stage. Default poll delay is 30 seconds; MM-GBSA delay is capped at 5 seconds. Native queries/download/extraction add to observed refill delay. Ctrl-C/SIGTERM stops local supervision responsively while preserving external submission recovery.
 
