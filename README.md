@@ -241,12 +241,23 @@ Combichem supports one or more scaffold attachments and uses every inferred
 attachment position. It independently selects up to 1000 unique fragments per
 site with weight `1/heavy_atoms`, favoring smaller fragments. It explores the
 full Cartesian space in a saved shuffled order, batch by batch, until the filtered
-target is reached. Exhaustion below target leaves generation incomplete.
-Pools and seeds change for new iterations but are saved in SQLite with the
-cursor, library fingerprint and batch size for exact restart. Result insertion
-and cursor movement commit together. Saved parameters/pools survive later library
-or batch-size changes. Do not switch generators within an unfinished saved
-iteration. Artifacts are under `iterN/combichem/`.
+target is reached. If a sampled pool is exhausted below target, it saves fresh
+pools for another round and continues, preserving existing compounds and filters.
+If each pool already covers the full eligible library, exhaustion remains
+incomplete. Pools, seeds, round history, cursors, library fingerprint and batch
+size are stored in SQLite for exact restart. Result insertion and cursor movement
+commit together and reject batches from old rounds. An active round survives
+library/batch-size changes; drawing the next round requires the original library
+file and fingerprint. Do not switch generators within an unfinished saved
+iteration. Round 0 artifacts are under `iterN/combichem/`; later rounds use
+`iterN/combichem/round-NNNNNN/`.
+
+With adaptive single-elite terminal replacement, 10 consecutive batches inserting
+no new compounds trigger an untried attachment cut combination and fresh pools.
+One insertion resets the count; refills/restarts preserve it. Existing compounds,
+results and base scaffold remain recorded. Each new compound retains its actual
+round scaffold for later elite selection. Fixed/supplied cores keep their policy;
+exhausting all valid attachment combinations leaves generation incomplete.
 
 You can override TOML `elite-mcs` for an invocation from the command line:
 

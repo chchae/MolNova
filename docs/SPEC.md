@@ -191,36 +191,44 @@ remains unchanged. Record the generation method in new scaffold snapshots and
 reject a generator switch within a saved unfinished iteration; downstream stages
 restore the saved core regardless of the current generator setting.
 
-**Confirmed single-elite combichem expansion (2026-10-19 user change):** for a
-new iteration N>1, when exactly one preceding finite Prime elite is selected and
-no unconsumed supplied core or pinned fixed scaffold applies, skip automatic MCS
-extraction. Require exactly N-1's valid saved generation core/scaffold, containing
-the fixed docking core, and successful decomposition of the elite against it.
-Map the saved attachment-bearing scaffold to the elite and consider only its
-external sidechain atoms. **Confirmed count correction:** create exactly as many
-new attachments as there are dummy atoms in N-1's saved generation scaffold.
-For each preceding attachment label, traverse its own external sidechain without
-entering the saved core. Choose one carbon bearing a replaceable non-isotopic
-hydrogen uniformly within that sidechain, replace one H with a terminal
-single-bond dummy carrying the same label, and retain the elite's entire
-heavy-atom skeleton, charge and specified stereochemistry. Do not pool sidechains
-or borrow another sidechain's candidates to fill missing positions. The new
-generation core describes that retained skeleton; this is sidechain extension,
-not an inferred MCS or terminal-heavy-atom replacement. Stop if any preceding
-attachment's sidechain has no C-H candidate or the preceding scaffold is
-missing/incompatible. Persist source `single_elite_sidechain_expansion`, elite ID,
-canonical elite SMILES, per-label candidate atom index lists
-(`expansion_candidate_indices`), selected indices (`expansion_atom_indices`,
-in label order) and preceding iteration in the immutable SQLite scaffold snapshot;
-indices refer to the recorded canonical SMILES. Resumes reuse this selection
-without randomization. Preserve older single-attachment snapshots and their
-singular metadata as recorded; the new count rule applies only to new snapshots
-and takes its count from exactly N-1, without searching older cycles. Preserve completion and
-configured elite-count gates: one available elite does not satisfy a larger
-`gbsa-elite-count`. Existing snapshots, effective supplied cores and pinned fixed
-scaffolds retain precedence. First-generation reference bootstrap, multi-elite
-combichem and all REINVENT4 behavior remain unchanged. This extension can bias
-successive iterations toward larger molecules; existing filters still apply.
+**Confirmed single-elite combichem terminal replacement (2026-10-20 user change):**
+For new iteration N>1 with exactly one selected finite Prime elite and no
+effective supplied core or pinned fixed scaffold, skip automatic MCS extraction.
+This supersedes the former whole-elite C-H expansion policy. Require exactly
+N-1's valid saved generation core/scaffold, containing the fixed docking core,
+and successful decomposition of the connected elite against that scaffold.
+Preserve its number of attachments and their labels 0..K-1, where K is the
+attachment count. Map each attachment to its own external elite sidechain.
+**Implementation choice:** enumerate non-ring single bonds in that sidechain,
+including its original core/sidechain boundary. A candidate must disconnect a
+nonempty distal component entirely within that sidechain, leaving all previous
+core atoms connected on the retained side. Choose one candidate uniformly per
+attachment, remove the complete distal component and replace its bond with a
+terminal single-bond dummy carrying that attachment's label. Whole-sidechain
+replacement at its original boundary is allowed; internal branches and whole
+terminal rings may be removed, but never split a ring or cut a multiple bond.
+No C-H position or growth-only fallback is required. Do not pool sidechains or
+borrow another sidechain's cut to fill missing positions; stop on incompatible
+input or an attachment without a valid cut. Preserve charge, isotopes and
+specified stereochemistry in retained atoms, the saved preceding core and the
+fixed docking constraint. The new generation query describes only the retained
+heavy-atom core. New library fragments replace the removed terminal pieces.
+
+Persist source `single_elite_sidechain_replacement`, elite ID, canonical elite
+SMILES (`replacement_elite_smiles`), per-label candidate cuts
+(`replacement_candidates`), selected cuts (`replacement_cuts`) and
+`replacement_from_iteration` in the immutable SQLite scaffold snapshot.
+Each cut records its bond index, retained/distal atom indices and all removed
+atom indices, referring to the recorded canonical elite SMILES. Store lists in
+attachment-label order and resume without recomputing or randomizing the choice.
+Preserve every existing snapshot, including old `single_elite_sidechain_expansion`
+snapshots with singular/plural expansion metadata, compounds, pools, cursors,
+scores and submissions. The replacement policy applies only to new snapshots;
+an exhausted saved iteration is not silently reset. Keep completion and configured
+elite-count gates, supplied/fixed-core precedence, initial reference bootstrap,
+multi-elite combichem, library sampling, RO5/QED/SA filters and REINVENT4 behavior.
+Replacement permits smaller compounds but does not guarantee RO5 acceptance or
+that the finite Cartesian pool reaches target-count.
 
 Read the library's first whitespace-delimited field as SMILES (optional trailing
 name is ignored). Accept valid connected molecules with exactly one terminal
@@ -230,8 +238,8 @@ skip invalid, disconnected, multi-ended or duplicate fragments and
 record their source line/SMILES/reason. Stop if no eligible fragments remain.
 Independently draw at most 1000 unique eligible sidechains per attachment,
 without replacement within a site; reuse across sites is allowed. Favor smaller
-fragments and draw fresh pools for each new iteration, restoring the saved pools
-on restart. **Implementation choice:** weighted sampling without replacement
+fragments and draw fresh pools for each new iteration and refill round, restoring
+the active saved pools on restart. **Implementation choice:** weighted sampling without replacement
 uses weight `1/heavy_atoms`, where dummy atoms and hydrogens do not count.
 
 Use the full Cartesian product of these pools as the candidate space. Process
@@ -249,18 +257,85 @@ isomeric SMILES. Record attempted combination indices, sidechain source lines an
 assembly outcomes, followed by the existing per-batch descriptor/druglikeness
 reports. Preserve DB-wide uniqueness, full-batch RO5/QED/SA preselection and final
 SA-ratio selection. Zero-insertion batches advance to the next combinations.
-If the product is exhausted below target, report incomplete generation and retain
-all results/cursors; do not bypass downstream readiness or invent compounds.
+**Confirmed pool-refill policy (2026-10-20 user change):** when the current
+Cartesian product is exhausted below target, keep every compound, scientific
+result, scaffold and completed batch. Independently draw fresh sidechain pools
+with the same weighting and up-to-1000-per-attachment rule, save a new round and
+continue until target-count. Cross-round pool/combination overlap is allowed;
+DB-wide compound uniqueness and the unchanged RO5/QED/SA filters still apply.
+This supersedes stopping merely because a sampled pool is exhausted. If every
+pool already contains the entire eligible library, a redraw cannot add new
+combinations: report incomplete exhaustion rather than loop over that full space.
+A changed/missing library blocks creation of a new round while preserving state;
+active committed rounds resume without needing the library file.
 
-SQLite `iteration_combichem` stores immutable versioned pools, seed, source
-library path/SHA256, scaffold, weighting, Cartesian ordering and batch size, plus
-a separate cursor. Use TEXT for potentially huge Cartesian indices. Commit
-compound insertions and cursor advancement together; replayed committed batches
-cannot admit previously rejected molecules. Retain cursor/pools on calculation
-failure and recover without reseeding or rereading a changed/missing library.
-Saved batch parameters take precedence on resume. Write derivative plans,
-sidechain exclusions, assembly CSV/TSV and druglikeness reports under
-`iterN/combichem/`; they do not replace SQLite as the source of truth.
+SQLite `iteration_combichem` stores the active immutable round's pools, seed,
+source library path/SHA256, scaffold, weighting, Cartesian ordering and batch
+size, plus a separate TEXT cursor. New plans have `round=0`; legacy plans without
+round metadata are round 0 and keep their original payload. On refill, one
+`BEGIN IMMEDIATE` transaction verifies exhaustion (or the confirmed empty-batch
+retry threshold below) and target shortage, archives
+the exact previous plan/cursor in non-destructively added
+`iteration_combichem_history(iteration,round,plan,next_index)` with primary key
+`(iteration,round)`, and installs the next numbered plan with cursor zero.
+Concurrent refill attempts return the already installed round rather than replace
+it. Keep the saved scaffold (except an authorized attachment retry), library
+identity/path, attachment labels, weighting and batch size. Pool drawing/loading is outside the transaction; commit the new
+plan before assembling anything from it. Crash/restart reuses the committed plan.
+Commit insertions and cursor advancement together, checking round identity as
+well as batch bounds/cursor so an older round's batch cannot apply to a new round.
+Legacy two-value progress is accepted only in round 0. Same-round committed-batch
+replay cannot readmit rejected rows. Retain all active/archive records on failure;
+refill appends a round rather than resetting an exhausted iteration or its results.
+
+**Confirmed attachment retry after empty batches (2026-10-20 user choice):**
+For adaptive single-elite terminal-replacement scaffolds, switch attachment
+positions after 10 consecutive committed generation batches insert zero new
+compounds. A batch is up to `sample-size` combinations, including the shorter
+last batch of a pool. Count zero insertions after assembly, validity, duplicate
+and RO5/QED/SA preselection; a committed insertion of even one compound resets
+the streak. Carry it across ordinary pool refills and restarts. Uncommitted
+errors/interruption and replayed batches do not count. Track new commits only;
+legacy reports/cursors cannot establish an earlier streak and start at zero.
+
+Choose uniformly from the original saved elite's untried combinations of valid
+per-label terminal cuts. Retain the same elite, preceding core, docking core,
+attachment count/labels and chemical validation; never repeat a tried cut tuple.
+Stop incomplete if all combinations have been tried. This applies to saved and
+new adaptive replacement snapshots, including an already partly generated
+iteration; fixed/supplied cores and multi-elite MCS scaffolds retain their policy.
+At the threshold, a still-partial round may be archived with its actual cursor
+and unused combinations preserved; create a new numbered round with fresh pools
+and the new attachment selection. Preserve every compound and scientific result.
+The immutable `iteration_scaffold` remains the original base snapshot. Each
+changed round stores `base_scaffold_smiles`, `attachment_revision`, and its full
+`attachment_selection` (query/scaffold, source elite, candidate/selected cuts and
+preceding iteration). Ordinary pool refills copy this selection/revision.
+Publish each changed round's scaffold metadata and show its actual scaffold in
+round logs. Resume the exact committed variant without reselecting attachments.
+
+Non-destructively add `combichem_batch` with iteration, round, TEXT start/end,
+attachment revision, inserted count, commit-order ID and unique batch identity.
+Commit this outcome with compound insertion and cursor advancement; count the
+trailing zero outcomes for the active attachment revision. SQLite verifies the
+10-batch threshold, target shortage, original elite/candidate provenance and
+untried cuts inside the same transaction that archives/installs the round.
+Concurrent changes install one round. Record each new compound's producing round
+in `combichem_compound_origin` (compound FK with delete cascade); if it becomes a
+single elite in the next cycle, use that round's actual saved scaffold from the
+active/history plans rather than guessing from the base iteration snapshot.
+Legacy compounds with no origin retain the base-snapshot interpretation. Missing
+recorded provenance stops rather than guessing. Old replacement snapshots with
+literal dummy atoms in a mistakenly serialized generation query derive the
+intended retained-core query from their saved concrete scaffold for matching;
+never rewrite the old snapshot or its scientific results.
+
+Round 0 retains legacy artifacts in `iterN/combichem/`; later rounds write plans,
+sidechain exclusions, assembly CSV/TSV and druglikeness reports in
+`iterN/combichem/round-NNNNNN/` to avoid overwriting earlier batches. SQLite remains
+the source of truth. Stop creating rounds/assembling combinations at target-count,
+then apply the existing descriptor backfill and SA-ratio selection. Finite
+libraries/chemical filters still do not guarantee enough acceptable compounds.
 No production docking/GBSA or target-ranking validation follows from RDKit tests.
 
 Import iteration-0 ligands from multi-structure MAEGZ via Schrödinger `utilities/structconvert` to SDF and RDKit canonical isomeric SMILES. Titles become names; empty titles use `REF_<four-digit index>`. Reject duplicate titles and zero usable references. Diagnose unreadable structures; the current receptor guard skips structures with >200 heavy atoms. Preserve experimental values and finite preexisting reference GBSA.

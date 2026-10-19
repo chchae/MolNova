@@ -60,15 +60,61 @@ def prepare_scaffold(inputs, supplied, *, mcs_timeout=60):
     return {'mcs_smarts': smarts, 'scaffold_smiles': scaffold_smiles}
 
 
-def prepare_single_elite_scaffold(elite, previous, docking_smarts):
-    """Extend each preceding attachment's sidechain at one C-H of an elite."""
+def _terminal_cuts(mol, sidechain, core_atoms):
+    """Single-bond cuts whose distal component belongs only to this sidechain."""
+    candidates = []
+    for bond in mol.GetBonds():
+        a, b = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if (bond.GetBondType() != Chem.BondType.SINGLE or bond.IsInRing()
+                or not ({a, b} & sidechain)
+                or mol.GetAtomWithIdx(a).GetAtomicNum() <= 1
+                or mol.GetAtomWithIdx(b).GetAtomicNum() <= 1):
+            continue
+        component = set()
+        pending = [a]
+        while pending:
+            index = pending.pop()
+            if index in component:
+                continue
+            component.add(index)
+            pending.extend(atom.GetIdx() for atom in mol.GetAtomWithIdx(index).GetNeighbors()
+                           if {index, atom.GetIdx()} != {a, b})
+        if component & core_atoms:
+            retained, distal = a, b
+            removed = set(range(mol.GetNumAtoms())) - component
+        else:
+            retained, distal = b, a
+            removed = component
+        if removed and removed <= sidechain:
+            candidates.append(dict(bond_index=bond.GetIdx(), retained_atom_index=retained,
+                                   distal_atom_index=distal, removed_atom_indices=sorted(removed)))
+    return candidates
+
+
+def _retained_core_query(scaffold):
+    # SMARTS serialization may reorder atoms: remove dummies using parsed indices.
+    core = Chem.RWMol(Chem.MolFromSmarts(Chem.MolToSmarts(scaffold)))
+    for index in sorted((atom.GetIdx() for atom in core.GetAtoms() if atom.GetAtomicNum() == 0), reverse=True):
+        core.RemoveAtom(index)
+    return core.GetMol()
+
+
+def prepare_single_elite_scaffold(elite, previous, docking_smarts, *, selected_cuts=None):
+    """Replace a terminal part of each preceding attachment's elite sidechain."""
     if previous is None:
         raise RuntimeError('Single-elite combichem requires the preceding iteration scaffold')
     mol = Chem.RemoveHs(Chem.Mol(elite['mol']))
     smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
     mol = Chem.MolFromSmiles(smiles)
+    if len(Chem.GetMolFrags(mol)) != 1:
+        raise RuntimeError('Single-elite combichem requires a connected elite')
     old_core = Chem.MolFromSmarts(previous['mcs_smarts'])
     old_scaffold = Chem.MolFromSmiles(previous['scaffold_smiles'])
+    if (previous.get('source') == 'single_elite_sidechain_replacement' and old_core is not None
+            and old_scaffold is not None and any(atom.GetAtomicNum() == 0 for atom in old_core.GetAtoms())):
+        # Repair the interpretation of legacy dummy-index serialization without
+        # rewriting its immutable snapshot or changing the recorded scaffold.
+        old_core = _retained_core_query(old_scaffold)
     docking = Chem.MolFromSmarts(docking_smarts)
     if (old_core is None or not old_core.GetNumHeavyAtoms() or old_scaffold is None
             or docking is None or not docking.GetNumHeavyAtoms()):
@@ -94,39 +140,48 @@ def prepare_single_elite_scaffold(elite, previous, docking_smarts):
                 continue
             sidechain.add(index)
             pending.extend(atom.GetIdx() for atom in mol.GetAtomWithIdx(index).GetNeighbors())
-        candidates = [index for index in sorted(sidechain)
-                      if mol.GetAtomWithIdx(index).GetAtomicNum() == 6
-                      and mol.GetAtomWithIdx(index).GetTotalNumHs() > 0]
+        candidates = _terminal_cuts(mol, sidechain, core_atoms)
         if not candidates:
-            raise RuntimeError(f'Single-elite combichem found no sidechain C-H expansion site '
+            raise RuntimeError(f'Single-elite combichem found no terminal single-bond replacement '
                                f'for preceding attachment {label}')
         candidate_groups.append(candidates)
-    sites = [secrets.choice(candidates) for candidates in candidate_groups]
-    # Replace a real hydrogen so RDKit retains the ordering at stereocenters.
-    expanded = Chem.AddHs(mol)
-    for label, site in enumerate(sites):
-        hydrogen = next(atom for atom in expanded.GetAtomWithIdx(site).GetNeighbors()
-                        if atom.GetAtomicNum() == 1 and atom.GetIsotope() == 0)
-        hydrogen.SetAtomicNum(0)
-        hydrogen.SetAtomMapNum(label)
-    scaffold = Chem.RemoveHs(expanded)
-    Chem.SanitizeMol(scaffold)
-    attachment_atoms(scaffold)
+    if selected_cuts is not None:
+        if (len(selected_cuts) != len(candidate_groups)
+                or any(cut not in candidates for cut, candidates in zip(selected_cuts, candidate_groups))):
+            raise RuntimeError('Saved attachment cuts are incompatible with the elite or preceding scaffold')
+        cuts = selected_cuts
+    else:
+        cuts = [secrets.choice(candidates) for candidates in candidate_groups]
+    # RDKit inserts a dummy at each cut endpoint, preserving retained stereo.
+    fragmented = Chem.FragmentOnBonds(mol, [cut['bond_index'] for cut in cuts],
+                                     dummyLabels=[(label, label) for label in range(len(cuts))])
+    mappings = []
+    fragments = Chem.GetMolFrags(fragmented, asMols=True, fragsMolAtomMapping=mappings)
+    scaffold = next(fragment for fragment, indices in zip(fragments, mappings)
+                    if core_atoms <= set(indices))
+    for atom in scaffold.GetAtoms():
+        if atom.GetAtomicNum() == 0:
+            atom.SetAtomMapNum(atom.GetIsotope())
+            atom.SetIsotope(0)
+    attachments = attachment_atoms(scaffold)
+    if sorted(scaffold.GetAtomWithIdx(i).GetAtomMapNum() for i in attachments) != list(range(len(cuts))):
+        raise RuntimeError('Single-elite replacement did not preserve the preceding attachment labels')
+    if (not scaffold.HasSubstructMatch(old_core, useChirality=False)
+            or not scaffold.HasSubstructMatch(docking, useChirality=False)):
+        raise RuntimeError('Single-elite replacement does not contain the preceding and fixed docking cores')
     scaffold_smiles = Chem.MolToSmiles(scaffold, isomericSmiles=True)
     import re
     scaffold_smiles = re.sub(r'(?<!\[)\*', '[*:0]', scaffold_smiles)
-    # The generation core describes the retained heavy-atom skeleton. Hydrogen
-    # counts at the expansion carbon change when its hydrogen becomes a bond.
-    core = Chem.Mol(mol)
-    for site in sites:
-        core.GetAtomWithIdx(site).SetNumExplicitHs(0)
+    # Remove query dummies to describe only the retained heavy-atom core,
+    # without inventing hydrogen counts by capping the cut positions.
+    core = _retained_core_query(scaffold)
     smarts = Chem.MolToSmarts(core)
     if not scaffold.HasSubstructMatch(Chem.MolFromSmarts(smarts), useChirality=False):
-        raise RuntimeError('Single-elite expansion does not retain its generation core')
+        raise RuntimeError('Single-elite replacement does not retain its generation core')
     return dict(mcs_smarts=smarts, scaffold_smiles=scaffold_smiles,
-                source='single_elite_sidechain_expansion', source_ids=[elite['id']],
-                expansion_atom_indices=sites, expansion_elite_smiles=smiles,
-                expansion_candidate_indices=candidate_groups)
+                source='single_elite_sidechain_replacement', source_ids=[elite['id']],
+                replacement_cuts=cuts, replacement_elite_smiles=smiles,
+                replacement_candidates=candidate_groups)
 
 
 def load_library(path, report):
@@ -177,16 +232,7 @@ def select_sidechains(library, rng, count=1000):
     return selected
 
 
-def prepare_plan(args, iteration, directory):
-    saved = database.combichem_plan(args.db_path, iteration)
-    scaffold = args.libinvent_scaffold_smiles
-    if saved is not None:
-        if saved['scaffold_smiles'] != scaffold:
-            raise RuntimeError('Saved combichem scaffold differs from the iteration snapshot')
-        return saved
-    directory.mkdir(parents=True, exist_ok=True)
-    library, fingerprint, rejected = load_library(
-        args.sidechain_library, directory / 'sidechain_rejected.tsv')
+def _draw_plan(scaffold, library, fingerprint, rejected, library_path, batch_size):
     seed = secrets.randbits(128)
     rng = random.Random(seed)
     molecule = Chem.MolFromSmiles(scaffold)
@@ -198,14 +244,99 @@ def prepare_plan(args, iteration, directory):
     stride = rng.randrange(1, total) if total > 1 else 1
     while math.gcd(stride, total) != 1:
         stride = rng.randrange(1, total)
-    plan = {'protocol': 'combichem_v1', 'scaffold_smiles': scaffold,
-            'library_path': str(args.sidechain_library), 'library_sha256': fingerprint,
+    return {'protocol': 'combichem_v1', 'scaffold_smiles': scaffold,
+            'library_path': str(library_path), 'library_sha256': fingerprint,
             'eligible_sidechains': len(library), 'rejected_sidechains': rejected,
             'seed': str(seed), 'selection_weight': '1/heavy_atoms', 'pools': pools,
             'attachment_labels': [molecule.GetAtomWithIdx(index).GetAtomMapNum() for index in dummies],
             'total_combinations': str(total), 'offset': str(rng.randrange(total)),
-            'stride': str(stride), 'batch_size': args.sample_size}
+            'stride': str(stride), 'batch_size': batch_size}
+
+
+def prepare_plan(args, iteration, directory):
+    saved = database.combichem_plan(args.db_path, iteration)
+    scaffold = args.libinvent_scaffold_smiles
+    if saved is not None:
+        if saved.get('base_scaffold_smiles', saved['scaffold_smiles']) != scaffold:
+            raise RuntimeError('Saved combichem scaffold differs from the iteration snapshot')
+        if saved.get('attachment_selection', {}).get('scaffold_smiles', saved['scaffold_smiles']) != saved['scaffold_smiles']:
+            raise RuntimeError('Saved combichem round scaffold differs from its attachment selection')
+        return saved
+    directory.mkdir(parents=True, exist_ok=True)
+    library, fingerprint, rejected = load_library(
+        args.sidechain_library, directory / 'sidechain_rejected.tsv')
+    plan = _draw_plan(scaffold, library, fingerprint, rejected, args.sidechain_library, args.sample_size)
+    plan['round'] = 0
     return database.combichem_plan(args.db_path, iteration, plan)
+
+
+def _next_attachment_selection(args, iteration):
+    """Choose uniformly from untried cut combinations without expanding their product."""
+    original = database.iteration_scaffold(args.db_path, iteration)
+    if original is None or original.get('source') != 'single_elite_sidechain_replacement':
+        raise RuntimeError('Attachment switching requires an adaptive single-elite replacement scaffold')
+    groups = original['replacement_candidates']
+    positions = [{cut['bond_index']: i for i, cut in enumerate(group)} for group in groups]
+    tried = [original]
+    tried.extend(plan.get('attachment_selection', original)
+                 for plan in database.combichem_plans(args.db_path, iteration))
+    used = set()
+    for selection in tried:
+        rank = 0
+        for group, mapping, cut in zip(groups, positions, selection['replacement_cuts']):
+            rank = rank * len(group) + mapping[cut['bond_index']]
+        used.add(rank)
+    total = math.prod(len(group) for group in groups)
+    if len(used) == total:
+        raise RuntimeError('All single-elite attachment combinations have been tried; generation remains incomplete')
+    rank = secrets.randbelow(total - len(used))
+    for used_rank in sorted(used):
+        if used_rank > rank:
+            break
+        rank += 1
+    cuts = []
+    for group in reversed(groups):
+        rank, digit = divmod(rank, len(group))
+        cuts.append(group[digit])
+    cuts.reverse()
+    previous = (database.combichem_compound_scaffold(args.db_path, original['source_ids'][0])
+                or database.iteration_scaffold(args.db_path, iteration - 1))
+    selection = prepare_single_elite_scaffold(
+        dict(id=original['source_ids'][0], mol=Chem.MolFromSmiles(original['replacement_elite_smiles'])),
+        previous, original['docking_mcs_smarts'], selected_cuts=cuts,
+    )
+    selection.update(replacement_from_iteration=iteration - 1, docking_mcs_smarts=original['docking_mcs_smarts'])
+    return original, selection
+
+
+def refill_plan(args, iteration, directory, previous, *, change_attachments=False):
+    """Add a saved round without changing earlier pools or scientific results."""
+    selection = None
+    if change_attachments:
+        original, selection = _next_attachment_selection(args, iteration)
+    if not change_attachments and all(len(pool) == previous['eligible_sidechains'] for pool in previous['pools']):
+        count = database.iteration_compound_count(args.db_path, iteration)
+        raise RuntimeError(f'Iteration {iteration}: combichem combinations exhausted at '
+                           f'{count}/{args.target_count} compounds; all eligible sidechains '
+                           'already covered; generation remains incomplete.')
+    round_id = previous.get('round', 0) + 1
+    folder = directory / f'round-{round_id:06d}'
+    folder.mkdir(parents=True, exist_ok=True)
+    library_path = Path(previous['library_path'])
+    library, fingerprint, rejected = load_library(library_path, folder / 'sidechain_rejected.tsv')
+    if fingerprint != previous['library_sha256']:
+        raise RuntimeError('Combichem refill library changed; saved pools/cursor and compounds preserved')
+    scaffold = selection['scaffold_smiles'] if selection else previous['scaffold_smiles']
+    plan = _draw_plan(scaffold, library, fingerprint, rejected,
+                      library_path, previous['batch_size'])
+    for key in ('base_scaffold_smiles', 'attachment_selection', 'attachment_revision'):
+        if key in previous:
+            plan[key] = previous[key]
+    if selection:
+        plan.update(base_scaffold_smiles=original['scaffold_smiles'], attachment_selection=selection,
+                    attachment_revision=previous.get('attachment_revision', 0) + 1)
+    return database.advance_combichem_plan(args.db_path, iteration, previous, plan, args.target_count,
+                                           change_attachments=change_attachments)
 
 
 def combination_at(plan, position):

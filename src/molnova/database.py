@@ -525,6 +525,129 @@ def combichem_plan(path, iteration, plan=None):
     return dict(json.loads(row[0]), next_index=int(row[1])) if row else None
 
 
+def _combichem_empty_batches(conn, iteration, revision):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='combichem_batch'").fetchone():
+        return 0
+    count = 0
+    for (inserted,) in conn.execute(
+        'SELECT inserted FROM combichem_batch WHERE iteration=? AND revision=? ORDER BY id DESC LIMIT 10',
+        (iteration, revision),
+    ):
+        if inserted:
+            break
+        count += 1
+    return count
+
+
+def combichem_empty_batches(path, iteration, revision=0):
+    with connect(path) as conn:
+        return _combichem_empty_batches(conn, iteration, revision)
+
+
+def combichem_plans(path, iteration):
+    """Read all tried round plans without changing their scientific provenance."""
+    import json
+    with connect(path) as conn:
+        plans = []
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_combichem_history'").fetchone():
+            plans.extend(json.loads(row[0]) for row in conn.execute(
+                'SELECT plan FROM iteration_combichem_history WHERE iteration=? ORDER BY round', (iteration,)))
+        plans.extend(json.loads(row[0]) for row in conn.execute(
+            'SELECT plan FROM iteration_combichem WHERE iteration=?', (iteration,)))
+    return plans
+
+
+def combichem_compound_scaffold(path, compound_id):
+    """Recover an elite's actual generation scaffold, including changed attachments."""
+    import json
+    with connect(path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='combichem_compound_origin'").fetchone():
+            return None
+        origin = conn.execute('SELECT iteration,round FROM combichem_compound_origin WHERE compound_id=?',
+                              (compound_id,)).fetchone()
+        if origin is None:
+            return None  # Legacy compounds used the immutable iteration snapshot.
+        row = conn.execute('SELECT plan FROM iteration_combichem WHERE iteration=?', (origin[0],)).fetchone()
+        plan = json.loads(row[0]) if row else None
+        if plan is None or plan.get('round', 0) != origin[1]:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_combichem_history'").fetchone():
+                row = conn.execute('SELECT plan FROM iteration_combichem_history WHERE iteration=? AND round=?',
+                                   origin).fetchone()
+                plan = json.loads(row[0]) if row else None
+            else:
+                plan = None
+        if plan is None:
+            raise RuntimeError('Combichem compound origin has no saved round; restore its provenance')
+    return plan.get('attachment_selection')
+
+
+def advance_combichem_plan(path, iteration, previous, plan, target_count, *, change_attachments=False):
+    """Archive a completed/stalled round and atomically install the next plan."""
+    import json
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT plan,next_index FROM iteration_combichem WHERE iteration=?',
+                           (iteration,)).fetchone()
+        if row is None:
+            raise RuntimeError('Combichem refill has no saved plan')
+        current = dict(json.loads(row[0]), next_index=int(row[1]))
+        if current != previous:
+            return current  # Another claimant already advanced this round.
+        if not change_attachments and current['next_index'] != int(current['total_combinations']):
+            raise RuntimeError('Cannot refill an unfinished combichem round')
+        count = conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
+        if count >= target_count:
+            return current
+        pinned = ('library_path', 'library_sha256', 'attachment_labels',
+                  'selection_weight', 'batch_size')
+        if any(plan[key] != current[key] for key in pinned):
+            raise RuntimeError('Combichem refill differs from saved scaffold/library/parameters')
+        revision = current.get('attachment_revision', 0)
+        if change_attachments:
+            if _combichem_empty_batches(conn, iteration, revision) < 10:
+                raise RuntimeError('Attachment change requires 10 consecutive empty batches')
+            original = conn.execute('SELECT snapshot FROM iteration_scaffold WHERE iteration=?', (iteration,)).fetchone()
+            original = json.loads(original[0]) if original else {}
+            selection = plan.get('attachment_selection', {})
+            if (original.get('source') != 'single_elite_sidechain_replacement'
+                    or plan.get('attachment_revision') != revision + 1
+                    or plan.get('base_scaffold_smiles') != original.get('scaffold_smiles')
+                    or selection.get('source') != original.get('source')
+                    or selection.get('source_ids') != original.get('source_ids')
+                    or selection.get('replacement_elite_smiles') != original.get('replacement_elite_smiles')
+                    or selection.get('replacement_from_iteration') != original.get('replacement_from_iteration')
+                    or selection.get('replacement_candidates') != original.get('replacement_candidates')
+                    or selection.get('scaffold_smiles') != plan['scaffold_smiles']):
+                raise RuntimeError('Invalid combichem attachment-change provenance')
+            groups = original['replacement_candidates']
+            if (len(selection['replacement_cuts']) != len(groups)
+                    or any(cut not in group for cut, group in zip(selection['replacement_cuts'], groups))):
+                raise RuntimeError('Invalid combichem attachment cuts')
+            signature = [cut['bond_index'] for cut in selection['replacement_cuts']]
+            tried = [original]
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_combichem_history'").fetchone():
+                tried.extend(json.loads(row[0]).get('attachment_selection', original) for row in conn.execute(
+                    'SELECT plan FROM iteration_combichem_history WHERE iteration=?', (iteration,)))
+            tried.append(current.get('attachment_selection', original))
+            if any([cut['bond_index'] for cut in prior['replacement_cuts']] == signature for prior in tried):
+                raise RuntimeError('Combichem attachment combination was already tried')
+        elif (plan['scaffold_smiles'] != current['scaffold_smiles']
+              or plan.get('attachment_revision', 0) != revision
+              or plan.get('attachment_selection') != current.get('attachment_selection')):
+            raise RuntimeError('Combichem refill differs from saved scaffold/library/parameters')
+        round_id = current.get('round', 0)
+        following = dict(plan, round=round_id + 1)
+        following.pop('next_index', None)
+        conn.execute('CREATE TABLE IF NOT EXISTS iteration_combichem_history ('
+                     'iteration INTEGER NOT NULL, round INTEGER NOT NULL, plan TEXT NOT NULL, '
+                     'next_index TEXT NOT NULL, PRIMARY KEY(iteration,round))')
+        conn.execute('INSERT INTO iteration_combichem_history(iteration,round,plan,next_index) VALUES (?,?,?,?)',
+                     (iteration, round_id, row[0], row[1]))
+        conn.execute('UPDATE iteration_combichem SET plan=?,next_index=? WHERE iteration=?',
+                     (json.dumps(following, sort_keys=True), '0', iteration))
+    return dict(following, next_index=0)
+
+
 def iteration_compound_count(path, iteration):
     with connect(path) as conn:
         return conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
@@ -603,13 +726,17 @@ def insert_generated_candidates(path, iteration, target_count, candidates, *, co
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         if combichem_progress is not None:
-            start, end = combichem_progress
+            start, end, *round_ids = combichem_progress
             row = conn.execute('SELECT next_index,plan FROM iteration_combichem WHERE iteration=?',
                                (iteration,)).fetchone()
             if row is None:
                 raise RuntimeError('Combichem batch has no saved plan')
             import json
-            total = int(json.loads(row[1])['total_combinations'])
+            plan = json.loads(row[1])
+            round_id = round_ids[0] if len(round_ids) == 1 else 0
+            if len(round_ids) > 1 or round_id != plan.get('round', 0):
+                raise RuntimeError('Stale or invalid combichem batch round')
+            total = int(plan['total_combinations'])
             if not 0 <= start < end <= total:
                 raise RuntimeError('Invalid combichem batch bounds')
             current = int(row[0])
@@ -619,6 +746,16 @@ def insert_generated_candidates(path, iteration, target_count, candidates, *, co
                 raise RuntimeError('Stale or invalid combichem batch cursor')
         existing = {_core.canonicalize_smiles(row[0]) for row in conn.execute('SELECT smiles FROM compound')}
         names = {row[0] for row in conn.execute('SELECT name FROM compound')}
+        if combichem_progress is not None:
+            conn.execute('CREATE TABLE IF NOT EXISTS combichem_batch ('
+                         'id INTEGER PRIMARY KEY AUTOINCREMENT, iteration INTEGER NOT NULL, '
+                         'round INTEGER NOT NULL, start_index TEXT NOT NULL, end_index TEXT NOT NULL, '
+                         'revision INTEGER NOT NULL, inserted INTEGER NOT NULL, UNIQUE(iteration,round,start_index))')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_combichem_batch_revision '
+                         'ON combichem_batch(iteration,revision,id)')
+            conn.execute('CREATE TABLE IF NOT EXISTS combichem_compound_origin ('
+                         'compound_id INTEGER PRIMARY KEY REFERENCES compound(id) ON DELETE CASCADE, '
+                         'iteration INTEGER NOT NULL, round INTEGER NOT NULL)')
         count = conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
         remaining = max(0, target_count - count)
         inserted = sequence = 0
@@ -638,17 +775,23 @@ def insert_generated_candidates(path, iteration, target_count, candidates, *, co
             if not all(math.isfinite(value) for value in values):
                 raise ValueError('Nonfinite RDKit property in generated candidate')
             marks = ','.join('?' for _ in range(len(columns) + 5))
-            conn.execute(
+            cursor = conn.execute(
                 f'INSERT INTO compound(name,smiles,iteration,state,sa_score,{",".join(columns)}) '
                 f'VALUES ({marks})',
                 [name, smiles, iteration, State.GENERATED, row['rdk_sa_score'], *values],
             )
+            if combichem_progress is not None:
+                conn.execute('INSERT INTO combichem_compound_origin(compound_id,iteration,round) VALUES (?,?,?)',
+                             (cursor.lastrowid, iteration, round_id))
             existing.add(smiles)
             names.add(name)
             inserted += 1
         if combichem_progress is not None:
             conn.execute('UPDATE iteration_combichem SET next_index=? WHERE iteration=?',
                          (str(end), iteration))
+            conn.execute('INSERT INTO combichem_batch(iteration,round,start_index,end_index,revision,inserted) '
+                         'VALUES (?,?,?,?,?,?)',
+                         (iteration, round_id, str(start), str(end), plan.get('attachment_revision', 0), inserted))
         return inserted
 
 

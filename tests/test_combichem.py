@@ -1,4 +1,5 @@
 import csv
+import json
 import itertools
 import math
 from pathlib import Path
@@ -145,6 +146,174 @@ def project(tmp_path, monkeypatch):
     return args
 
 
+@pytest.fixture
+def adaptive_project(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.elite_mcs_smarts = None
+    project.gbsa_elite_count = 1
+    project.sample_size = 1
+    project.target_count = 100
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[-1])
+    prepare_iteration_scaffold(project, 2, [(100, 'elite', 'CCCc1ccc(CCC)cc1', 1, -10, -40)], create=True)
+    combichem.prepare_plan(project, 2, project.output / 'iter2/combichem')
+    return project
+
+
+def test_empty_batch_streak_is_atomic_persistent_and_resets_on_insert(project):
+    database.combichem_plan(project.db_path, 1, dict(total_combinations='100'))
+    for i in range(9):
+        database.insert_generated_candidates(project.db_path, 1, 100, [], combichem_progress=(i, i + 1, 0))
+    assert database.combichem_empty_batches(project.db_path, 1) == 9
+    # Replayed commits and failed calculations must not count twice.
+    database.insert_generated_candidates(project.db_path, 1, 100, [], combichem_progress=(8, 9, 0))
+    bad = dict(calculate_rdkit_descriptors('CCO'), smiles='CCO', druglike_selected=True, rdk_qed=float('nan'))
+    with pytest.raises(ValueError):
+        database.insert_generated_candidates(project.db_path, 1, 100, [bad], combichem_progress=(9, 10, 0))
+    assert database.combichem_empty_batches(project.db_path, 1) == 9
+    good = dict(calculate_rdkit_descriptors('CCO'), smiles='CCO', druglike_selected=True)
+    database.insert_generated_candidates(project.db_path, 1, 100, [good], combichem_progress=(9, 10, 0))
+    assert database.combichem_empty_batches(project.db_path, 1) == 0
+    for i in range(10, 20):
+        database.insert_generated_candidates(project.db_path, 1, 100, [], combichem_progress=(i, i + 1, 0))
+    assert database.combichem_empty_batches(project.db_path, 1) == 10
+    assert database.combichem_empty_batches(project.db_path, 1, 1) == 0
+
+
+def test_empty_streak_continues_across_pool_refills(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(row) for row in library[:2]])
+    directory = project.output / 'iter1/combichem'
+    plan = combichem.prepare_plan(project, 1, directory)
+    for round_id in range(2):
+        for i in range(4):
+            database.insert_generated_candidates(project.db_path, 1, 100, [], combichem_progress=(i, i + 1, round_id))
+        plan = database.combichem_plan(project.db_path, 1)
+        combichem.refill_plan(project, 1, directory, plan)
+    assert database.combichem_empty_batches(project.db_path, 1) == 8
+    for i in range(2):
+        database.insert_generated_candidates(project.db_path, 1, 100, [], combichem_progress=(i, i + 1, 2))
+    assert database.combichem_empty_batches(project.db_path, 1) == 10
+
+
+def test_supplied_core_does_not_switch_attachments_after_empty_batches(project, monkeypatch):
+    project.sample_size = 1
+    project.target_count = 100
+    monkeypatch.setattr(generate, 'filter_druglike', lambda rows: [
+        dict(row, druglike_selected=False, druglike_reject_reason='qed_rank') for row in rows])
+    monkeypatch.setattr(combichem, '_next_attachment_selection', lambda *a: pytest.fail('changed supplied core'))
+    with pytest.raises(RuntimeError, match='combinations exhausted'):
+        generate._run_stage(project, 1)
+    assert database.combichem_empty_batches(project.db_path, 1) == 10
+    assert database.iteration_scaffold(project.db_path, 1)['source'] == 'user_elite_mcs'
+
+
+def test_attachment_switch_requires_ten_batches_and_archives_partial_round(adaptive_project):
+    args = adaptive_project
+    original = database.iteration_scaffold(args.db_path, 2)
+    for i in range(9):
+        database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(i, i + 1, 0))
+    before = database.combichem_plan(args.db_path, 2)
+    with pytest.raises(RuntimeError, match='10 consecutive'):
+        combichem.refill_plan(args, 2, args.output / 'iter2/combichem', before, change_attachments=True)
+    assert database.combichem_plan(args.db_path, 2) == before
+    database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(9, 10, 0))
+    before = database.combichem_plan(args.db_path, 2)
+    switched = combichem.refill_plan(args, 2, args.output / 'iter2/combichem', before, change_attachments=True)
+    assert switched['round'] == switched['attachment_revision'] == 1
+    assert switched['next_index'] == 0
+    assert switched['attachment_selection']['replacement_cuts'] != original['replacement_cuts']
+    assert database.combichem_empty_batches(args.db_path, 2, 1) == 0
+    assert database.iteration_scaffold(args.db_path, 2) == original
+    with database.connect(args.db_path) as conn:
+        archived, cursor = conn.execute('SELECT plan,next_index FROM iteration_combichem_history WHERE iteration=2 AND round=0').fetchone()
+    assert dict(json.loads(archived), next_index=int(cursor)) == before
+    assert int(cursor) == 10 < int(before['total_combinations'])
+    with pytest.raises(RuntimeError, match='batch round'):
+        database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(10, 11, 0))
+    args.sidechain_library.unlink()
+    assert combichem.prepare_plan(args, 2, args.output / 'iter2/combichem') == switched
+
+
+def test_concurrent_attachment_switches_install_only_one_round(adaptive_project):
+    args = adaptive_project
+    for i in range(10):
+        database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(i, i + 1, 0))
+    previous = database.combichem_plan(args.db_path, 2)
+    def switch(_):
+        return combichem.refill_plan(args, 2, args.output / 'iter2/combichem', previous, change_attachments=True)
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(switch, range(2)))
+    assert results[0] == results[1] and results[0]['round'] == 1
+    with database.connect(args.db_path) as conn:
+        assert conn.execute('SELECT count(*) FROM iteration_combichem_history WHERE iteration=2').fetchone()[0] == 1
+
+
+def test_generation_switches_after_tenth_empty_batch_and_restores_compound_origin(adaptive_project, monkeypatch):
+    args = adaptive_project
+    with database.connect(args.db_path) as conn:
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,gbsa_score) VALUES ('preserved','CCO',2,'gbsa_done',-40)")
+    original_filter = generate.filter_druglike
+    calls = []
+    def reject(rows):
+        calls.append(len(rows))
+        return [dict(row, druglike_selected=False, druglike_reject_reason='qed_rank') for row in rows]
+    monkeypatch.setattr(generate, 'filter_druglike', reject)
+    original_refill = combichem.refill_plan
+    def interrupt_after_switch(*a, **kw):
+        result = original_refill(*a, **kw)
+        assert kw.get('change_attachments') and result['attachment_revision'] == 1
+        raise RuntimeError('attachment switch committed')
+    monkeypatch.setattr(combichem, 'refill_plan', interrupt_after_switch)
+    with pytest.raises(RuntimeError, match='attachment switch committed'):
+        generate._run_combichem(args, 2, args.output / 'iter2/combichem')
+    assert len(calls) == 10
+    active = database.combichem_plan(args.db_path, 2)
+    args.target_count = 2
+    args.sidechain_library.unlink()
+    monkeypatch.setattr(generate, 'filter_druglike', original_filter)
+    monkeypatch.setattr(combichem, 'refill_plan', original_refill)
+    generate._run_combichem(args, 2, args.output / 'iter2/combichem')
+    with database.connect(args.db_path) as conn:
+        assert conn.execute("SELECT state,gbsa_score FROM compound WHERE name='preserved'").fetchone() == ('gbsa_done', -40)
+        cid, name, smiles = conn.execute("SELECT id,name,smiles FROM compound WHERE iteration=2 AND name<>'preserved'").fetchone()
+    assert database.combichem_compound_scaffold(args.db_path, cid) == active['attachment_selection']
+    # The origin survives archiving its producing round and is used for N+1.
+    current = database.combichem_plan(args.db_path, 2)
+    database.insert_generated_candidates(args.db_path, 2, 100, [],
+        combichem_progress=(current['next_index'], int(current['total_combinations']), current['round']))
+    current = database.combichem_plan(args.db_path, 2)
+    database.advance_combichem_plan(args.db_path, 2, current, current, 100)
+    assert database.combichem_compound_scaffold(args.db_path, cid) == active['attachment_selection']
+    helper = combichem.prepare_single_elite_scaffold
+    seen = []
+    def capture(elite, previous, *a, **kw):
+        seen.append(previous)
+        return helper(elite, previous, *a, **kw)
+    monkeypatch.setattr(combichem, 'prepare_single_elite_scaffold', capture)
+    prepare_iteration_scaffold(args, 3, [(cid, name, smiles, 2, -10, -40)], create=True)
+    assert seen == [active['attachment_selection']]
+
+
+def test_untried_attachment_combinations_are_not_repeated_and_exhaustion_stops(adaptive_project):
+    args = adaptive_project
+    snapshot = database.iteration_scaffold(args.db_path, 2)
+    tried = {tuple(cut['bond_index'] for cut in snapshot['replacement_cuts'])}
+    total = math.prod(len(group) for group in snapshot['replacement_candidates'])
+    for _ in range(total - 1):
+        current = database.combichem_plan(args.db_path, 2)
+        for i in range(10):
+            database.insert_generated_candidates(args.db_path, 2, 100, [],
+                combichem_progress=(i, i + 1, current.get('round', 0)))
+        current = database.combichem_plan(args.db_path, 2)
+        new = combichem.refill_plan(args, 2, args.output / 'iter2/combichem', current, change_attachments=True)
+        signature = tuple(cut['bond_index'] for cut in new['attachment_selection']['replacement_cuts'])
+        assert signature not in tried
+        tried.add(signature)
+    assert len(tried) == total
+    with pytest.raises(RuntimeError, match='All single-elite attachment combinations'):
+        combichem._next_attachment_selection(args, 2)
+
+
 def test_combichem_generation_uses_existing_filters_target_and_scaffold(project, monkeypatch):
     monkeypatch.setattr(combichem.secrets, 'randbits', lambda _: 123)
     generate._run_stage(project, 1)
@@ -226,7 +395,7 @@ def test_restart_after_result_commit_uses_next_batch(project, monkeypatch):
     monkeypatch.setattr(generate, 'insert_druglike_batch', crash_after_commit)
     with pytest.raises(RuntimeError, match='simulated crash'):
         generate._run_stage(project, 1)
-    assert calls == [(0, 4)]
+    assert calls == [(0, 4, 0)]
     before = database.combichem_plan(project.db_path, 1)
     assert before['next_index'] == 4
     monkeypatch.setattr(generate, 'insert_druglike_batch', original)
@@ -304,6 +473,160 @@ def test_concurrent_batch_commit_does_not_duplicate_products_or_advance_twice(pr
         database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 8))
 
 
+def test_refill_resumes_after_install_crash_and_preserves_existing_compounds(project, monkeypatch):
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    original_insert = generate.insert_druglike_batch
+    def stop_after_first_commit(*args, **kwargs):
+        original_insert(*args, **kwargs)
+        raise RuntimeError('first round committed')
+    monkeypatch.setattr(generate, 'insert_druglike_batch', stop_after_first_commit)
+    with pytest.raises(RuntimeError, match='first round committed'):
+        generate._run_stage(project, 1)
+    previous = database.combichem_plan(project.db_path, 1)
+    assert previous['next_index'] == int(previous['total_combinations']) == 1
+    assert database.iteration_compound_count(project.db_path, 1) == 1
+    snapshot = database.iteration_scaffold(project.db_path, 1)
+    with database.connect(project.db_path) as conn:
+        original_compound = conn.execute('SELECT id,name,smiles,rdk_sa_score FROM compound WHERE iteration=1').fetchone()
+    original_refill = combichem.refill_plan
+    def stop_after_refill(*args, **kwargs):
+        original_refill(*args, **kwargs)
+        raise RuntimeError('new pool committed')
+    monkeypatch.setattr(generate, 'insert_druglike_batch', original_insert)
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(row) for row in library])
+    monkeypatch.setattr(combichem, 'refill_plan', stop_after_refill)
+    with pytest.raises(RuntimeError, match='new pool committed'):
+        generate._run_stage(project, 1)
+    active = database.combichem_plan(project.db_path, 1)
+    assert active['round'] == 1 and active['next_index'] == 0
+    assert database.iteration_compound_count(project.db_path, 1) == 1
+    with database.connect(project.db_path) as conn:
+        archived, cursor = conn.execute('SELECT plan,next_index FROM iteration_combichem_history '
+                                        'WHERE iteration=1 AND round=0').fetchone()
+    assert dict(json.loads(archived), next_index=int(cursor)) == previous
+    # A restart after pool commit needs neither the library nor a new seed.
+    project.sidechain_library.unlink()
+    monkeypatch.setattr(combichem, 'refill_plan', original_refill)
+    monkeypatch.setattr(combichem, 'load_library', lambda *a: pytest.fail('reread committed refill library'))
+    monkeypatch.setattr(combichem.secrets, 'randbits', lambda *a: pytest.fail('reseeded committed refill'))
+    generate._run_stage(project, 1)
+    final = database.combichem_plan(project.db_path, 1)
+    assert final['round'] == 1 and final['seed'] == active['seed'] and final['pools'] == active['pools']
+    assert database.iteration_compound_count(project.db_path, 1) == 4
+    assert database.iteration_scaffold(project.db_path, 1) == snapshot
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT id,name,smiles,rdk_sa_score FROM compound WHERE id=?',
+                            (original_compound[0],)).fetchone() == original_compound
+        assert conn.execute('SELECT MAX(rdk_ro5_violations) FROM compound WHERE iteration=1').fetchone()[0] <= 1
+    root = project.output / 'iter1/combichem'
+    assert (root / 'generated-0-1.csv').exists()
+    assert list((root / 'round-000001').glob('generated-*.csv'))
+
+
+def test_legacy_refill_is_atomic_and_old_round_batches_cannot_replay(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    directory = project.output / 'iter1/combichem'
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    saved = combichem.prepare_plan(project, 1, directory)
+    # Represent an installed legacy plan with no round metadata.
+    legacy = {key: value for key, value in saved.items() if key not in ('round', 'next_index')}
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE iteration_combichem SET plan=? WHERE iteration=1', (json.dumps(legacy),))
+    database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1))
+    previous = database.combichem_plan(project.db_path, 1)
+    following = dict(legacy, seed='different')
+    def refill(_):
+        return database.advance_combichem_plan(project.db_path, 1, previous, following, 4)
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(refill, range(2)))
+    assert results[0] == results[1]
+    assert results[0]['round'] == 1 and results[0]['next_index'] == 0
+    with database.connect(project.db_path) as conn:
+        rows = conn.execute('SELECT round,plan,next_index FROM iteration_combichem_history WHERE iteration=1').fetchall()
+    assert len(rows) == 1 and rows[0][0] == 0
+    assert json.loads(rows[0][1]) == legacy and rows[0][2] == '1'
+    for progress in ((0, 1), (0, 1, 0)):
+        with pytest.raises(RuntimeError, match='batch round'):
+            database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=progress)
+    database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1, 1))
+    assert database.combichem_plan(project.db_path, 1)['next_index'] == 1
+    assert database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1, 1)) == 0
+
+
+@pytest.mark.parametrize('change', ['modified', 'missing'])
+def test_refill_library_failure_preserves_exhausted_plan_and_results(project, monkeypatch, change):
+    prepare_iteration_scaffold(project, 1, create=True)
+    directory = project.output / 'iter1/combichem'
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    combichem.prepare_plan(project, 1, directory)
+    candidate = dict(calculate_rdkit_descriptors('CCO'), smiles='CCO', druglike_selected=True)
+    database.insert_generated_candidates(project.db_path, 1, 4, [candidate], combichem_progress=(0, 1, 0))
+    previous = database.combichem_plan(project.db_path, 1)
+    if change == 'modified':
+        project.sidechain_library.write_text('*CCC\n')
+    else:
+        project.sidechain_library.unlink()
+    with pytest.raises((RuntimeError, FileNotFoundError)):
+        combichem.refill_plan(project, 1, directory, previous)
+    assert database.combichem_plan(project.db_path, 1) == previous
+    assert database.iteration_compound_count(project.db_path, 1) == 1
+
+
+def test_refill_requires_exhaustion_and_keeps_saved_parameters(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    directory = project.output / 'iter1/combichem'
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    previous = combichem.prepare_plan(project, 1, directory)
+    following = {key: value for key, value in previous.items() if key != 'next_index'}
+    with pytest.raises(RuntimeError, match='unfinished'):
+        database.advance_combichem_plan(project.db_path, 1, previous, following, 4)
+    database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1, 0))
+    previous = database.combichem_plan(project.db_path, 1)
+    with pytest.raises(RuntimeError, match='differs'):
+        database.advance_combichem_plan(project.db_path, 1, previous, dict(following, batch_size=999), 4)
+    project.sample_size = 999
+    project.sidechain_library = project.output / 'different-library.smi'
+    following = combichem.refill_plan(project, 1, directory, previous)
+    assert following['round'] == 1
+    assert following['batch_size'] == previous['batch_size']
+    assert following['library_path'] == previous['library_path']
+
+
+def test_refill_rolls_back_archive_if_new_plan_cannot_commit(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    directory = project.output / 'iter1/combichem'
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    combichem.prepare_plan(project, 1, directory)
+    database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1, 0))
+    previous = database.combichem_plan(project.db_path, 1)
+    with database.connect(project.db_path) as conn:
+        conn.execute("CREATE TRIGGER fail_refill BEFORE UPDATE OF plan ON iteration_combichem "
+                     "BEGIN SELECT RAISE(ABORT, 'simulated refill failure'); END")
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError, match='simulated refill failure'):
+        combichem.refill_plan(project, 1, directory, previous)
+    assert database.combichem_plan(project.db_path, 1) == previous
+    with database.connect(project.db_path) as conn:
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_combichem_history'").fetchone()
+        if exists:
+            assert conn.execute('SELECT count(*) FROM iteration_combichem_history').fetchone()[0] == 0
+        conn.execute('DROP TRIGGER fail_refill')
+    assert combichem.refill_plan(project, 1, directory, previous)['round'] == 1
+
+
+def test_refill_cannot_install_new_round_after_target_is_met(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    directory = project.output / 'iter1/combichem'
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    combichem.prepare_plan(project, 1, directory)
+    candidate = dict(calculate_rdkit_descriptors('CCO'), smiles='CCO', druglike_selected=True)
+    database.insert_generated_candidates(project.db_path, 1, 1, [candidate], combichem_progress=(0, 1, 0))
+    previous = database.combichem_plan(project.db_path, 1)
+    following = {key: value for key, value in previous.items() if key != 'next_index'}
+    assert database.advance_combichem_plan(project.db_path, 1, previous, following, 1) == previous
+    assert database.combichem_plan(project.db_path, 1) == previous
+
+
 def test_new_iteration_uses_only_immediately_preceding_elites_without_tl(project, monkeypatch):
     generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
@@ -332,76 +655,123 @@ def test_zero_attachment_combichem_core_reuses_previous_scaffold(project):
 
 @pytest.mark.parametrize('smiles', ['CCc1ccc(CC)cc1', 'C[C@H](F)c1ccc(CC)cc1',
                                     'c1ccc(-c2ccc(CC)cc2)cc1'])
-def test_single_elite_expands_only_sidechain_ch_and_preserves_skeleton(smiles, monkeypatch):
+def test_single_elite_replaces_distal_sidechain_parts_and_preserves_core(smiles, monkeypatch):
     previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1')
-    elite = dict(id=100, mol=Chem.MolFromSmiles(smiles))
-    inspected = []
-    def choose(candidates):
-        inspected.extend(candidates)
-        return candidates[0]
-    monkeypatch.setattr(combichem.secrets, 'choice', choose)
-    info = combichem.prepare_single_elite_scaffold(elite, previous, 'c1ccccc1')
-    original = Chem.MolFromSmiles(info['expansion_elite_smiles'])
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[0])
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=Chem.MolFromSmiles(smiles)),
+                                               previous, 'c1ccccc1')
+    original = Chem.MolFromSmiles(info['replacement_elite_smiles'])
     query = Chem.MolFromSmarts(previous['scaffold_smiles'])
     match = original.GetSubstructMatch(query)
     old_core = {index for atom, index in zip(query.GetAtoms(), match) if atom.GetAtomicNum() != 0}
-    assert inspected
-    assert all(index not in old_core and original.GetAtomWithIdx(index).GetAtomicNum() == 6
-               and original.GetAtomWithIdx(index).GetTotalNumHs() > 0 for index in inspected)
-    groups = info['expansion_candidate_indices']
-    assert set(groups[0]).isdisjoint(groups[1])
-    for atom in query.GetAtoms():
-        if atom.GetAtomicNum() == 0:
-            label = atom.GetAtomMapNum()
-            root = match[atom.GetIdx()]
-            selected = info['expansion_atom_indices'][label]
-            assert selected in groups[label]
-            if root != selected:
-                assert not (set(Chem.GetShortestPath(original, root, selected)) & old_core)
+    groups = info['replacement_candidates']
+    removed = set()
+    for label, cut in enumerate(info['replacement_cuts']):
+        assert cut in groups[label]
+        bond = original.GetBondWithIdx(cut['bond_index'])
+        assert bond.GetBondType() == Chem.BondType.SINGLE and not bond.IsInRing()
+        assert {bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()} == {cut['retained_atom_index'], cut['distal_atom_index']}
+        deleted = set(cut['removed_atom_indices'])
+        assert deleted and not (deleted & old_core) and not (deleted & removed)
+        assert cut['distal_atom_index'] in deleted and cut['retained_atom_index'] not in deleted
+        removed.update(deleted)
     scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert all(atom.GetAtomicNum() != 0 for atom in Chem.MolFromSmarts(info['mcs_smarts']).GetAtoms())
     assert len(combichem.attachment_atoms(scaffold)) == 2
     assert '[*:0]' in info['scaffold_smiles'] and '[*:1]' in info['scaffold_smiles']
-    assert scaffold.GetNumHeavyAtoms() == original.GetNumHeavyAtoms()
-    # Replacing the new dummy by H reconstructs the exact original stereoisomer.
-    restored = Chem.Mol(scaffold)
-    for index in combichem.attachment_atoms(restored):
-        dummy = restored.GetAtomWithIdx(index)
-        dummy.SetAtomicNum(1)
-        dummy.SetAtomMapNum(0)
-    assert Chem.MolToSmiles(Chem.RemoveHs(restored), isomericSmiles=True) == info['expansion_elite_smiles']
+    assert scaffold.GetNumHeavyAtoms() == original.GetNumHeavyAtoms() - len(removed)
+    assert scaffold.HasSubstructMatch(Chem.MolFromSmarts(previous['mcs_smarts']))
     product = combichem.assemble(scaffold, [Chem.MolFromSmiles('*C')] * 2)
     assert product is not None
-    assert Chem.MolFromSmiles(product).GetNumHeavyAtoms() == original.GetNumHeavyAtoms() + 2
+    assert Chem.MolFromSmiles(product).GetNumHeavyAtoms() == scaffold.GetNumHeavyAtoms() + 2
 
 
-@pytest.mark.parametrize('smiles, aromatic', [('C[C@H](F)c1ccc(CC)cc1', False),
-                                           ('c1ccc(-c2ccc(CC)cc2)cc1', True)])
-def test_single_elite_chiral_and_aromatic_expansion_sites(smiles, aromatic, monkeypatch):
-    original = Chem.MolFromSmiles(Chem.MolToSmiles(Chem.MolFromSmiles(smiles)))
+def test_single_elite_replacement_can_replace_whole_sidechains(monkeypatch):
+    original = Chem.MolFromSmiles('CCCCc1ccc(CCCCC)cc1')
     def choose(candidates):
-        return next((index for index in candidates
-                    if (original.GetAtomWithIdx(index).GetIsAromatic() if aromatic else
-                        original.GetAtomWithIdx(index).GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED)), candidates[0])
+        return max(candidates, key=lambda cut: len(cut['removed_atom_indices']))
     monkeypatch.setattr(combichem.secrets, 'choice', choose)
-    previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1')
-    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original), previous, 'c1ccccc1')
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original),
+        dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1'), 'c1ccccc1')
     scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
-    # Attaching hydrogen reconstructs the input, including the selected stereocenter.
-    restored = Chem.Mol(scaffold)
-    for index in combichem.attachment_atoms(restored):
-        dummy = restored.GetAtomWithIdx(index)
-        dummy.SetAtomicNum(1)
-        dummy.SetAtomMapNum(0)
-    assert Chem.MolToSmiles(Chem.RemoveHs(restored), isomericSmiles=True) == info['expansion_elite_smiles']
-    assert combichem.assemble(scaffold, [Chem.MolFromSmiles('*C')] * 2) is not None
+    assert scaffold.GetNumHeavyAtoms() == 6
+    assert combichem.assemble(scaffold, [Chem.MolFromSmiles('*C')] * 2) == 'Cc1ccc(C)cc1'
+
+
+@pytest.mark.parametrize('removed_count, replacement', [(1, '*C'), (2, '*CC')])
+def test_single_elite_replacement_preserves_retained_stereocenter_and_charge(monkeypatch, removed_count, replacement):
+    original = Chem.MolFromSmiles('CC[C@H]([NH3+])c1ccc([13CH3])cc1')
+    def choose(candidates):
+        return next(cut for cut in candidates
+                    if len(cut['removed_atom_indices']) == removed_count
+                    and original.GetAtomWithIdx(cut['distal_atom_index']).GetAtomicNum() == 6)
+    # Helper indexes are based on canonical SMILES.
+    original = Chem.MolFromSmiles(Chem.MolToSmiles(original))
+    monkeypatch.setattr(combichem.secrets, 'choice', choose)
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original),
+        dict(mcs_smarts='c1ccc([13CH3])cc1', scaffold_smiles='[*:0]c1ccc([13CH3])cc1'), 'c1ccccc1')
+    scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert Chem.GetFormalCharge(scaffold) == 1
+    assert any(atom.GetIsotope() == 13 for atom in scaffold.GetAtoms())
+    assert combichem.assemble(scaffold, [Chem.MolFromSmiles(replacement)]) == info['replacement_elite_smiles']
+
+
+def test_single_elite_replacement_preserves_retained_double_bond_stereo(monkeypatch):
+    original = Chem.MolFromSmiles('F/C=C/CCc1ccccc1')
+    original = Chem.MolFromSmiles(Chem.MolToSmiles(original))
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: next(
+        cut for cut in candidates if original.GetAtomWithIdx(cut['distal_atom_index']).GetAtomicNum() == 9))
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original),
+        dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccccc1'), 'c1ccccc1')
+    scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert combichem.assemble(scaffold, [Chem.MolFromSmiles('*F')]) == info['replacement_elite_smiles']
+
+
+def test_single_elite_replacement_preserves_stereo_with_two_cuts_at_same_atom(monkeypatch):
+    monkeypatch.setattr(combichem.secrets, 'choice',
+                        lambda candidates: max(candidates, key=lambda cut: len(cut['removed_atom_indices'])))
+    info = combichem.prepare_single_elite_scaffold(
+        dict(id=100, mol=Chem.MolFromSmiles('N[C@H](CC)CCC')),
+        dict(mcs_smarts='NC', scaffold_smiles='[*:0][C@H](N)[*:1]'), 'NC',
+    )
+    assert len({cut['retained_atom_index'] for cut in info['replacement_cuts']}) == 1
+    originals = [Chem.MolFromSmiles('*' + 'C' * len(cut['removed_atom_indices']))
+                 for cut in info['replacement_cuts']]
+    assert combichem.assemble(Chem.MolFromSmiles(info['scaffold_smiles']), originals) == info['replacement_elite_smiles']
+
+
+def test_single_elite_replacement_removes_whole_rings_without_splitting_them(monkeypatch):
+    original = Chem.MolFromSmiles('c1ccc(-c2ccccc2)cc1')
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[0])
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original),
+        dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccccc1'), 'c1ccccc1')
+    assert len(info['replacement_candidates'][0]) == 1
+    assert len(info['replacement_cuts'][0]['removed_atom_indices']) == 6
+    scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert scaffold.GetNumHeavyAtoms() == 6
+    assert combichem.assemble(scaffold, [Chem.MolFromSmiles('*Cl')]) == 'Clc1ccccc1'
 
 
 @pytest.mark.parametrize('smiles', ['Clc1ccc(F)cc1', 'Oc1ccc(N)cc1', 'FC(F)(F)c1ccc(Cl)cc1'])
-def test_single_elite_without_sidechain_ch_stops(smiles):
+def test_single_elite_replacement_needs_no_sidechain_hydrogen(smiles):
     previous = dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1')
-    with pytest.raises(RuntimeError, match='no sidechain C-H'):
-        combichem.prepare_single_elite_scaffold(dict(id=100, mol=Chem.MolFromSmiles(smiles)),
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=Chem.MolFromSmiles(smiles)),
                                                previous, 'c1ccccc1')
+    assert len(combichem.attachment_atoms(Chem.MolFromSmiles(info['scaffold_smiles']))) == 2
+
+
+def test_legacy_literal_dummy_query_uses_saved_retained_core_without_rewriting_it():
+    smiles = '[*:0]CCc1ccc(C[*:1])cc1'
+    previous = dict(source='single_elite_sidechain_replacement', scaffold_smiles=smiles,
+                    mcs_smarts=Chem.MolToSmarts(Chem.MolFromSmiles(smiles)))
+    before = dict(previous)
+    info = combichem.prepare_single_elite_scaffold(
+        dict(id=100, mol=Chem.MolFromSmiles('CCCCc1ccc(CCC)cc1')), previous, 'c1ccccc1')
+    query = Chem.MolFromSmarts(info['mcs_smarts'])
+    scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert query.GetNumAtoms() == scaffold.GetNumHeavyAtoms()
+    assert all(atom.GetAtomicNum() != 0 for atom in query.GetAtoms())
+    assert previous == before
 
 
 @pytest.mark.parametrize('scaffold, smiles, count', [
@@ -417,17 +787,24 @@ def test_single_elite_keeps_preceding_attachment_count(scaffold, smiles, count):
     mol = Chem.MolFromSmiles(info['scaffold_smiles'])
     labels = [mol.GetAtomWithIdx(index).GetAtomMapNum() for index in combichem.attachment_atoms(mol)]
     assert sorted(labels) == list(range(count))
-    assert len(info['expansion_atom_indices']) == len(set(info['expansion_atom_indices'])) == count
+    indices = [cut['bond_index'] for cut in info['replacement_cuts']]
+    assert len(indices) == len(set(indices)) == count
     assert combichem.assemble(mol, [Chem.MolFromSmiles('*C')] * count) is not None
 
 
-def test_single_elite_requires_candidate_in_every_preceding_sidechain(monkeypatch):
-    monkeypatch.setattr(combichem.secrets, 'choice', lambda _: pytest.fail('chose before validating all sidechains'))
-    with pytest.raises(RuntimeError, match='no sidechain C-H.*preceding attachment'):
+def test_single_elite_rejects_sidechain_with_only_multiple_bond_cuts():
+    mol = Chem.MolFromSmiles('O=C1CCCCC1')
+    assert combichem._terminal_cuts(mol, {0}, set(range(1, mol.GetNumAtoms()))) == []
+    with pytest.raises(RuntimeError, match='incompatible'):
         combichem.prepare_single_elite_scaffold(
-            dict(id=100, mol=Chem.MolFromSmiles('CCCc1ccc(Cl)cc1')),
-            dict(mcs_smarts='c1ccccc1', scaffold_smiles='[*:0]c1ccc([*:1])cc1'), 'c1ccccc1',
+            dict(id=100, mol=Chem.MolFromSmiles('O=C1CCCCC1')),
+            dict(mcs_smarts='C1CCCCC1', scaffold_smiles='[*:0]C1CCCCC1'), 'C1CCCCC1',
         )
+
+
+def test_terminal_cut_candidates_do_not_treat_isotopic_hydrogen_as_a_sidechain():
+    mol = Chem.MolFromSmiles('[2H]Cc1ccccc1')
+    assert combichem._terminal_cuts(mol, {0}, set(range(1, mol.GetNumAtoms()))) == []
 
 
 def test_saved_single_attachment_snapshot_is_not_rewritten(project, monkeypatch):
@@ -451,17 +828,17 @@ def test_single_elite_snapshot_survives_restart_without_reselecting(project, mon
     monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[-1])
     prepare_iteration_scaffold(project, 2, elite, create=True)
     saved = database.iteration_scaffold(project.db_path, 2)
-    assert saved['source'] == 'single_elite_sidechain_expansion'
+    assert saved['source'] == 'single_elite_sidechain_replacement'
     assert saved['source_ids'] == [100]
-    assert saved['expansion_from_iteration'] == 1
-    assert saved['expansion_atom_indices'] == [group[-1] for group in saved['expansion_candidate_indices']]
-    assert len(saved['expansion_atom_indices']) == 2
+    assert saved['replacement_from_iteration'] == 1
+    assert saved['replacement_cuts'] == [group[-1] for group in saved['replacement_candidates']]
+    assert len(saved['replacement_cuts']) == 2
     assert saved['docking_mcs_smarts'] == original['docking_mcs_smarts']
     monkeypatch.setattr(combichem.secrets, 'choice', lambda _: pytest.fail('reselected expansion site'))
     prepare_iteration_scaffold(project, 2, create=True)
     assert database.iteration_scaffold(project.db_path, 2) == saved
     assert database.iteration_scaffold(project.db_path, 1) == original
-    assert 'single elite sidechain C-H expansion from iteration 1' in capsys.readouterr().out
+    assert 'single elite terminal sidechain replacement from iteration 1' in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('previous', [None, dict(mcs_smarts='c1ccccc1',
@@ -487,7 +864,7 @@ def test_single_elite_generation_preserves_completion_gate_and_skips_tl(project,
     generate._run_stage(project, 2)
     assert started == [2]
     saved = database.iteration_scaffold(project.db_path, 2)
-    assert saved['source'] == 'single_elite_sidechain_expansion'
+    assert saved['source'] == 'single_elite_sidechain_replacement'
     assert saved['source_ids'] == [elite[0]]
 
 

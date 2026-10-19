@@ -317,8 +317,26 @@ candidate space lazily, preserving existing descriptor/druglikeness/SA filters
 and target-count. The user confirmed stopping at target-count; do not assemble
 unvisited combinations after reaching it. Persist pools, library identity, seed, ordering, batch size and
 cursor in SQLite; insertion and cursor advancement share a transaction. New
-iterations redraw pools; restart retains them. Exhaustion below target stays
-incomplete. Preserve original core policy, preceding-elite gates, fixed docking,
+iterations redraw pools; restart retains the committed active round. When a
+sampled pool is exhausted below target, append independently drawn pools and
+continue generation, preserving every compound and scientific result. Archive
+the previous immutable plan/cursor in `iteration_combichem_history` and install
+the next numbered plan atomically; progress checks include the round identity.
+Legacy plans are round 0; new rounds use separate artifact subdirectories.
+Require the pinned library path/SHA256 for refills, while an active saved round
+can resume without that file. If each pool covers the full eligible library,
+report incomplete exhaustion instead of repeatedly redrawing the same full space.
+Adaptive single-elite replacement scaffolds also retry untried attachment cut
+combinations after 10 consecutive committed batches insert zero new compounds.
+Count across pool refills/restarts; one insertion resets the streak. Keep the
+base snapshot immutable and archive partial rounds before installing the next
+variant with fresh pools. Persist batch outcomes and compound-to-round origins
+atomically with insertion/cursor advancement; use each elite's actual producing
+round scaffold for later single-elite cycles. Old records remain intact and old
+batches do not acquire inferred failure counts. Fixed/supplied cores and
+multi-elite MCS retain their policy. See SPEC section 6 for details.
+See SPEC section 6 for transaction/recovery details. Preserve original core
+policy, preceding-elite gates, fixed docking,
 downstream workers, scientific results and existing jobs. Saved unfinished
 iterations cannot change generator. See SPEC section 6 for the confirmed policy
 and implementation choices. REINVENT4 behavior below remains unchanged.

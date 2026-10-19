@@ -107,27 +107,45 @@ def _run_combichem(args, iteration, directory):
     plan = combichem.prepare_plan(args, iteration, directory)
     from molnova.chemistry.scaffold import _publish
     import json
-    _publish(directory / 'plan.json', json.dumps(plan, indent=2) + '\n')
-    print(f"Combichem: {len(plan['pools'])} attachment sites; "
-          f"{[len(pool) for pool in plan['pools']]} sidechains; "
-          f"{plan['total_combinations']} Cartesian combinations; "
-          f"library={plan['library_path']}; weight={plan['selection_weight']}.", flush=True)
-    total = int(plan['total_combinations'])
-    start = plan['next_index']
+    snapshot = database.iteration_scaffold(args.db_path, iteration)
+    adaptive_attachments = snapshot and snapshot.get('source') == 'single_elite_sidechain_replacement'
     while database.iteration_compound_count(args.db_path, iteration) < args.target_count:
-        if start >= total:
-            count = database.iteration_compound_count(args.db_path, iteration)
-            raise RuntimeError(f'Iteration {iteration}: combichem combinations exhausted at '
-                               f'{count}/{args.target_count} compounds; generation remains incomplete.')
-        stop = min(total, start + plan['batch_size'])
-        generated = combichem.write_batch(plan, start, stop, directory)
-        inserted = insert_druglike_batch(
-            generated, iteration, args.target_count, args.db_path, getattr(args, 'sa_score_cpus', 1),
-            combichem_progress=(start, stop),
-        )
-        print(f'Iteration {iteration}: combichem attempted {stop}/{total} combinations, '
-              f'inserted={inserted}.', flush=True)
-        start = stop
+        round_id = plan.get('round', 0)
+        folder = directory if round_id == 0 else directory / f'round-{round_id:06d}'
+        folder.mkdir(parents=True, exist_ok=True)
+        _publish(folder / 'plan.json', json.dumps(plan, indent=2) + '\n')
+        if plan.get('attachment_selection'):
+            selection = plan['attachment_selection']
+            _publish(folder / 'scaffold_info.json', json.dumps(selection, indent=2) + '\n')
+            print(f"[MCS] Combichem round {round_id} attachment revision {plan['attachment_revision']}: "
+                  f"{plan['scaffold_smiles']}", flush=True)
+        print(f"Combichem round {round_id}: {len(plan['pools'])} attachment sites; "
+              f"{[len(pool) for pool in plan['pools']]} sidechains; "
+              f"{plan['total_combinations']} Cartesian combinations; "
+              f"library={plan['library_path']}; weight={plan['selection_weight']}.", flush=True)
+        total = int(plan['total_combinations'])
+        start = plan['next_index']
+        while database.iteration_compound_count(args.db_path, iteration) < args.target_count:
+            if adaptive_attachments and database.combichem_empty_batches(
+                args.db_path, iteration, plan.get('attachment_revision', 0)
+            ) >= 10:
+                print(f'Iteration {iteration}: 10 consecutive batches inserted no compounds; '
+                      'trying an untried attachment combination.', flush=True)
+                plan = combichem.refill_plan(args, iteration, directory, plan, change_attachments=True)
+                break
+            if start >= total:
+                plan = combichem.refill_plan(args, iteration, directory, plan)
+                break
+            stop = min(total, start + plan['batch_size'])
+            generated = combichem.write_batch(plan, start, stop, folder)
+            inserted = insert_druglike_batch(
+                generated, iteration, args.target_count, args.db_path, getattr(args, 'sa_score_cpus', 1),
+                combichem_progress=(start, stop, round_id),
+            )
+            print(f'Iteration {iteration}: combichem round {round_id} attempted {stop}/{total} combinations, '
+                  f'inserted={inserted}.', flush=True)
+            start = stop
+            plan = dict(plan, next_index=start)
     store_iteration_descriptors(args, iteration)
     select_iteration_sa_compounds(args, iteration)
 
