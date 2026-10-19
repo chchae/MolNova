@@ -122,6 +122,7 @@ These are environment-specific values, not proof that the paths/hosts are access
 | `elite-tl-epochs` | 3 |
 | `gbsa-input-count` | 200 without Amber; 50 with Amber |
 | `gbsa-elite-count` | 10 |
+| `prime-flexdist` | 0.0 Å (frozen receptor) |
 | `fep-enabled`, `fep-input-count` | false, 10 |
 | `synthetic-feasibility-enabled` | true |
 | `aizynth-nproc`, `aizynth-cli` | 8, `aizynthcli` |
@@ -590,6 +591,29 @@ prime_mmgbsa <input.maegz> -OVERWRITE -HOST <bare-host> -NJOBS 1
 ```
 
 Maximum seven active/uncertain jobs across all iterations of one project, including resource-waiting jobs. Host slots/legacy CPU settings cannot raise this ceiling. Multiple hosts are round-robin. Persist individual completed scores and refill released slots without waiting for the slowest job; workers exit after each queue pass. Separate jobs repeat free-receptor preparation under the same Prime settings.
+
+**Confirmed optional receptor flexibility:** TOML `prime-flexdist = 6.0`
+enables whole-residue receptor flexibility within 6 Å of the individual ligand.
+Accept finite nonnegative numbers, rejecting booleans/strings/nonfinite values.
+Omission or zero retains the installed 2026-3 default: frozen receptor and flexible
+ligand, with no new Prime command flags. Positive values use verified native
+`-rflexdist <distance> -rflexgroup residue`. Also request `-out_type COMPLEX`
+for positive values so native output retains optimized receptor coordinates;
+the default PV output instead pairs the input receptor with optimized ligands.
+Keep native compound identity, energy properties, score extraction and final
+coordinate publication. This changes the selected scientific protocol, with no
+speed or ranking-quality claim; do not recalculate/relabel existing scores.
+
+Save `prime_flexdist` in each newly created queue before preparing or submitting
+jobs. Freeze this value for every member, including pending members, across
+restart, refill and TOML changes. Queues without this metadata retain the legacy
+zero/frozen protocol. An existing child's saved exact command always wins over
+current configuration/queue command construction, including license recovery.
+Legacy batch recovery also keeps its original command. Apply the option to new
+reference queues and generated queues equally; preserve the seven-slot limit,
+submission fencing and readiness gates. Local installed help/source, option
+parsing and native ASL whole-residue selection were checked without submitting
+Prime work. Flexible-mode minimization/energies have not been externally validated.
 
 Prefer `r_psp_MMGBSA_dG_Bind`, then NS/property-name fallbacks. Accept only submitted IDs and finite scores. Preserve existing GBSA values. Commit score/state before queue checkpoint. Definitive new-job failure or terminal score absence fails only that compound. Explicit legacy atomtyping failure uses `failed_stage="gbsa"`; ambiguous legacy failures remain retryable. Preserve other jobs/results.
 

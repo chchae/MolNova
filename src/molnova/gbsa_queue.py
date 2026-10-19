@@ -9,6 +9,7 @@ from molnova import _core as c, database
 from molnova import prime_async as prime
 from molnova.schrodinger_guard import submission_guard, SubmissionBlocked
 from molnova.states import CompoundState as State
+from molnova.config import prime_flexdist
 from molnova.stages._logging import format_elapsed
 
 MAX_ACTIVE = 7
@@ -74,13 +75,17 @@ print('Prepared single-compound MM-GBSA inputs:', len(seen))
 
 
 def create_queue(args, directory, compound_ids):
+    flexibility = prime_flexdist({'prime-flexdist': getattr(args, 'prime_flexdist', 0.0)})
     started_ns = time.time_ns()
     record = {'mode': MODE, 'compound_ids': list(compound_ids),
               'run_dir': f'queue-{started_ns}', 'started_at': started_ns / 1e9,
               'prepared': False,
+              'prime_flexdist': flexibility,
               'entries': {str(cid): 'pending' for cid in compound_ids}}
     # Reserve the entire selected set before preparing inputs or launching jobs.
     prime._save(directory, record)
+    if flexibility:
+        print(f'Prime receptor flexibility: residues within {flexibility:g} Angstrom of each ligand.', flush=True)
     return record
 
 
@@ -140,6 +145,9 @@ def merge_final_coordinates(args, directory, record):
 def poll_queue(iteration, args, directory, record):
     """Check active jobs, commit each result, then immediately refill free slots."""
     directory = Path(directory)
+    # Pin the protocol for the entire queue, including not-yet-submitted members.
+    # Missing metadata means the historical frozen-receptor protocol, never TOML.
+    flexibility = prime_flexdist({'prime-flexdist': record.get('prime_flexdist', 0.0)})
     if 'started_at' not in record:
         # Older queues already encode their creation timestamp in the run directory.
         # Recover it rather than restarting the timer at this worker invocation.
@@ -168,6 +176,12 @@ def poll_queue(iteration, args, directory, record):
         command = [args.schrodinger / 'prime_mmgbsa', folder / 'mmgbsa_input.maegz',
                    '-OVERWRITE', '-HOST', hosts[record['compound_ids'].index(cid) % len(hosts)],
                    '-NJOBS', '1']
+        if flexibility:
+            # PV output contains the original receptor, so request the native
+            # optimized complex when receptor atoms are allowed to move.
+            command += ['-rflexdist', str(flexibility), '-rflexgroup', 'residue', '-out_type', 'COMPLEX']
+        if saved is not None and 'command' in saved:
+            command = saved['command']
         record['entries'][key] = 'active'
         prime._save(directory, record)
         try:

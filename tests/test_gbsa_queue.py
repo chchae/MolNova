@@ -8,7 +8,7 @@ from molnova import _core as c, database, prime_async as prime, gbsa_queue as q
 from molnova.stages import mmgbsa
 
 
-def fixture(tmp_path, monkeypatch, count=10):
+def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
     from molnova import schrodinger_guard
     monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     db = tmp_path / 'results.sqlite'
@@ -17,7 +17,7 @@ def fixture(tmp_path, monkeypatch, count=10):
         conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
                          "VALUES (?,'C',1,-9,'gbsa_running')", [(str(i),) for i in range(count)])
     args = SimpleNamespace(db_path=db, output=tmp_path, host='compute:128',
-                           schrodinger=Path('/suite'), gbsa_elite_count=1)
+                           schrodinger=Path('/suite'), gbsa_elite_count=1, prime_flexdist=flexdist)
     directory = tmp_path / 'iter1/mmgbsa'
     directory.mkdir(parents=True)
     ids = list(range(1, count + 1))
@@ -34,8 +34,12 @@ def fixture(tmp_path, monkeypatch, count=10):
         saved = prime.load_job(folder)
         if saved is None:
             launched.append(cid)
-            assert command[3:] == ['-HOST', 'compute', '-NJOBS', '1']
-            prime._save(folder, {'job_id': f'job-{cid}', 'compound_ids': [cid]})
+            expected = ['-HOST', 'compute', '-NJOBS', '1']
+            if flexdist:
+                expected += ['-rflexdist', str(float(flexdist)), '-rflexgroup', 'residue', '-out_type', 'COMPLEX']
+            assert command[3:] == expected
+            prime._save(folder, {'job_id': f'job-{cid}', 'compound_ids': [cid],
+                                 'command': list(map(str, command))})
         return cid in completed
     def finish(iteration, args, folder, compound_ids):
         cid = compound_ids[0]
@@ -52,6 +56,71 @@ def fixture(tmp_path, monkeypatch, count=10):
         Path(command[2]).write_text(''.join(Path(path).read_text() for path in command[3:]))
     monkeypatch.setattr(c, 'run_command', merge)
     return args, directory, record, launched, completed
+
+
+@pytest.mark.parametrize('initial, changed', [(6.0, 0.0), (0.0, 6.0), (6.0, 12.0)])
+def test_queue_pins_flexibility_for_active_jobs_and_individual_refill(tmp_path, monkeypatch, initial, changed):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, flexdist=initial)
+    assert record['prime_flexdist'] == initial
+    q.poll_queue(1, args, root, record)
+    before = prime.load_job(q._folder(root, record, 1))
+    args.prime_flexdist = changed
+    completed.add(2)
+    q.poll_queue(1, args, root, prime.load_job(root))
+    assert launches == list(range(1, 9))
+    assert prime.load_job(q._folder(root, record, 1)) == before
+    refilled = prime.load_job(q._folder(root, record, 8))['command']
+    if initial:
+        assert refilled[-6:] == ['-rflexdist', str(initial), '-rflexgroup', 'residue', '-out_type', 'COMPLEX']
+    else:
+        assert '-rflexdist' not in refilled and '-out_type' not in refilled
+    saved = prime.load_job(root)
+    assert saved['prime_flexdist'] == initial
+    assert sum(state == 'active' for state in saved['entries'].values()) == 7
+    assert database.mmgbsa_submission_rows(args.db_path, [2])[2][2] == -35
+
+
+def test_legacy_queue_missing_flexibility_keeps_frozen_protocol_for_pending_jobs(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
+    del record['prime_flexdist']
+    prime._save(root, record)
+    args.prime_flexdist = 6.0
+    q.poll_queue(1, args, root, prime.load_job(root))
+    completed.add(2)
+    q.poll_queue(1, args, root, prime.load_job(root))
+    child = prime.load_job(q._folder(root, record, 8))
+    assert '-rflexdist' not in child['command']
+    assert 'prime_flexdist' not in prime.load_job(root)
+
+
+def test_saved_child_command_is_used_exactly_even_when_queue_options_differ(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, flexdist=6.0)
+    folder = q._folder(root, record, 1)
+    old_command = ['/old-suite/prime_mmgbsa', str(folder / 'mmgbsa_input.maegz'),
+                   '-OVERWRITE', '-HOST', 'old-host', '-NJOBS', '1']
+    prime._save(folder, dict(command=old_command, job_id='old-id', compound_ids=[1]))
+    record['entries']['1'] = 'active'
+    prime._save(root, record)
+    original = prime.submit_or_poll
+    commands = []
+    def observe(command, directory, ids, **kwargs):
+        if ids == [1]:
+            commands.append(command)
+        return original(command, directory, ids, **kwargs)
+    monkeypatch.setattr(prime, 'submit_or_poll', observe)
+    q.poll_queue(1, args, root, record)
+    assert commands == [old_command]
+    assert prime.load_job(folder)['job_id'] == 'old-id'
+    assert prime.load_job(folder)['command'] == old_command
+
+
+def test_optional_flexibility_applies_to_reference_queue(tmp_path, monkeypatch):
+    args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1, flexdist=6.0)
+    with database.connect(args.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=0')
+    q.poll_queue(0, args, root, record)
+    command = prime.load_job(q._folder(root, record, 1))['command']
+    assert command[-6:] == ['-rflexdist', '6.0', '-rflexgroup', 'residue', '-out_type', 'COMPLEX']
 
 
 def test_refill_one_free_slot_while_six_jobs_still_running(tmp_path, monkeypatch):

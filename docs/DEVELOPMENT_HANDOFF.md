@@ -485,6 +485,18 @@ A later Glide worker invocation should recover completed outputs.
 
 ## 15. MM-GBSA
 
+Optional TOML `prime-flexdist = 6.0` enables whole-residue receptor flexibility
+within 6 Å of each ligand. Default/zero keeps the frozen receptor and flexible
+ligand. Validate finite nonnegative numeric values; use installed-2026-3-verified
+`-rflexdist <distance> -rflexgroup residue` only for positive values. In that
+mode use `-out_type COMPLEX` to retain optimized receptor coordinates. Pin the
+distance in new queue manifests, including for pending members, reference work,
+restart and license retries. Missing legacy metadata means zero. Saved child
+commands and legacy batch commands remain exact; do not reset jobs or scores.
+Preserve the seven-job limit, gates and submission fence. Native parser and
+ASL selection were verified without Prime submission; no minimization/energy,
+speed or ranking validation is claimed for this new mode.
+
 Prime MM-GBSA works on the final top-N after the entire iteration finishes docking
 and enabled Amber screening. Rank by Amber score when enabled, docking otherwise.
 

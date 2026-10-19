@@ -346,6 +346,24 @@ prefers `r_psp_MMGBSA_dG_Bind`, with the existing property-name fallbacks. Score
 are stored only for submitted IDs, preserve existing GBSA results, and rank
 lower values first for elite selection.
 
+To allow receptor residues within 6 Å of each ligand to move during Prime MM-GBSA:
+
+```toml
+prime-flexdist = 6.0
+```
+
+Omit this key or set `prime-flexdist = 0` to keep the default frozen receptor
+and flexible ligand. Positive values select whole residues with the native
+`-rflexdist` and `-rflexgroup residue` options. Flexible calculations also request
+`COMPLEX` output to retain the optimized receptor coordinates. This option
+selects a different scientific protocol; it is not a speed optimization.
+
+The setting is saved when a **new queue** is created, for both reference and
+generated iterations. Changing TOML does not alter an existing queue, including
+its pending compounds. Older queues retain their original frozen-receptor
+behavior, and saved native jobs retain their exact commands. Existing scores
+are preserved. No production flexible-mode calculation was run during validation.
+
 ## CPU parallelism
 
 Schrödinger parallelizes these batches across ligand subjobs/workers. The shared

@@ -193,6 +193,21 @@ def test_invalid_combichem_batch_size(tmp_path, value):
         generation_settings({'sidechain-library': 'edges.smi', 'sample-size': value}, tmp_path)
 
 
+@pytest.mark.parametrize('extra, expected', [('', 0.0), ('prime-flexdist = 0\n', 0.0),
+                                           ('prime-flexdist = 6.0\n', 6.0)])
+def test_prime_flexdist_configuration(tmp_path, extra, expected):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + extra)
+    assert _core.load_project_toml(project)['prime_flexdist'] == expected
+
+
+@pytest.mark.parametrize('value', [-1, True, False, '6.0', float('nan'), float('inf'), -float('inf'), None])
+def test_prime_flexdist_rejects_invalid_values(value):
+    from molnova.config import prime_flexdist
+    with pytest.raises(ValueError, match='prime-flexdist'):
+        prime_flexdist({'prime-flexdist': value})
+
+
 @pytest.mark.parametrize("absolute_output", [False, True])
 def test_database_uses_output_directory_for_nested_project(tmp_path, absolute_output):
     project = tmp_path / "input" / "egfr.toml"

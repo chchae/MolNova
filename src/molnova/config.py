@@ -1,9 +1,19 @@
 """Project configuration API."""
 from pathlib import Path
+import math
 from types import SimpleNamespace
 from typing import Any
 
 from molnova import _core
+
+
+def prime_flexdist(config: dict[str, Any]) -> float:
+    """Zero preserves the frozen-receptor default; positive values are Angstroms."""
+    value = config.get('prime-flexdist', 0.0)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value < 0):
+        raise ValueError('prime-flexdist must be a finite non-negative number in Angstroms')
+    return float(value)
 
 
 def generation_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
