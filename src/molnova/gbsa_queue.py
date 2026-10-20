@@ -261,9 +261,9 @@ def poll_queue(iteration, args, directory, record):
     active = sum(state == 'active' for state in record['entries'].values())
     pending = sum(state == 'pending' for state in record['entries'].values())
     running, saved = database.mmgbsa_progress_counts(args.db_path, iteration)
-    print(f'Iteration {iteration}: MM-GBSA running={running}, saved={saved}, '
-          f'queue active={active}, waiting={pending}, '
-          f'limit={MAX_ACTIVE}, scores updated={updated}.', flush=True)
+    print(f'{iteration:<3d}: GBSA running={running:<3d}, saved={saved:<3d}, '
+          f'queue={active}, waiting={pending:<3d}, '
+          f'limit={MAX_ACTIVE}, updated={updated}.', flush=True)
     if active or pending:
         return None
     # Keep the live manifest until coordinates publish successfully. On failure,

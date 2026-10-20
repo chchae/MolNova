@@ -12,11 +12,13 @@ sqlite3 -cmd ".mode box --quote off" output/egfr.sqlite  "select *
 from (
     select iteration as cycle,
            count(*) as count,
-           count(docking_score) as n_glid,
+           printf('%6.1f', avg(rdk_mw)) as mw,
+           printf('%4.1f',avg(rdk_rotatable_bonds)) as rot,
+           count(docking_score) as \"#glide\",
            printf('%6.2f', min(docking_score)) as glide,
-           count(amber_gbsa_score) as n_ambe,
+           count(amber_gbsa_score) as \"#amber\",
            printf('%6.2f', min(amber_gbsa_score)) as amber,
-           count(gbsa_score) as n_prim,
+           count(gbsa_score) as \"#prime\",
            printf('%6.2f', min(gbsa_score)) as prime,
            strftime('%H:%M', MIN(modified_at), '+9 hours') AS modified
     from compound
