@@ -72,7 +72,8 @@ gbsa-input-count = 200
 prime-flexdist = 6.0
 gbsa-license-retry-seconds = 300
 gbsa-license-retries = 3
-# Prime은 프로젝트 전체 최대 7개 개별 작업을 실행합니다.
+# Prime은 선택한 화합물 전체를 한 batch로 제출하고 JobDJ가 최대 7개 subjob을 동시에 실행합니다.
+# 유연한 receptor는 화합물별 complex 입력으로 처리하여 각 ligand 주변 6 Å 설정을 유지합니다.
 # Iteration 0은 입력 reference 전체를 평가하므로 500/200 제한을 적용하지 않습니다.
 
 # 7. FEP 후보 export / 결과 import; 실제 FEP 계산은 외부 protocol로 별도 수행

@@ -4201,6 +4201,9 @@ def run_iteration_mmgbsa(
     if active is not None and active.get("mode") == "compound_queue_v1":
         from molnova.gbsa_queue import poll_queue
         return poll_queue(iteration, args, mmgbsa_dir, active)
+    if active is not None and active.get("mode") == "native_batch_v1":
+        from molnova.gbsa_batch import poll_batch
+        return poll_batch(iteration, args, mmgbsa_dir, active)
     if active is not None:
         from molnova.gbsa_streaming import collect_completed_subjobs
         from molnova.schrodinger_guard import submission_guard
@@ -4220,6 +4223,13 @@ def run_iteration_mmgbsa(
         pending_coordinates.replace(mmgbsa_dir / 'mmgbsa_final.maegz')
         job_file(mmgbsa_dir).unlink()
         return updated
+
+    from molnova.gbsa_batch import other_submission
+    if other_submission(args, mmgbsa_dir) is not None:
+        # Do not reserve a second batch: a waiting native manifest would also
+        # prevent an older individual queue from refilling its remaining slots.
+        print(f'Iteration {iteration}: Prime waiting for another iteration to retire.')
+        return None
 
     if iteration == 0:
         with open_sqlite(args.db_path) as conn:
@@ -4389,9 +4399,9 @@ def run_iteration_mmgbsa(
         f"Docking top input   : {len(top_rows)}"
     )
 
-    from molnova.gbsa_queue import create_queue, poll_queue
-    record = create_queue(args, mmgbsa_dir, [row[0] for row in top_rows])
-    return poll_queue(iteration, args, mmgbsa_dir, record)
+    from molnova.gbsa_batch import create_batch, poll_batch
+    record = create_batch(args, mmgbsa_dir, [row[0] for row in top_rows])
+    return poll_batch(iteration, args, mmgbsa_dir, record)
 
 
 def finish_iteration_mmgbsa(iteration, args, mmgbsa_dir, compound_ids):

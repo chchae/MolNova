@@ -496,8 +496,8 @@ def test_supervised_queue_poll_has_one_terse_line_with_all_progress_counts(tmp_p
                                                  [('mmgbsa', 'molnova.stages.mmgbsa')],
                                                  30, driver.StopFlag(), once=True)
             output = capsys.readouterr().out
-            summary = (f'Iteration 1: MM-GBSA running={10-saved}, saved={saved}, '
-                       f'queue active=7, waiting={3-saved}, limit=7, scores updated={saved}.')
+            summary = (f'{1:<3d}: GBSA running={10-saved:<3d}, saved={saved:<3d}, '
+                       f'queue=7, waiting={3-saved:<3d}, limit=7, updated={saved}.')
             assert summary in output
             if level == 1:
                 assert output.strip() == summary

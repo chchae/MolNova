@@ -6,7 +6,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from molnova import _core as c, database, driver, gbsa_queue, prime_async
+from molnova import _core as c, database, driver, gbsa_queue, gbsa_batch, prime_async
 from molnova.stages import mmgbsa
 
 
@@ -82,10 +82,11 @@ def test_reference_input_uses_original_pose_and_named_identity_map(tmp_path, mon
     args.mmgbsa_receptor = tmp_path / 'receptor.maegz'
     args.mmgbsa_receptor.write_text('receptor')
     args.schrodinger = Path('/suite')
+    args.host = 'compute:128'
     args.grid = tmp_path / 'grid.zip'
     calls = []
     monkeypatch.setattr(c, 'run_command', lambda command, **kw: calls.append(command))
-    monkeypatch.setattr(gbsa_queue, 'poll_queue', lambda *a: None)
+    monkeypatch.setattr(gbsa_batch, 'poll_batch', lambda *a: None)
     assert c.run_iteration_mmgbsa(0, args, tmp_path / 'iter0', tmp_path / 'unused', [2, 3]) is None
     assert calls[0][3] == args.reference_poses
     mapping = json.loads(Path(calls[0][-1]).read_text())

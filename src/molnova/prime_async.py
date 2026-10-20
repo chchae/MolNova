@@ -285,6 +285,15 @@ def reconcile_interrupted_submission(directory, record):
     return False
 
 
+def _retire_failed_submission(directory, record):
+    """Keep native batch identities and imported-result audit after failure."""
+    if record.get('mode') == 'native_batch_v1':
+        _save(directory, record)
+        job_file(directory).replace(Path(directory) / f'batch-{time.time_ns()}.failed.json')
+    else:
+        job_file(directory).unlink(missing_ok=True)
+
+
 def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retries=3,
                    on_completed_subjobs=None, submission_fence=None):
     """Return True only after a terminal job's outputs have been downloaded."""
@@ -326,11 +335,17 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
                 detail(f"Prime MM-GBSA calculation completed; elapsed={format_elapsed(elapsed)}.", flush=True)
             return True
         if failed:
-            job_file(directory).unlink()
+            _retire_failed_submission(directory, record)
             raise PrimeAtomTypingError(failed)
         if not license_unavailable(diagnostics):
-            job_file(directory).unlink()
+            _retire_failed_submission(directory, record)
             raise RuntimeError(f"Prime job {record['job_id']} ended with {status}: {diagnostics[-4000:]}")
+        if record.get('mode') == 'native_batch_v1' and record.get('imported_subjobs'):
+            # All jobs are verified terminal. Let the worker release only the
+            # remaining unscored claims, then rebuild a smaller fresh batch.
+            _retire_failed_submission(directory, record)
+            raise RuntimeError('Prime license unavailable after partial batch completion; '
+                               'only unscored compounds remain retryable.')
         record["job_id"] = None
         record["retry_at"] = time.time() + wait_seconds
         record["launching"] = False
@@ -341,7 +356,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
     if record["retry_at"] > time.time():
         return False
     if record["attempt"] > retries:
-        job_file(directory).unlink(missing_ok=True)
+        _retire_failed_submission(directory, record)
         raise RuntimeError(f"Prime license unavailable after {retries + 1} attempts; compounds remain retryable.")
     from molnova.schrodinger_guard import SubmissionBlocked
     try:
@@ -373,7 +388,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
         _save(directory, record)
         return False
     if code:
-        job_file(directory).unlink()
+        _retire_failed_submission(directory, record)
         diagnostics = output + "\n" + _current_diagnostics(directory, record)
         failed = atomtyping_failed_ids(diagnostics, record["compound_ids"])
         if failed:

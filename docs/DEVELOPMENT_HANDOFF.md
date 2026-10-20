@@ -1,5 +1,18 @@
 # MolNova Development Handoff
 
+## Native Prime batching (2026-10-20)
+
+SPEC section 17 supersedes individual buffering for new Prime calculations.
+Use `gbsa_batch.py` and `native_batch_v1`: one request for all selected unscored
+inputs, one ligand per native subjob, aggregate seven HOST slots. JobDJ owns
+scheduling. Keep legacy `gbsa_queue.py` recovery for submitted individual queues.
+Retain immediate subjob DB imports, JobId recovery, cross-project Glide exclusion,
+and project-wide admission across iterations. Flexible batches use independent
+complex inputs to avoid native PV union-of-receptor-regions behavior. Keep
+partial scores/coordinates and failed manifest audits. No production jobs are
+migrated or launched by this code change; numerical equivalence requires an
+isolated real scientific validation.
+
 ## Latest staged selection policy (2026-10-20)
 
 SPEC section 16 is the current authority for new iterations. It supersedes the

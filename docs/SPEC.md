@@ -14,6 +14,8 @@ The Amber screening change in section 15 supersedes docking-based Prime selectio
 
 The later confirmed workflow in section 16 supersedes earlier selection/count
 baselines for new iterations; preserve the historical policy for saved work.
+Section 17 supersedes individual Prime buffering for new submissions; retain
+legacy queue recovery.
 
 ## 1. Confirmed purpose and constraints
 
@@ -1199,3 +1201,48 @@ EGFR now sets `amber_gbsa=true`, `amber-input-count=500`,
 `sa-accepted-ratio=1.0`. Keep target-specific paths, hosts, scientific parameters,
 sidechain size and raw target as explicitly configured. Existing submitted jobs
 and results remain recoverable; do not retrospectively filter them.
+
+
+## 17. Confirmed native Prime batching (2026-10-20)
+
+The user's later request supersedes individual submission/refill for **new**
+Prime work. Submit the complete selected unscored set in one native request,
+`-NJOBS <number of selected compounds>`, using aggregate `-HOST` slots of seven.
+Prime/JobDJ schedules the subjobs and refills slots; MolNova no longer maintains
+an individual submission buffer for new work. This does not promise that all
+subjobs are registered with JobServer immediately: native JobDJ controls launch.
+Multiple hosts share seven slots, rather than each receiving seven. One saved
+native batch reserves the project budget; another iteration's saved/uncertain
+submission blocks launch. Preserve the project stage lock and shared cross-project
+Glide/Prime exclusion. This is a scheduling change, not a change to stage order,
+counts, ranking, claims, or the FEP protocol.
+
+Save `native_batch_v1` with exact command/input identities and retain durable
+JobId recovery. Existing `compound_queue_v1` queues continue their original
+seven-slot individual-refill recovery without rewriting their inputs or commands.
+Older unversioned native batches also retain their existing recovery path.
+Request `-report_prime_log yes` so per-entry diagnostics survive batches larger
+than 100 compounds. Collect completed matching native children immediately, committing finite scores
+before checkpointing imported subjob IDs. Parent exit alone never proves success;
+verify terminal parent/children and download before final import. Preserve failed
+batch manifests as audit records. A terminal license failure after partial import
+releases only unscored compounds for a fresh smaller request. Never reset live or
+uncertain jobs, discard committed scores, or overwrite their corresponding poses.
+
+Preserve configured flexibility per original molecule. Installed Schrödinger
+2026-3 source confirms that PV-mode batching selects the union of receptor regions
+over all input ligands and shares free-receptor optimization. Therefore positive
+`prime-flexdist` uses native complex-input mode: construct one original receptor
+plus one selected ligand per complex, retaining coordinates/compound IDs and
+marking ligand atoms with `i_molnova_batch_ligand`; pass `-ligand
+"atom.i_molnova_batch_ligand 1"`, `-rflexdist <configured distance>`,
+`-rflexgroup residue`, and `-out_type COMPLEX`. Native `_prepareComplexInput`
+initializes/optimizes each complex's receptor independently. Frozen-receptor
+work retains PV input. This source verification establishes the intended native
+path; it does not establish numerical equivalence of real scientific energies.
+
+Publish final native coordinates atomically, deduplicating scored compound IDs
+and preferring previously published structures. Preserve partial completed-child
+coordinates on verified terminal failure as well as normal parent completion.
+A merge/transfer/status failure leaves the live identity intact for recovery.
+Do not alter submitted production jobs merely to migrate scheduling.

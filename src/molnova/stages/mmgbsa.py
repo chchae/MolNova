@@ -134,7 +134,7 @@ def _run_stage(args, requested_iteration):
     if updated is None:
         record = load_job(directory)
         # A compound-queue pass already prints its active/waiting summary.
-        report = progress if record and record.get('mode') == 'compound_queue_v1' else print
+        report = progress if record and record.get('mode') in ('compound_queue_v1', 'native_batch_v1') else print
         report(f"Iteration {iteration}: MM-GBSA submitted/running; results will be recovered on a later worker run.")
         return
 

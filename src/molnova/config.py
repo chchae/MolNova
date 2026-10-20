@@ -148,7 +148,15 @@ def mmgbsa_job_options(host: str, ligand_count: int) -> list[str]:
     """Queue one ligand per subjob; host slots bound concurrent execution."""
     if isinstance(ligand_count, bool) or not isinstance(ligand_count, int) or ligand_count < 1:
         raise ValueError("MM-GBSA ligand_count must be a positive integer")
-    hosts = " ".join(f"{entry.split(':', 1)[0]}:7" for entry in host.split())
+    names = list(dict.fromkeys(entry.split(':', 1)[0] for entry in host.split()))
+    if not names:
+        raise ValueError("MM-GBSA requires a configured host")
+    # HOST limits are per host, not a shared limit. Divide seven slots across
+    # hosts rather than accidentally allowing seven on every host.
+    slots = [0] * len(names)
+    for index in range(7):
+        slots[index % len(names)] += 1
+    hosts = " ".join(f"{name}:{count}" for name, count in zip(names, slots) if count)
     return ["-HOST", hosts, "-NJOBS", str(ligand_count)]
 
 

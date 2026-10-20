@@ -1122,6 +1122,14 @@ def mmgbsa_progress_counts(path, iteration):
     return running, saved
 
 
+def mmgbsa_scored_ids(path, iteration):
+    """IDs whose finite Prime scores may be paired with native coordinates."""
+    with connect(path) as conn:
+        rows = conn.execute('SELECT id,gbsa_score FROM compound WHERE iteration=? ORDER BY id',
+                            (iteration,)).fetchall()
+    return [cid for cid, score in rows if score is not None and math.isfinite(score)]
+
+
 def stage_completion_reason(path, iteration, stage, target_count, input_count,
                             synthetic_enabled=False, amber_keep_count=None):
     """Driver readiness from persisted state, never worker exit status alone."""
