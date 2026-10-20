@@ -236,7 +236,7 @@ def execute(root):
         save(root / 'status.json', {'status': 'done'})
 
 
-def collect(root):
+def snapshot(root):
     with (root / 'run.lock').open('a') as lock:
         active = True
         try:
@@ -246,8 +246,12 @@ def collect(root):
             pass
         status = json.loads((root / 'status.json').read_text()) if (root / 'status.json').exists() else {}
         results = [json.loads(p.read_text()) for p in sorted((root / 'results').glob('CMPID_*.json'))]
-        print(json.dumps({'active': active, 'status': status.get('status'),
-                          'error': status.get('error'), 'results': results}))
+        return {'active': active, 'status': status.get('status'),
+                'error': status.get('error'), 'results': results}
+
+
+def collect(root):
+    print(json.dumps(snapshot(root)))
 
 
 def archive_logs(root):

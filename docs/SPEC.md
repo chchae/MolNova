@@ -1324,7 +1324,8 @@ there for journals, status and result transfer only.
 
 Implementation choice: split the total budget into at most two independent
 single-node sbatch allocations of at most 192 CPUs each, capped by the submitted
-compound count. All shards together request at most 384 CPUs. Use srun for each
+compound count. **Superseded for new submissions by the confirmed job array
+change below; preserve this format for saved work.** All shards together request at most 384 CPUs. Use srun for each
 scientific worker and keep native thread counts at one. The local Amber stage
 owns SQLite; remote calculators never coordinate stages. Persist parent/shard
 identities before submission, reconcile uncertain sbatch responses by unique name
@@ -1367,3 +1368,47 @@ original protocol, including pending queue members. Do not migrate live jobs,
 recompute results or relabel old scores. Installed 2026-3 `prime_mmgbsa -h`
 confirms `side` support; regression tests verify command creation and recovery.
 No real minimization, speedup, energy or ranking validation is claimed.
+
+## 21. Confirmed Amber one-core Slurm job arrays (2026-10-20)
+
+New `use-slurm=true` work uses a single `slurm_array_v1` manifest and submits
+one array task per original selected compound. Task index maps to the immutable
+saved `input.json` entry order. Request one node, one task and one CPU per array
+element, `--hint=nomultithread`, and `--array=0-(N-1)%min(N,amber-slurm-cpus)`.
+The existing 1..384 CPU setting now limits simultaneously running array tasks;
+Slurm may run fewer according to resource availability and account limits.
+Use `srun --ntasks=1 --cpus-per-task=1`, unchanged Amber activation and native
+single-thread limits. Each task requests 2 GiB (`--mem=2G`) rather than all node
+memory; this initial resource choice is not a measured sufficiency guarantee.
+Task completion releases its allocation independently. Direct t41 work is unchanged.
+
+Prepare isolated `tasks/<index>/` inputs locally with one saved compound entry
+and `cpus=1`; share only read-only source receptor/bond/ligand inputs through
+relative links inside the uploaded run. Keep each task's receptor normalization,
+LEaP preparation, logs, outputs, terminal marker and inherited lock isolated.
+Receptor preparation repeats per task to avoid shared mutable scientific products.
+Keep AM1-BCC, GAFF2, ff14SB, pose restoration, restrained minimization and scoring
+protocols unchanged. Each task calculates only its mapped compound; remote tasks
+never access SQLite or launch other stages.
+
+Persist unique run identity before submission and array JobId immediately on
+response. Recover uncertain submission through both squeue array base IDs and
+sacct array task IDs under the saved unique name, including terminal history.
+Unknown/ambiguous history blocks resubmission. Query all expected task IDs and
+reported steps; missing/unexpected task histories never establish completion.
+Retire a manifest only after verified native success, all result IDs (scores or
+recorded ligand failures), all task done markers and all inherited lock releases.
+Stream completed results to SQLite on every successful poll, including successes
+from other tasks when one reports a receptor preparation failure. Infrastructure
+failure or uncertainty retains the manifest and unscored claims; no implicit
+resubmission or reset. Download logs under original CMPID directories, with each
+task's receptor log stored as `receptor_calculation.log`. Keep Slurm stdout/stderr
+separate by `%A_%a` remotely.
+
+Saved `slurm_batches_v1`/`slurm_single_v1` records and their uploaded workers,
+commands, resources, JobIds and scientific results retain exact legacy recovery;
+do not migrate, cancel, relocate or resubmit them. Existing saved settings must
+still match. New arrays apply only to newly created records, including iteration
+0. Regression tests validate scheduling, isolation, partial-result persistence and
+restart logic using mocks; no real array calculation, throughput, memory sizing
+or scientific ranking validation is claimed.

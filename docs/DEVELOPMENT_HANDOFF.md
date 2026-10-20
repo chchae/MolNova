@@ -1,5 +1,27 @@
 # MolNova Development Handoff
 
+## Amber one-core Slurm arrays (2026-10-20)
+
+New Slurm records use `slurm_array_v1`, one original compound per 1-core array
+task, with concurrency capped by `min(compound count, amber-slurm-cpus)` (1..384).
+Request 2 GiB per task instead of all node memory. This initial memory choice
+requires real workload validation. Stage supervision, direct t41 execution and
+scientific parameters are unchanged. See SPEC section 21.
+
+`amber_array.py` is bundled beside the standalone worker. Locally prepare
+`tasks/<index>/input.json` with one entry and cpus=1 plus relative read-only input
+links. Receptor preparation repeats in each task's private directory; all mutable
+products, inherited locks, logs, markers and results remain private. The stage
+collects partial results and validates all expected task IDs/steps plus all
+markers/lock releases before retiring the saved array. Recover lost sbatch replies
+using array base IDs from squeue and task IDs from sacct. Missing/ambiguous history
+never authorizes resubmission. Retain failed/uncertain manifests and scores.
+
+Keep saved `slurm_batches_v1`/`slurm_single_v1` allocations on their exact legacy
+recovery path, including existing uploaded workers/resources. Never migrate live
+work. Download per-task receptor logs as `CMPID_<id>/receptor_calculation.log`.
+Mock scheduling/recovery tests do not validate real array calculations or speed.
+
 ## Generation element filter (2026-10-20)
 
 New combichem/LibInvent batch admissions allow only H, C, N, O, F, P, S, Cl, Br

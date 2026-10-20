@@ -179,10 +179,15 @@ def prepare_remote(args, iteration, directory, record):
               'identities': identities}
     slurm_files = []
     from molnova import amber_slurm
-    if record.get('mode') == amber_slurm.SINGLE:
+    if record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY):
         config['slurm'] = {'partition': record['settings']['partition'],
                            'job_name': 'molnova-amber-' + record['run_id']}
-        slurm_files = amber_slurm.prepare_files(folder, record)
+        if record['mode'] == amber_slurm.ARRAY:
+            config['slurm']['array_count'] = len(entries)
+            from molnova.amber_array import prepare_tasks
+            prepare_tasks(folder, config)
+            slurm_files.append(folder / 'tasks')
+        slurm_files.extend(amber_slurm.prepare_files(folder, record))
     save(folder / 'input.json', config)
     worker = Path(__file__).with_name('amber_runner.py')
     (folder / 'worker.py').write_bytes(worker.read_bytes())
@@ -221,6 +226,8 @@ def poll(args, iteration, directory, record):
         raise RuntimeError('Saved Amber run belongs to a different project/iteration')
     if record['settings'] != args.amber_remote or record['charge_method'] != args.amber_charge_method:
         raise RuntimeError('Amber settings changed during a saved run; recover with its original settings')
+    if record.get('mode') == amber_slurm.ARRAY and record['cpus'] != args.amber_cpus:
+        raise RuntimeError('Slurm Amber CPU limit changed; recover with its original settings')
     if not record['prepared']:
         prepare_remote(args, iteration, directory, record)
     verify_sources(args, iteration, record)
@@ -229,18 +236,19 @@ def poll(args, iteration, directory, record):
     if saved_input['identities'] != [list(r) for r in identities]:
         raise RuntimeError('Compound identity changed during saved Amber work')
     remote = shlex.quote(record['remote_dir'])
-    slurm = record.get('mode') == amber_slurm.SINGLE
+    slurm = record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY)
     native = amber_slurm.job_state(directory, record) if slurm else None
-    collect_command = f'python3 {remote}/worker.py collect {remote}'
+    helper = 'amber_array.py' if record.get('mode') == amber_slurm.ARRAY else 'worker.py'
+    collect_command = f'python3 {remote}/{helper} collect {remote}'
     response = ssh(record['settings'], collect_command if slurm else environment_command(
                    record['settings'], collect_command), capture_output=True, text=True)
     snapshot = json.loads(response.stdout)
     save(directory / 'remote_snapshot.json', snapshot)
+    results = snapshot['results']
+    database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
     if not snapshot['active'] and snapshot['status'] == 'failed' and not (native and native['active']):
         download_logs(directory, record)
         raise RuntimeError(snapshot.get('error') or 'Amber receptor preparation failed')
-    results = snapshot['results']
-    database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
     if snapshot['active'] or (native and native['active']):
         return False
     if native and not native.get('successful'):
@@ -267,13 +275,15 @@ def download_logs(directory, record):
     archive = folder / 'results.tar.pending'
     try:
         with archive.open('wb') as stream:
-            command = f'python3 {remote}/worker.py archive {remote}'
-            from molnova.amber_slurm import SINGLE
-            ssh(record['settings'], command if record.get('mode') == SINGLE else
+            from molnova.amber_slurm import SINGLE, ARRAY
+            helper = 'amber_array.py' if record.get('mode') == ARRAY else 'worker.py'
+            command = f'python3 {remote}/{helper} archive {remote}'
+            ssh(record['settings'], command if record.get('mode') in (SINGLE, ARRAY) else
                 environment_command(record['settings'], command), stdout=stream)
         allowed = {'calculation.log'} | {
             f'CMPID_{cid}/{name}' for cid in record['compound_ids']
-            for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat')}
+            for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat',
+                         'receptor_calculation.log')}
         with tarfile.open(archive) as stream:
             for member in stream:
                 if member.name not in allowed or not member.isfile():

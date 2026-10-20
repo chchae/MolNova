@@ -110,21 +110,38 @@ def project(tmp_path):
                       'remote_work_dir': '/shared/runs'})
 
 
-@pytest.mark.parametrize('count,budget,expected', [(500, 384, [192, 192]),
-    (50, 384, [50]), (500, 193, [97, 96]), (500, 192, [192]), (1, 384, [1])])
-def test_partitioning_caps_total_and_preserves_every_id(project, count, budget, expected):
+@pytest.mark.parametrize('count,budget', [(500, 384), (50, 384), (500, 193), (500, 192), (1, 384)])
+def test_array_record_preserves_task_order_and_cpu_limit(project, count, budget):
     project.amber_cpus = budget
     record = amber.new_record(project, 1, project.output, list(range(1, count + 1)))
-    assert record['mode'] == slurm.MODE
-    assert [p['cpus'] for p in record['parts']] == expected
-    assert sum(expected) <= 384
-    assert sorted(cid for p in record['parts'] for cid in p['compound_ids']) == list(range(1, count + 1))
-    assert len({p['remote_dir'] for p in record['parts']}) == len(expected)
+    assert record['mode'] == slurm.ARRAY
+    assert record['cpus'] == budget
+    assert record['compound_ids'] == list(range(1, count + 1))
+    assert not record['prepared']
+    assert 'parts' not in record
     assert amber.load_job(project.output) == record
 
 
-def child_record(project):
-    record = slurm.new_record(project, 1, project.output, [1, 2, 3, 4])['parts'][0]
+def legacy_record(project):
+    """Saved pre-array format must remain recoverable without conversion."""
+    ids = list(range(1, 501))
+    parts = [dict(run_id=f'legacy-{index}', compound_ids=ids[index::2], cpus=192,
+                  prepared=False, mode=slurm.SINGLE, iteration=1,
+                  db_path=str(project.db_path.resolve()), settings=dict(project.amber_remote),
+                  charge_method='bcc', remote_dir=f'/shared/runs/legacy-{index}') for index in range(2)]
+    record = dict(mode=slurm.MODE, run_id='legacy-parent', iteration=1,
+                  db_path=str(project.db_path.resolve()), settings=dict(project.amber_remote),
+                  charge_method='bcc', compound_ids=ids, cpus=384, parts=parts)
+    amber.save(project.output / 'amber_job.json', record)
+    return record
+
+
+def child_record(project, mode=slurm.SINGLE):
+    if mode == slurm.SINGLE:
+        record = legacy_record(project)['parts'][0]
+        record.update(compound_ids=[1, 2, 3, 4], cpus=4)
+    else:
+        record = slurm.new_record(project, 1, project.output, [1, 2, 3, 4])
     record['prepared'] = True
     record['slurm_job_id'] = '123'
     folder = project.output / record['run_id']
@@ -134,8 +151,9 @@ def child_record(project):
     return record
 
 
-def test_queued_or_terminal_slurm_does_not_bypass_worker_completion(project, monkeypatch):
-    record = child_record(project)
+@pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
+def test_queued_or_terminal_slurm_does_not_bypass_worker_completion(project, monkeypatch, mode):
+    record = child_record(project, mode)
     native = {'active': True, 'state': 'PENDING'}
     snapshot = {'active': False, 'status': 'done',
                 'results': [{'id': i, 'score': -i} for i in range(1, 5)]}
@@ -156,8 +174,9 @@ def test_queued_or_terminal_slurm_does_not_bypass_worker_completion(project, mon
 
 
 @pytest.mark.parametrize('successful,state', [(False, 'FAILED'), (True, 'COMPLETED')])
-def test_incomplete_terminal_slurm_retains_identity_and_claims(project, monkeypatch, successful, state):
-    record = child_record(project)
+@pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
+def test_incomplete_terminal_slurm_retains_identity_and_claims(project, monkeypatch, successful, state, mode):
+    record = child_record(project, mode)
     monkeypatch.setattr(slurm, 'job_state', lambda *a: dict(active=False, successful=successful, state=state))
     monkeypatch.setattr(amber, 'ssh', lambda *a, **kw: SimpleNamespace(stdout=json.dumps(
         dict(active=False, status=None, results=[{'id':1, 'score':-1}]))))
@@ -220,9 +239,10 @@ def test_missing_accounting_is_not_completion(monkeypatch):
         control.status('123')
 
 
-def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch):
+@pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
+def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode):
     import tarfile
-    record = child_record(project)
+    record = child_record(project, mode)
     record['prepared'] = False
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
@@ -237,19 +257,29 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     project.amber_cpus = record['cpus']
     amber.prepare_remote(project, 1, project.output, record)
     config = json.loads((folder / 'input.json').read_text())
-    assert config['cpus'] == 4
+    assert config['cpus'] == record['cpus']
     assert config['slurm']['partition'] == 'cpu'
     assert config['slurm']['job_name'].endswith(record['run_id'])
     script = (folder / 'amber.sbatch').read_text()
-    assert 'srun --ntasks=1 --cpus-per-task=4' in script
+    assert f'srun --ntasks=1 --cpus-per-task={1 if mode == slurm.ARRAY else 4}' in script
     assert '/shared/env/amber.sh' in script
     with tarfile.open(folder / 'inputs.tar') as archive:
         assert {'amber.sbatch', 'amber_slurm_control.py', 'worker.py', 'input.json'} <= set(archive.getnames())
+        if mode == slurm.ARRAY:
+            assert config['slurm']['array_count'] == 4
+            assert '"$SLURM_ARRAY_TASK_ID"' in script
+            assert 'amber_array.py' in archive.getnames()
+            for index, cid in enumerate(record['compound_ids']):
+                task_config = json.load(archive.extractfile(f'tasks/{index}/input.json'))
+                assert task_config['cpus'] == 1
+                assert task_config['entries'] == [{'id': cid, 'charge': 0}]
+                member = archive.getmember(f'tasks/{index}/CMPID_{cid}/input.mol2')
+                assert member.issym() and member.linkname == f'../../../CMPID_{cid}/input.mol2'
     assert amber.load_job(project.output)['prepared']
 
 
 def test_parent_collects_other_shard_even_when_one_is_uncertain(project, monkeypatch):
-    record = slurm.new_record(project, 1, project.output, list(range(1, 501)))
+    record = legacy_record(project)
     calls = []
     def poll(args, iteration, directory, child):
         calls.append(child['run_id'])
@@ -267,3 +297,112 @@ def test_parent_collects_other_shard_even_when_one_is_uncertain(project, monkeyp
     monkeypatch.setattr(amber, 'poll', lambda *a: True)
     assert slurm.poll(project, 1, project.output, record)
     assert not (project.output / 'amber_job.json').exists()
+
+
+@pytest.mark.parametrize('count,cpus,throttle', [(50, 384, 50), (500, 384, 384), (4, 2, 2), (1, 1, 1)])
+def test_array_submission_requests_one_core_and_bounded_memory(tmp_path, monkeypatch, count, cpus, throttle):
+    amber.save(tmp_path / 'input.json', {'cpus': cpus, 'entries': [{'id': i} for i in range(count)],
+               'slurm': {'partition': 'cpu', 'job_name': 'unique', 'array_count': count}})
+    commands = []
+    def submit(command, **kwargs):
+        commands.append(command)
+        return '123;cluster\n'
+    monkeypatch.setattr(control.subprocess, 'check_output', submit)
+    assert control.submit(tmp_path)['job_id'] == '123'
+    command = commands[0]
+    assert command[command.index('--cpus-per-task') + 1] == '1'
+    assert command[command.index('--array') + 1] == f'0-{count - 1}%{throttle}'
+    assert '--mem=2G' in command and '--mem=0' not in command
+    assert str(tmp_path / 'slurm-%A_%a.out') in command
+    assert str(tmp_path / 'slurm-%A_%a.err') in command
+    assert control.submit(tmp_path)['job_id'] == '123'
+    assert len(commands) == 1
+
+
+def test_lost_array_response_recovers_base_id_from_tasks(tmp_path, monkeypatch):
+    amber.save(tmp_path / 'input.json', {'cpus': 384, 'entries': [{'id': 1}, {'id': 2}],
+               'slurm': {'partition': 'cpu', 'job_name': 'unique', 'array_count': 2}})
+    def lost(*args, **kwargs):
+        raise subprocess.TimeoutExpired('sbatch', 90)
+    monkeypatch.setattr(control.subprocess, 'check_output', lost)
+    with pytest.raises(subprocess.TimeoutExpired):
+        control.submit(tmp_path)
+    queries = []
+    def query(command):
+        queries.append(command)
+        return '123\n123\n' if command[0] == 'squeue' else '123_0|unique|\n123_1|unique|\n'
+    monkeypatch.setattr(control, 'query', query)
+    assert control.submit(tmp_path)['job_id'] == '123'
+    assert '--format=%F' in queries[0]
+    assert '--array' in queries[1]
+
+
+@pytest.mark.parametrize('history', ['123_0|unique|\n456_0|unique|', '123_[0-1]|unique|'])
+def test_ambiguous_array_history_blocks_resubmission(tmp_path, monkeypatch, history):
+    amber.save(tmp_path / 'slurm-submission.json', dict(launching=True, started_at=0,
+                                                       job_name='unique', array_count=2))
+    monkeypatch.setattr(control, 'query', lambda command: '' if command[0] == 'squeue' else history)
+    monkeypatch.setattr(control.subprocess, 'check_output', lambda *a, **kw: pytest.fail('Duplicate array'))
+    with pytest.raises(RuntimeError, match='resubmission blocked'):
+        control.submit(tmp_path)
+
+
+@pytest.mark.parametrize('rows,active,successful', [
+    ('123_0|COMPLETED|\n123_0.batch|COMPLETED|\n123_1|COMPLETED|\n123_1.0|COMPLETED|', False, True),
+    ('123_0|COMPLETED|\n123_1|COMPLETED|\n123_1.0|RUNNING|', True, False),
+    ('123_0|COMPLETED|\n123_1|FAILED|', False, False),
+    ('123_0|COMPLETED|\n123_1|CANCELLED by 1023|', False, False),
+])
+def test_array_status_requires_all_tasks_and_steps(monkeypatch, rows, active, successful):
+    monkeypatch.setattr(control, 'query', lambda command: '' if command[0] == 'squeue' else rows)
+    result = control.status('123', 2)
+    assert result['active'] is active and result['successful'] is successful
+
+
+@pytest.mark.parametrize('rows', ['', '123|COMPLETED|', '123_0|COMPLETED|',
+                                  '123_0|COMPLETED|\n123_1|COMPLETED|\n123_2|COMPLETED|',
+                                  '123_0|COMPLETED|\n123_1|COMPLETED|\n123_2.0|COMPLETED|'])
+def test_missing_or_unexpected_array_task_history_never_completes(monkeypatch, rows):
+    monkeypatch.setattr(control, 'query', lambda command: '' if command[0] == 'squeue' else rows)
+    with pytest.raises(RuntimeError, match='task history'):
+        control.status('123', 2)
+
+
+def test_array_status_keeps_pending_tasks_without_accounting_lookup(monkeypatch):
+    def query(command):
+        assert command[0] == 'squeue'
+        return 'RUNNING\nPENDING\n'
+    monkeypatch.setattr(control, 'query', query)
+    assert control.status('123', 2)['active']
+
+
+def test_array_poll_persists_successes_before_reporting_other_task_preparation_failure(project, monkeypatch):
+    record = child_record(project, slurm.ARRAY)
+    monkeypatch.setattr(slurm, 'job_state', lambda *a: dict(active=False, successful=True, state='COMPLETED'))
+    monkeypatch.setattr(amber, 'ssh', lambda *a, **kw: SimpleNamespace(stdout=json.dumps(
+        dict(active=False, status='failed', error='receptor error', results=[{'id': 1, 'score': -20}]))))
+    monkeypatch.setattr(amber, 'download_logs', lambda *a: None)
+    with pytest.raises(RuntimeError, match='receptor error'):
+        amber.poll(project, 1, project.output, record)
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT amber_gbsa_score FROM compound WHERE id=1').fetchone() == (-20,)
+    assert (project.output / 'amber_job.json').exists()
+
+
+def test_array_job_state_checkpoints_id_before_status_lookup(project, monkeypatch):
+    record = child_record(project, slurm.ARRAY)
+    del record['slurm_job_id']
+    calls = []
+    def ssh(settings, command, **kwargs):
+        calls.append(command)
+        if ' submit ' in command:
+            return SimpleNamespace(stdout='{"job_id":"321"}')
+        assert amber.load_job(project.output)['slurm_job_id'] == '321'
+        assert command.endswith(' status 321 4')
+        raise RuntimeError('status unavailable')
+    monkeypatch.setattr(amber, 'ssh', ssh)
+    with pytest.raises(RuntimeError, match='unavailable'):
+        slurm.job_state(project.output, record)
+    with pytest.raises(RuntimeError, match='unavailable'):
+        slurm.job_state(project.output, amber.load_job(project.output))
+    assert sum(' submit ' in command for command in calls) == 1

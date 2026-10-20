@@ -1,4 +1,4 @@
-"""Slurm admission/recovery around the unchanged single-node Amber worker."""
+"""One-core Amber Slurm arrays, with recovery of saved single-node batches."""
 import json
 from pathlib import Path
 import shlex
@@ -7,6 +7,7 @@ import uuid
 
 MODE = 'slurm_batches_v1'
 SINGLE = 'slurm_single_v1'
+ARRAY = 'slurm_array_v1'
 
 
 def new_record(args, iteration, directory, ids):
@@ -14,22 +15,13 @@ def new_record(args, iteration, directory, ids):
     from pathlib import PurePosixPath
     if not ids or not 1 <= args.amber_cpus <= 384:
         raise ValueError('Slurm Amber requires compounds and 1..384 CPUs')
-    budget = min(args.amber_cpus, len(ids))
-    count = (budget + 191) // 192
-    parts = []
-    for index in range(count):
-        run_id = 'run-' + uuid.uuid4().hex
-        parts.append({'run_id': run_id, 'compound_ids': ids[index::count],
-                      'cpus': budget // count + (index < budget % count),
-                      'prepared': False, 'mode': SINGLE, 'iteration': iteration,
-                      'db_path': str(args.db_path.resolve()), 'settings': dict(args.amber_remote),
-                      'charge_method': args.amber_charge_method,
-                      'remote_dir': str(PurePosixPath(args.amber_remote['remote_work_dir']) / run_id)})
-    record = {'mode': MODE, 'run_id': 'run-' + uuid.uuid4().hex, 'iteration': iteration,
+    run_id = 'run-' + uuid.uuid4().hex
+    record = {'mode': ARRAY, 'run_id': run_id, 'iteration': iteration,
               'db_path': str(args.db_path.resolve()), 'settings': dict(args.amber_remote),
               'charge_method': args.amber_charge_method, 'compound_ids': ids,
               'source_fingerprints': amber.source_fingerprints(args, iteration),
-              'parts': parts, 'cpus': args.amber_cpus}
+              'prepared': False, 'cpus': args.amber_cpus,
+              'remote_dir': str(PurePosixPath(args.amber_remote['remote_work_dir']) / run_id)}
     amber.save(directory / 'amber_job.json', record)
     return record
 
@@ -39,10 +31,17 @@ def prepare_files(folder, record):
     control = Path(__file__).with_name('amber_slurm_control.py')
     (folder / control.name).write_bytes(control.read_bytes())
     remote = shlex.quote(record['remote_dir'])
-    body = f'exec srun --ntasks=1 --cpus-per-task={record["cpus"]} python worker.py run {remote}'
+    files = [folder / control.name, folder / 'amber.sbatch']
+    if record['mode'] == ARRAY:
+        helper = Path(__file__).with_name('amber_array.py')
+        (folder / helper.name).write_bytes(helper.read_bytes())
+        files.append(folder / helper.name)
+        body = f'exec srun --ntasks=1 --cpus-per-task=1 python amber_array.py run {remote} "$SLURM_ARRAY_TASK_ID"'
+    else:
+        body = f'exec srun --ntasks=1 --cpus-per-task={record["cpus"]} python worker.py run {remote}'
     (folder / 'amber.sbatch').write_text('#!/bin/bash\nset -e\nexec ' +
                                        amber.environment_command(record['settings'], body) + '\n')
-    return [folder / control.name, folder / 'amber.sbatch']
+    return files
 
 
 def job_state(directory, record):
@@ -62,7 +61,8 @@ def job_state(directory, record):
             raise RuntimeError('Missing Slurm JobId; submission retained for reconciliation')
         record['slurm_job_id'] = job_id
         amber.save(directory / 'amber_job.json', record)
-    response = amber.ssh(record['settings'], f'python3 {control} status {record["slurm_job_id"]}',
+    count = f' {len(record["compound_ids"])}' if record.get('mode') == ARRAY else ''
+    response = amber.ssh(record['settings'], f'python3 {control} status {record["slurm_job_id"]}{count}',
                           capture_output=True, text=True)
     return json.loads(response.stdout)
 
