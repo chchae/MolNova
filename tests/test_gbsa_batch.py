@@ -84,11 +84,34 @@ def test_flexible_batch_uses_per_complex_receptor_and_pins_protocol(tmp_path, mo
     record = batch.create_batch(args, root, [1, 2])
     assert record['command'][1] == str(root / 'mmgbsa_complexes.maegz')
     assert record['command'][-8:] == ['-ligand', 'atom.i_molnova_batch_ligand 1',
-                                      '-rflexdist', '6.0', '-rflexgroup', 'residue',
+                                      '-rflexdist', '6.0', '-rflexgroup', 'side',
                                       '-out_type', 'COMPLEX']
     assert (root / 'mmgbsa_complexes.maegz').is_file()
     assert len(commands) == 1
     assert record['prime_flexdist'] == 6
+
+
+@pytest.mark.parametrize('group', ['residue', 'side'])
+def test_saved_flexible_batch_keeps_exact_protocol_on_launch_and_restart(tmp_path, monkeypatch, group):
+    args, root, record = project(tmp_path, monkeypatch)
+    # Existing manifests, including not-yet-launched requests, own their protocol.
+    record['command'] += ['-rflexdist', '6.0', '-rflexgroup', group,
+                          '-out_type', 'COMPLEX']
+    record['prime_flexdist'] = 6.0
+    prime._save(root, record)
+    expected = list(record['command'])
+    launches = []
+    monkeypatch.setattr(prime, '_run_attempt',
+                        lambda *a: (launches.append(list(a[0])) or (0, 'JobId: saved-parent')))
+    assert batch.poll_batch(1, args, root, prime.load_job(root)) is None
+    assert launches == [expected]
+    args.prime_flexdist = 0.0
+    args.host = 'changed:128'
+    monkeypatch.setattr(prime, '_job_details', lambda *a: [
+        dict(jobId='saved-parent', status='RUNNING')])
+    assert batch.poll_batch(1, args, root, prime.load_job(root)) is None
+    assert launches == [expected]
+    assert prime.load_job(root)['command'] == expected
 
 
 def test_failed_native_parent_keeps_streamed_result_and_retries_only_unscored(tmp_path, monkeypatch):

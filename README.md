@@ -373,23 +373,25 @@ prefers `r_psp_MMGBSA_dG_Bind`, with the existing property-name fallbacks. Score
 are stored only for submitted IDs, preserve existing GBSA results, and rank
 lower values first for elite selection.
 
-To allow receptor residues within 6 Å of each ligand to move during Prime MM-GBSA:
+To allow receptor sidechains within 6 Å of each ligand to move during new Prime MM-GBSA calculations:
 
 ```toml
 prime-flexdist = 6.0
 ```
 
 Omit this key or set `prime-flexdist = 0` to keep the default frozen receptor
-and flexible ligand. Positive values select whole residues with the native
-`-rflexdist` and `-rflexgroup residue` options. Flexible calculations also request
-`COMPLEX` output to retain the optimized receptor coordinates. This option
-selects a different scientific protocol; it is not a speed optimization.
+and flexible ligand. New native batches use `-rflexdist <distance>` and
+`-rflexgroup side`: receptor sidechains in the selected region can move while
+the backbone stays fixed. Flexible calculations request `COMPLEX` output to
+retain optimized receptor coordinates. The EGFR distance remains 6 Å.
 
-The setting is saved when a **new queue** is created, for both reference and
-generated iterations. Changing TOML does not alter an existing queue, including
-its pending compounds. Older queues retain their original frozen-receptor
-behavior, and saved native jobs retain their exact commands. Existing scores
-are preserved. No production flexible-mode calculation was run during validation.
+The exact command is saved when a **new batch** is created, for both reference
+and generated iterations. Existing native batches retain their original
+commands, including `-rflexgroup residue`, on restart and license retry. Legacy
+individual queues retain their original protocol for pending members as well.
+Existing scores are preserved. Sidechain-only minimization can reduce work but
+changes the scientific protocol; speed, energies and ranking have not been
+validated with real calculations.
 
 ## CPU parallelism
 

@@ -34,7 +34,7 @@ def create_batch(args, directory, compound_ids):
         prepare_complexes(args, directory, compound_ids)
         command[1] = directory / 'mmgbsa_complexes.maegz'
         command += ['-ligand', 'atom.i_molnova_batch_ligand 1']
-        command += ['-rflexdist', str(flexibility), '-rflexgroup', 'residue',
+        command += ['-rflexdist', str(flexibility), '-rflexgroup', 'side',
                     '-out_type', 'COMPLEX']
     record = dict(mode=MODE, command=[str(value) for value in command],
                   compound_ids=list(compound_ids), prime_flexdist=flexibility,

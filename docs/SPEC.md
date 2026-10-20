@@ -1331,3 +1331,22 @@ LibInvent vocabulary/minimum training-pair checks still apply.
 Read-only cluster inspection verified cpu nodes and sbatch/srun options and the
 shared Amber environment. Regression tests mock external calculations; no real
 SLURM calculation, throughput or scientific ranking validation is claimed.
+
+
+## 20. Confirmed Prime sidechain-only flexibility (2026-10-20)
+
+The user requested replacing `-rflexgroup residue` with `-rflexgroup side`
+for new flexible Prime MM-GBSA batches. Keep the configured `prime-flexdist`
+unchanged (EGFR: 6 Å). Positive distances now permit only receptor sidechains
+within that distance to move; the receptor backbone remains fixed. Preserve
+ligand minimization, independent per-ligand complex inputs, `COMPLEX` output,
+scientific identity, scoring and the seven-slot limit. Zero/omitted distance
+continues to use the frozen-receptor protocol without flexibility flags.
+
+This supersedes the whole-residue choice in sections 12 and 17 for newly
+created native batches only. Existing saved native commands (including unlaunched
+requests and license retries) and legacy individual queues retain their exact
+original protocol, including pending queue members. Do not migrate live jobs,
+recompute results or relabel old scores. Installed 2026-3 `prime_mmgbsa -h`
+confirms `side` support; regression tests verify command creation and recovery.
+No real minimization, speedup, energy or ranking validation is claimed.

@@ -1,5 +1,15 @@
 # MolNova Development Handoff
 
+## Prime sidechain-only flexibility (2026-10-20)
+
+SPEC section 20 supersedes the historical whole-residue choice for new native
+Prime batches. Positive `prime-flexdist` now uses `-rflexgroup side`, preserving
+the configured distance (EGFR: 6 Å), flexible ligand, per-ligand complex inputs
+and optimized complex output. Existing native manifests and legacy queues keep
+their original commands/protocols on restart and license retry. No scientific
+results or live jobs are changed. Installed 2026-3 help verifies the option;
+mock regression tests do not validate actual speed, energy or ranking.
+
 ## Deleted-iteration restart (2026-10-20)
 
 SPEC section 18 extends clean-start cleanup: zero compounds plus durable evidence
