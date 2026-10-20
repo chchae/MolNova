@@ -12,6 +12,7 @@ from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration
 from molnova.chemistry.descriptors import calculate_rdkit_descriptors_batch
 from molnova.chemistry.druglike import filter_druglike
 from molnova.stages._logging import work_started, timed_stage
+from molnova.stages._workspace import prepare_iteration_directory
 
 
 def choose_iteration(args, requested):
@@ -174,9 +175,10 @@ def _run_stage(args, requested_iteration):
 
     combichem = getattr(args, 'sidechain_library', None) is not None
     run_dir = args.output / f"iter{iteration}" / ('combichem' if combichem else 'reinvent')
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     if iteration == 1:
+        prepare_iteration_directory(args, iteration)
+        run_dir.mkdir(parents=True, exist_ok=True)
         prepare_iteration_scaffold(args, iteration, create=True)
         if combichem:
             return _run_combichem(args, iteration, run_dir)
@@ -213,6 +215,8 @@ def _run_stage(args, requested_iteration):
             raise RuntimeError(
                 f"Need {args.gbsa_elite_count} previous MM-GBSA elites; only {len(elites)} available."
             )
+        prepare_iteration_directory(args, iteration)
+        run_dir.mkdir(parents=True, exist_ok=True)
         prepare_iteration_scaffold(args, iteration, elites, create=True)
         if combichem:
             return _run_combichem(args, iteration, run_dir)

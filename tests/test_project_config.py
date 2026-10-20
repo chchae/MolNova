@@ -193,6 +193,20 @@ def test_invalid_combichem_batch_size(tmp_path, value):
         generation_settings({'sidechain-library': 'edges.smi', 'sample-size': value}, tmp_path)
 
 
+@pytest.mark.parametrize('value', [0, -1, True, False, 10.0, '10'])
+def test_invalid_sidechain_heavy_atom_limit(tmp_path, value):
+    from molnova.config import generation_settings
+    with pytest.raises(ValueError, match='sidechain-max-heavy-atoms'):
+        generation_settings({'sidechain-max-heavy-atoms': value}, tmp_path)
+
+
+@pytest.mark.parametrize('extra, expected', [('', None), ('sidechain-max-heavy-atoms = 10\n', 10)])
+def test_sidechain_heavy_atom_limit_configuration(tmp_path, extra, expected):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + 'sidechain-library = "edges.smi"\n' + extra)
+    assert _core.load_project_toml(project)['sidechain_max_heavy_atoms'] == expected
+
+
 @pytest.mark.parametrize('extra, expected', [('', 0.0), ('prime-flexdist = 0\n', 0.0),
                                            ('prime-flexdist = 6.0\n', 6.0)])
 def test_prime_flexdist_configuration(tmp_path, extra, expected):

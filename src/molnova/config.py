@@ -25,7 +25,11 @@ def generation_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     batch = config.get('sample-size', 3000)
     if library is not None and (isinstance(batch, bool) or not isinstance(batch, int) or batch < 1):
         raise ValueError('sample-size must be a positive integer for combichem')
+    maximum = config.get('sidechain-max-heavy-atoms')
+    if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1):
+        raise ValueError('sidechain-max-heavy-atoms must be a positive integer')
     return {'sidechain_library': library,
+            'sidechain_max_heavy_atoms': maximum,
             'generation_method': 'combichem' if library is not None else 'reinvent4',
             'sample_size': int(batch)}
 

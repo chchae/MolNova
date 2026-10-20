@@ -508,6 +508,29 @@ def iteration_has_compounds(path, iteration):
         ).fetchone() is not None
 
 
+def iteration_has_saved_work(path, iteration):
+    """Durable work/preparation pins iteration files; timing alone does not."""
+    with connect(path) as conn:
+        for table in ('compound', 'iteration_scaffold', 'iteration_combichem',
+                      'iteration_combichem_history', 'iteration_sa_selection', 'combichem_batch',
+                      'iteration_workspace'):
+            if (conn.execute('SELECT 1 FROM sqlite_master WHERE type=? AND name=?',
+                             ('table', table)).fetchone()
+                    and conn.execute(f'SELECT 1 FROM {table} WHERE iteration=? LIMIT 1',
+                                     (iteration,)).fetchone()):
+                return True
+    return False
+
+
+def mark_iteration_workspace_prepared(path, iteration):
+    """Checkpoint cleanup before generation so zero-row retries keep their files."""
+    with connect(path) as conn:
+        conn.execute('CREATE TABLE IF NOT EXISTS iteration_workspace ('
+                     'iteration INTEGER PRIMARY KEY, prepared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)')
+        conn.execute('INSERT INTO iteration_workspace(iteration) VALUES (?) ON CONFLICT(iteration) DO NOTHING',
+                     (iteration,))
+
+
 def combichem_plan(path, iteration, plan=None):
     """Persist immutable pools/parameters separately from the atomic cursor."""
     import json
@@ -600,7 +623,8 @@ def advance_combichem_plan(path, iteration, previous, plan, target_count, *, cha
             return current
         pinned = ('library_path', 'library_sha256', 'attachment_labels',
                   'selection_weight', 'batch_size')
-        if any(plan[key] != current[key] for key in pinned):
+        if (any(plan[key] != current[key] for key in pinned)
+                or plan.get('sidechain_max_heavy_atoms') != current.get('sidechain_max_heavy_atoms')):
             raise RuntimeError('Combichem refill differs from saved scaffold/library/parameters')
         revision = current.get('attachment_revision', 0)
         if change_attachments:

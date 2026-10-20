@@ -184,7 +184,7 @@ def prepare_single_elite_scaffold(elite, previous, docking_smarts, *, selected_c
                 replacement_candidates=candidate_groups)
 
 
-def load_library(path, report):
+def load_library(path, report, max_heavy_atoms=None):
     """Validate, canonicalize and deduplicate single-ended fragments."""
     path, report = Path(path), Path(report)
     digest = hashlib.sha256()
@@ -205,6 +205,9 @@ def load_library(path, report):
                 dummies = attachment_atoms(mol)
                 if len(dummies) != 1:
                     raise ValueError('sidechain must have exactly one attachment')
+                heavy_atoms = mol.GetNumHeavyAtoms()
+                if max_heavy_atoms is not None and heavy_atoms > max_heavy_atoms:
+                    raise ValueError(f'sidechain heavy atoms {heavy_atoms} exceeds maximum {max_heavy_atoms}')
                 for atom in mol.GetAtoms():
                     atom.SetAtomMapNum(0)
                 canonical = Chem.MolToSmiles(mol, isomericSmiles=True)
@@ -212,7 +215,7 @@ def load_library(path, report):
                     raise ValueError('duplicate sidechain')
                 seen.add(canonical)
                 accepted.append({'line': line_number, 'smiles': canonical,
-                                 'heavy_atoms': mol.GetNumHeavyAtoms()})
+                                 'heavy_atoms': heavy_atoms})
             except ValueError as error:
                 rejected += 1
                 writer.writerow([line_number, smiles, str(error)])
@@ -232,7 +235,7 @@ def select_sidechains(library, rng, count=1000):
     return selected
 
 
-def _draw_plan(scaffold, library, fingerprint, rejected, library_path, batch_size):
+def _draw_plan(scaffold, library, fingerprint, rejected, library_path, batch_size, max_heavy_atoms=None):
     seed = secrets.randbits(128)
     rng = random.Random(seed)
     molecule = Chem.MolFromSmiles(scaffold)
@@ -246,6 +249,7 @@ def _draw_plan(scaffold, library, fingerprint, rejected, library_path, batch_siz
         stride = rng.randrange(1, total)
     return {'protocol': 'combichem_v1', 'scaffold_smiles': scaffold,
             'library_path': str(library_path), 'library_sha256': fingerprint,
+            'sidechain_max_heavy_atoms': max_heavy_atoms,
             'eligible_sidechains': len(library), 'rejected_sidechains': rejected,
             'seed': str(seed), 'selection_weight': '1/heavy_atoms', 'pools': pools,
             'attachment_labels': [molecule.GetAtomWithIdx(index).GetAtomMapNum() for index in dummies],
@@ -263,9 +267,10 @@ def prepare_plan(args, iteration, directory):
             raise RuntimeError('Saved combichem round scaffold differs from its attachment selection')
         return saved
     directory.mkdir(parents=True, exist_ok=True)
+    maximum = getattr(args, 'sidechain_max_heavy_atoms', None)
     library, fingerprint, rejected = load_library(
-        args.sidechain_library, directory / 'sidechain_rejected.tsv')
-    plan = _draw_plan(scaffold, library, fingerprint, rejected, args.sidechain_library, args.sample_size)
+        args.sidechain_library, directory / 'sidechain_rejected.tsv', maximum)
+    plan = _draw_plan(scaffold, library, fingerprint, rejected, args.sidechain_library, args.sample_size, maximum)
     plan['round'] = 0
     return database.combichem_plan(args.db_path, iteration, plan)
 
@@ -323,12 +328,13 @@ def refill_plan(args, iteration, directory, previous, *, change_attachments=Fals
     folder = directory / f'round-{round_id:06d}'
     folder.mkdir(parents=True, exist_ok=True)
     library_path = Path(previous['library_path'])
-    library, fingerprint, rejected = load_library(library_path, folder / 'sidechain_rejected.tsv')
+    maximum = previous.get('sidechain_max_heavy_atoms')
+    library, fingerprint, rejected = load_library(library_path, folder / 'sidechain_rejected.tsv', maximum)
     if fingerprint != previous['library_sha256']:
         raise RuntimeError('Combichem refill library changed; saved pools/cursor and compounds preserved')
     scaffold = selection['scaffold_smiles'] if selection else previous['scaffold_smiles']
     plan = _draw_plan(scaffold, library, fingerprint, rejected,
-                      library_path, previous['batch_size'])
+                      library_path, previous['batch_size'], maximum)
     for key in ('base_scaffold_smiles', 'attachment_selection', 'attachment_revision'):
         if key in previous:
             plan[key] = previous[key]

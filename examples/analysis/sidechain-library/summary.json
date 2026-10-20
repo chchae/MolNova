@@ -1,0 +1,103 @@
+{
+  "library": "/homes1/chchae/work/MolNova/MolNova/examples/input/edges-50k.smi",
+  "library_sha256": "53f627223cc0d6f8bd67eb82a09dfacc8b6b90f3e141f21a75979b252d06f00c",
+  "rdkit_version": "2026.03.6",
+  "rejected_rows": 0,
+  "max_heavy_atoms": 10,
+  "valid_unique_fragments": 50126,
+  "within_size_limit": 23893,
+  "within_size_limit_percent": 47.66588197741691,
+  "definition": "Heavy atoms: atomic number > 1, dummy and hydrogen isotopes excluded. Rotatable bonds: RDKit Strict on single-ended fragments retaining attachment dummy.",
+  "all_fragments": {
+    "heavy_atoms": {
+      "n": 50126,
+      "min": 1,
+      "max": 13,
+      "mean": 10.310517495910306,
+      "median": 11.0,
+      "p25": 9.0,
+      "p75": 12.0,
+      "counts": {
+        "1": 11,
+        "2": 28,
+        "3": 104,
+        "4": 289,
+        "5": 746,
+        "6": 1595,
+        "7": 2828,
+        "8": 4414,
+        "9": 6134,
+        "10": 7744,
+        "11": 8785,
+        "12": 9223,
+        "13": 8225
+      }
+    },
+    "rotatable_bonds": {
+      "n": 50126,
+      "min": 0,
+      "max": 11,
+      "mean": 1.954195427522643,
+      "median": 2.0,
+      "p25": 1.0,
+      "p75": 3.0,
+      "counts": {
+        "0": 7978,
+        "1": 14768,
+        "2": 12409,
+        "3": 7595,
+        "4": 3995,
+        "5": 1906,
+        "6": 816,
+        "7": 333,
+        "8": 167,
+        "9": 95,
+        "10": 47,
+        "11": 17
+      }
+    }
+  },
+  "within_size_limit_stats": {
+    "heavy_atoms": {
+      "n": 23893,
+      "min": 1,
+      "max": 10,
+      "mean": 8.479010588875402,
+      "median": 9.0,
+      "p25": 8.0,
+      "p75": 10.0,
+      "counts": {
+        "1": 11,
+        "2": 28,
+        "3": 104,
+        "4": 289,
+        "5": 746,
+        "6": 1595,
+        "7": 2828,
+        "8": 4414,
+        "9": 6134,
+        "10": 7744
+      }
+    },
+    "rotatable_bonds": {
+      "n": 23893,
+      "min": 0,
+      "max": 8,
+      "mean": 1.6521575356799063,
+      "median": 1.0,
+      "p25": 1.0,
+      "p75": 2.0,
+      "counts": {
+        "0": 5353,
+        "1": 7428,
+        "2": 5580,
+        "3": 2924,
+        "4": 1491,
+        "5": 700,
+        "6": 300,
+        "7": 85,
+        "8": 32
+      }
+    }
+  }
+}

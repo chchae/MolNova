@@ -53,6 +53,29 @@ def test_no_eligible_sidechains_is_an_error(tmp_path):
         combichem.load_library(path, tmp_path / 'rejected.tsv')
 
 
+def test_sidechain_heavy_atom_limit_is_inclusive_and_excludes_dummy_and_hydrogen(tmp_path):
+    path = tmp_path / 'edges.smi'
+    path.write_text('*CCCCCCCCCC\n*CCCCCCCCCCC\n*[2H]\n'
+                    '*C([2H])([H])CCCCCCCCO\n*Cl\n')
+    report = tmp_path / 'rejected.tsv'
+    accepted, _, rejected = combichem.load_library(path, report, max_heavy_atoms=10)
+    assert [row['line'] for row in accepted] == [1, 4, 5]
+    assert [row['heavy_atoms'] for row in accepted] == [10, 10, 1]
+    assert rejected == 2
+    audit = list(csv.DictReader(report.open(), delimiter='\t'))
+    assert audit[0]['line'] == '2'
+    assert audit[0]['reason'] == 'sidechain heavy atoms 11 exceeds maximum 10'
+    unlimited, _, _ = combichem.load_library(path, report)
+    assert any(row['heavy_atoms'] == 11 for row in unlimited)
+
+
+def test_size_filter_with_no_remaining_sidechains_is_an_error(tmp_path):
+    path = tmp_path / 'edges.smi'
+    path.write_text('*CCCCCCCCCCC\n')
+    with pytest.raises(RuntimeError, match='No eligible sidechains'):
+        combichem.load_library(path, tmp_path / 'rejected.tsv', max_heavy_atoms=10)
+
+
 def test_weighted_sampling_prefers_small_fragments_without_replacement():
     library = [dict(line=1, smiles='*C', heavy_atoms=1),
                dict(line=2, smiles='*' + 'C' * 20, heavy_atoms=20)]
@@ -157,6 +180,62 @@ def adaptive_project(project, monkeypatch):
     prepare_iteration_scaffold(project, 2, [(100, 'elite', 'CCCc1ccc(CCC)cc1', 1, -10, -40)], create=True)
     combichem.prepare_plan(project, 2, project.output / 'iter2/combichem')
     return project
+
+
+def test_new_combichem_iteration_clears_old_outputs_before_assembly(project, monkeypatch):
+    from molnova import schrodinger_guard
+    project.schrodinger = Path('/suite')
+    monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
+    root = project.output / 'iter1'
+    (root / 'combichem').mkdir(parents=True)
+    (root / 'combichem/plan.json').write_text('stale plan')
+    (root / 'glide').mkdir()
+    (root / 'glide/best_poses.maegz').write_text('stale poses')
+    generate._run_stage(project, 1)
+    assert database.iteration_compound_count(project.db_path, 1) == project.target_count
+    assert not (root / 'glide/best_poses.maegz').exists()
+    assert json.loads((root / 'combichem/plan.json').read_text())['protocol'] == 'combichem_v1'
+    archive = next((project.output / '.previous').iterdir())
+    assert (archive / 'glide/best_poses.maegz').read_text() == 'stale poses'
+
+
+def test_next_iteration_gate_precedes_workspace_cleanup(project):
+    root = project.output / 'iter2'
+    root.mkdir()
+    (root / 'stale.csv').write_text('old output')
+    generate._run_stage(project, 2)
+    assert (root / 'stale.csv').read_text() == 'old output'
+    assert not (project.output / '.previous').exists()
+    assert not database.iteration_has_saved_work(project.db_path, 2)
+
+
+@pytest.mark.parametrize('maximum', [None, 2])
+def test_size_limit_is_pinned_across_restart_and_refill(project, monkeypatch, maximum):
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.sidechain_max_heavy_atoms = maximum
+    monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
+    directory = project.output / 'iter1/combichem'
+    saved = combichem.prepare_plan(project, 1, directory)
+    assert saved['sidechain_max_heavy_atoms'] == maximum
+    assert saved['eligible_sidechains'] == (4 if maximum is None else 3)
+    if maximum is None:
+        # Legacy plans omitted this key and must keep their unlimited library.
+        legacy = {k: v for k, v in saved.items() if k not in ('next_index', 'sidechain_max_heavy_atoms')}
+        with database.connect(project.db_path) as conn:
+            conn.execute('UPDATE iteration_combichem SET plan=? WHERE iteration=1', (json.dumps(legacy),))
+        saved = database.combichem_plan(project.db_path, 1)
+    project.sidechain_max_heavy_atoms = 1
+    assert combichem.prepare_plan(project, 1, directory) == saved
+    database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1, 0))
+    previous = database.combichem_plan(project.db_path, 1)
+    changed = dict(previous, sidechain_max_heavy_atoms=1)
+    with pytest.raises(RuntimeError, match='differs'):
+        database.advance_combichem_plan(project.db_path, 1, previous, changed, 4)
+    following = combichem.refill_plan(project, 1, directory, previous)
+    assert following['sidechain_max_heavy_atoms'] == maximum
+    assert following['eligible_sidechains'] == previous['eligible_sidechains']
+    audit = list(csv.DictReader((directory / 'round-000001/sidechain_rejected.tsv').open(), delimiter='\t'))
+    assert len(audit) == (0 if maximum is None else 1)
 
 
 def test_empty_batch_streak_is_atomic_persistent_and_resets_on_insert(project):

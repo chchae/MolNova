@@ -106,6 +106,15 @@ iteration, or the next new iteration, once at startup. It does not automatically
 advance to another iteration. `max-iteration` bounds explicit and new iteration
 numbers. Restart with the same `--iteration N` to resume from SQLite and saved JobIds.
 
+Before a new iteration's first generation, MolNova clears any leftover `iterN/`
+files from the calculation path into `output/.previous/iterN-<timestamp>/` and
+starts in an empty directory. The archive preserves old results and does not
+reclaim disk space. Existing SQLite iterations and same-iteration restarts retain
+their files, including retries before any compounds were inserted. Active or
+uncertain external work blocks cleanup until reconciled. Iteration 0, saved
+results and configured input files are preserved. This runs automatically for
+both combichem and REINVENT; no extra option is needed.
+
 The driver supervises one independent worker subprocess at a time. It checks
 SQLite completion and live JobServer jobs before advancing; a zero worker exit
 code alone is insufficient. Incomplete stages are polled again, with MM-GBSA at
@@ -226,6 +235,7 @@ To generate by combinatorial sidechain assembly instead of REINVENT4, set:
 
 ```toml
 sidechain-library = "./input/edges-50k.smi"
+sidechain-max-heavy-atoms = 10  # optional; omit for no size limit
 sample-size = 3000  # combinations attempted per assembly/filtering batch
 ```
 
@@ -236,6 +246,12 @@ The library path is relative to this TOML. Each line begins with a SMILES; an
 optional trailing name is ignored. Eligible fragments have one terminal
 single-bond `*`/`[*]`. Carbon-free fragments such as `*N`, `*O` and `*Cl` are allowed.
 Invalid/disconnected fragments, multiple attachments and duplicates are excluded with a report.
+`sidechain-max-heavy-atoms` must be a positive integer and includes the boundary
+(e.g. 10 permits 10 heavy atoms). Hydrogen atoms, including isotopes, and the
+attachment dummy do not count. The limit applies to each incoming library
+fragment before sampling; oversize fragments appear in `sidechain_rejected.tsv`.
+Saved iterations retain their original limit across restarts and refills;
+changes apply to new iteration plans. Legacy plans remain unlimited.
 
 Combichem supports one or more scaffold attachments and uses every inferred
 attachment position. It independently selects up to 1000 unique fragments per

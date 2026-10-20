@@ -158,6 +158,17 @@ stages and synthetic readiness checks. Target count remains the total generated
 population admitted after druglikeness preselection. Reuse the saved selection on restart/config changes. Never apply
 a new filter to iteration 0 or legacy iterations with downstream work/results.
 
+Before first generation of a new SQLite iteration, after completion/elite gates,
+clear any leftover `iterN` tree into `output/.previous/iterN-<timestamp>/` and start
+with an empty directory. Check native jobs and saved/logged parent/child JobIds
+before moving anything; live/unknown/uncertain or unresolved remote submissions
+block cleanup. Protect configured inputs and reject root symlinks. Preserve DB
+results, all saved-work iterations and iteration 0. Checkpoint preparation in the
+non-destructively added `iteration_workspace` table before generating, so zero-row
+retries retain their files even without a saved scaffold. Timing alone does not
+count as saved work. Both combichem and REINVENT use this path under the generation
+stage lock. Archiving isolates old results without reclaiming disk space.
+
 New LigPrep/Glide/Prime calculations clear stale working artifacts from the
 active path before rebuilding inputs. Verified terminal historical work is
 archived; same-submission restarts recover JobIds, and live/uncertain jobs block
@@ -306,6 +317,13 @@ References that do not match the MCS should be excluded from the
 pose-template candidate set rather than aborting the project.
 
 ## 10. REINVENT4 / LibInvent
+
+Optional `sidechain-max-heavy-atoms` is a positive integer limiting each incoming
+library fragment before sampling (inclusive; hydrogen/isotopes and dummy excluded).
+Omission is unlimited. Report oversize fragments in `sidechain_rejected.tsv` and
+fail if none remain. Save the limit in each new iteration plan; refills and
+attachment retries use the saved value, regardless of current TOML. Legacy plans
+remain unlimited. Existing pools, compounds, results and cursors are preserved.
 
 Optional local `sidechain-library` selects the combichem generator in the same
 generate worker; absence retains REINVENT4. Combichem has no prior/runtime/TL

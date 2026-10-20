@@ -171,6 +171,30 @@ N+1 generation requires all preceding iterations to satisfy completion: target-c
 
 ## 6. References, MCS, scaffold, and generation — documented baseline
 
+**Confirmed clean iteration start (2026-10-20 user change):** before the first
+generation of a new iteration, clear any preexisting `output/iterN/` content from
+the active calculation path, after the preceding-iteration/elite gates pass and
+before publishing scaffolds or generation inputs. Preserve scientific artifacts
+by moving the entire orphaned directory to `output/.previous/iterN-<timestamp>/`
+and recreate an empty `iterN`. Never consume that archive as calculation input.
+Do not alter SQLite compounds, results, saved scaffold/pools/cursors or iteration 0.
+Existing compounds, scaffold/combichem/selection/batch records establish a resume
+and prevent whole-directory cleanup. Add `iteration_workspace(iteration,
+prepared_at)` non-destructively and checkpoint preparation before generation,
+including absent/empty directories. This also protects zero-row retries before a
+scaffold is saved; stage/iteration timing alone does not establish prior work.
+
+Perform cleanup only inside the generation stage lock. Before moving anything,
+check native active jobs and saved/logged JobIds, including parent/child terminal
+status. Lookup failures, live/unknown jobs, uncertain launches, unresolved Prime
+queues, Amber manifests or REINVENT remote-run markers retain all files and stop
+generation for reconciliation. Do not infer completion from cached output or
+local remote-status snapshots. Protect configured inputs/DB under `iterN` by
+stopping rather than relocating them; refuse iteration/archive root symlinks.
+Same-iteration restarts retain working data; existing stage-level cleanup still
+applies when starting new LigPrep/Glide/Prime calculations. The archive preserves
+results and diagnostics; it does not reclaim disk space.
+
 **Confirmed combichem addition (2026-10-20 user interview):** a nonempty local
 `sidechain-library = "./input/edges-50k.smi"` selects combichem; omission retains
 REINVENT4. Resolve the library against the TOML directory. Keep the same
@@ -229,6 +253,18 @@ elite-count gates, supplied/fixed-core precedence, initial reference bootstrap,
 multi-elite combichem, library sampling, RO5/QED/SA filters and REINVENT4 behavior.
 Replacement permits smaller compounds but does not guarantee RO5 acceptance or
 that the finite Cartesian pool reaches target-count.
+
+**Confirmed sidechain size option (2026-10-20 user change):** optional TOML
+`sidechain-max-heavy-atoms = 10` restricts newly drawn library pools to fragments
+with at most 10 heavy atoms, before weighted sampling. Accept positive integers
+only; omission means no size limit. Count all elements with atomic number >1,
+excluding hydrogen isotopes and attachment dummies. The limit applies to each
+incoming library fragment, not the assembled molecule or any retained elite
+sidechain segment. Record oversize fragments in `sidechain_rejected.tsv`; stop
+if no eligible fragments remain. Pin the limit in the iteration's saved combichem
+plan and retain it across restarts, pool refills and attachment retries. Legacy
+plans without the setting remain unlimited. TOML changes affect new iteration
+plans only; preserve existing compounds, pools, cursors and scientific results.
 
 Read the library's first whitespace-delimited field as SMILES (optional trailing
 name is ignored). Accept valid connected molecules with exactly one terminal
