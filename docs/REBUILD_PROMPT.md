@@ -26,6 +26,9 @@ The following distinction applies throughout:
 
 The Amber screening change in section 15 supersedes docking-based Prime selection when enabled; other projects retain the documented Prime-only baseline. Explicit later user decisions supersede this document. When evidence conflicts and no later user decision is available, record the conflict and preserve the documented baseline while seeking clarification for work that depends on it. This document does not authorize new production calculations.
 
+The later confirmed workflow in section 16 supersedes earlier selection/count
+baselines for new iterations; preserve the historical policy for saved work.
+
 ## 1. Confirmed purpose and constraints
 
 MolNova performs iterative congeneric lead optimization around a known scaffold/core using REINVENT4/LibInvent, LigPrep, reference-guided constrained Glide, MM-GBSA, and optional FEP staging. SQLite is the workflow source of truth.
@@ -120,10 +123,10 @@ These are environment-specific values, not proof that the paths/hosts are access
 | `tail-timeout` | 300 seconds |
 | `glide-job-timeout` | 1800 seconds; 0 disables |
 | `elite-tl-epochs` | 3 |
-| `gbsa-input-count` | 200 without Amber; 50 with Amber |
+| `gbsa-input-count` | 200 |
 | `gbsa-elite-count` | 10 |
 | `prime-flexdist` | 0.0 Å (frozen receptor) |
-| `fep-enabled`, `fep-input-count` | false, 10 |
+| `fep-enabled`, `fep-input-count` | false, 20 |
 | `synthetic-feasibility-enabled` | true |
 | `aizynth-nproc`, `aizynth-cli` | 8, `aizynthcli` |
 | `gbsa-license-retry-seconds`, `gbsa-license-retries` | 300, 3 |
@@ -1115,3 +1118,98 @@ from `complex.minimized.rst7`. The requested mask selected all 2,286 receptor an
 The smoke run reached its cycle limit before convergence; it validates runtime
 integration, not convergence, target ranking or 124-way throughput. Original poses,
 production SQLite results and submitted jobs were preserved.
+
+## 16. Confirmed staged selection workflow — 2026-10-20
+
+This later user-approved policy supersedes the pre-DB druglikeness, separate SA
+filter, Amber top-200/Prime top-50 and Prime-only FEP selection descriptions above
+for newly prepared iterations. Historical sections retain evidence for restoring
+legacy iterations; they do not override this policy. Do not reset existing work.
+
+The sequential supervisor runs:
+`generate → druglike → synthetic (optional) → LigPrep → Glide → Amber (optional) → Prime → FEP export (optional)`.
+LigPrep remains mandatory preparation for constrained docking. Each stage stays
+an independent subprocess coordinated by SQLite. Preserve atomic claims, native
+JobId recovery, parallel Glide groups, immediate results, seven Prime slots and
+cross-project submission exclusion. This policy authorizes code changes, not
+production calculations or an automated FEP protocol.
+
+**Generation and drug likeness:** for a new iteration, `target-count` counts
+valid, canonical, DB-wide unique generated molecules before drug likeness.
+Persist every admitted molecule in original input order, up to that raw target;
+leave properties nullable until the independent druglike worker runs. Invalid,
+duplicate and over-target sampling entries do not become compound rows. Commit
+combichem rows, origin, batch outcome and cursor atomically as before. Stop at
+the raw target; do not generate replacements for druglikeness rejections.
+
+Once generation finishes, compute all 16 existing RDKit properties for the full
+iteration from DB SMILES. Apply unchanged RO5<=1 and at most ceil(population/2)
+selection by QED descending then SA ascending, with ID ties. Select globally,
+not independently per generation batch. Preserve all rejected compound rows,
+properties and explicit reasons in `compound_druglike_selection`; use state
+`druglike_rejected`. Freeze population, accepted count and optional SA ratio in
+`iteration_druglike_selection`. Publish a report from committed DB selection in
+`iterN/druglike/druglike_selection.csv`, regenerating it safely after a crash.
+LigPrep/synthetic/Glide cannot proceed before this committed selection. Rejected
+rows count as processed and never enter those calculations. Iteration 0 remains
+exempt. Default `sa-accepted-ratio` is now 1.0; a smaller explicit ratio additionally
+keeps the lowest-SA fraction of the druglike survivors within this same stage.
+
+**Compatibility:** `iteration_workspace.generation_policy` is added
+non-destructively. Existing workspace records default to `legacy`; new prepared
+workspaces explicitly pin `raw_v1` before generation. Existing compounds,
+scaffold/pool/SA snapshots and old workspaces retain pre-DB selection/target
+semantics and saved scientific behavior. Their new druglike worker is a no-op.
+Legacy generation reruns still backfill properties. New raw generation does not
+compute properties or perform selection; rerun druglike to backfill its report.
+A frozen raw population cannot be extended by increasing target-count.
+
+**Confirmed TOML naming correction:** use `amber-input-count` for the
+Glide-ranked population entering Amber. Preserve `amber-keep-count` as a legacy
+alias without changing stored submissions or scientific parameters. Each value
+must be a positive integer; if both are present they must agree, including when
+Amber is disabled. Omission remains 500. Keep existing internal API attributes
+for compatibility; historical sections above may retain the old spelling.
+
+**Amber and Prime:** after all docking finishes, evaluate final finite Glide
+best 500 with Amber when enabled. Default `amber-input-count=500` and
+`gbsa-input-count=200`; explicitly supplied counts override them. Prime uses the
+best 200 finite Amber results within the configured shortlist when Amber is
+enabled. With Amber disabled, existing finite Amber results may still supply
+ranking. If the available Amber result set is empty after upstream completion,
+use final finite Glide best 200. Amber-only terminal failures may be claimed by
+Prime under this fallback; other terminal failures remain terminal. Preserve
+Amber failure messages in non-destructively added `amber_failure` records so
+Prime claims/retries/success cannot make completed Amber work appear pending
+or resubmit it. Running,
+retryable, uncertain or saved external jobs are not evidence of an empty result
+set and never trigger a bypass. Partial Amber results supply fewer than 200;
+do not fill from docking or mix score scales. Existing scores retain ranking
+positions. Permanent failures do not trigger lower-ranked refill. All ranking,
+readiness and claims remain transactional. Iteration 0 still evaluates all
+eligible reference poses without 500/200 limits.
+
+**FEP candidates:** default `fep-input-count=20`, optional and disabled by default
+in the loader; the EGFR example enables candidate export. After upstream work
+finishes, choose one ranking source for that iteration: finite Prime results,
+otherwise finite Amber results, otherwise finite Glide results. Lower is better;
+ID breaks ties. Select at most 20 from that one source. A partial higher-tier
+set is not filled from lower tiers. Reject nonfinite scores. Freeze candidate
+IDs, ranking scores and source in `iteration_fep_selection` and export those
+records atomically, including source, all score columns and current state.
+Restart/count changes or later scores never replace frozen candidates. Validate
+imports against that snapshot, allow candidates without Prime scores, reject
+unknown/outside/duplicate/nonfinite/conflicting results atomically, and preserve
+other scientific scores and failure diagnostics. Old Prime-only imports may
+freeze their legacy candidate set; raw iterations must export before importing.
+Saved submissions, native jobs, running workers/claims and unfinished eligible
+Prime work block a new export/fallback. FEP remains export/import only, not
+execution or a convergence/fitness claim. Next-iteration generation still
+requires finite immediately preceding Prime elites; FEP fallback does not
+change that gate or make FEP completion a prerequisite.
+
+EGFR now sets `amber_gbsa=true`, `amber-input-count=500`,
+`gbsa-input-count=200`, `fep-enabled=true`, `fep-input-count=20`, and
+`sa-accepted-ratio=1.0`. Keep target-specific paths, hosts, scientific parameters,
+sidechain size and raw target as explicitly configured. Existing submitted jobs
+and results remain recoverable; do not retrospectively filter them.

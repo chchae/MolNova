@@ -155,7 +155,7 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_flexdist
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_flexdist, fep_settings
     return {
         **generation,
         **amber_settings(config, base),
@@ -188,8 +188,7 @@ def load_project_toml(filename):
         "elite_tl_epochs": int(config.get("elite-tl-epochs", 3)),
         "gbsa_elite_count": int(config.get("gbsa-elite-count", 10)),
         "prime_flexdist": prime_flexdist(config),
-        "fep_enabled": bool(config.get("fep-enabled", False)),
-        "fep_input_count": int(config.get("fep-input-count", 10)),
+        **fep_settings(config),
         "synthetic_feasibility_enabled": synthetic_enabled,
         "aizynth_config": aizynth_config,
         "aizynth_cli": aizynth_cli,

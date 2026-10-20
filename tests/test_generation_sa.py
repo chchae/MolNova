@@ -13,6 +13,9 @@ def project(tmp_path):
     db = tmp_path / 'project.sqlite'
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
+    database.mark_iteration_workspace_prepared(db, 1)
+    with database.connect(db) as conn:
+        conn.execute("UPDATE iteration_workspace SET generation_policy='legacy' WHERE iteration=1")
     return SimpleNamespace(db_path=db, output=tmp_path, target_count=2,
                            max_iteration=2, libinvent_prior='prior',
                            libinvent_scaffold_file=tmp_path / 'scaffold.smi',
@@ -20,7 +23,7 @@ def project(tmp_path):
                            sa_score_cpus=1)
 
 
-def test_generation_stores_real_sa_scores_without_aizynth(project, monkeypatch):
+def test_legacy_generation_stores_real_sa_scores_without_aizynth(project, monkeypatch):
     csv = project.output / 'generated.csv'
     csv.write_text('SMILES\nCCO\nc1ccccc1\nCCN\nCC(=O)O\n')
     monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: csv)
@@ -110,7 +113,7 @@ synthetic-feasibility-enabled = false
 '''
     toml.write_text(content)
     assert _core.load_project_toml(toml)['sa_score_cpus'] == 1
-    assert _core.load_project_toml(toml)['sa_accepted_ratio'] == .75
+    assert _core.load_project_toml(toml)['sa_accepted_ratio'] == 1.0
     toml.write_text(content + 'sa-score-cpus = 128\nsa-accepted-ratio = 0.5\n')
     assert _core.load_project_toml(toml)['sa_score_cpus'] == 128
     assert _core.load_project_toml(toml)['sa_accepted_ratio'] == .5

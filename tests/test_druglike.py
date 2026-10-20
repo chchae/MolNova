@@ -15,6 +15,9 @@ def project(tmp_path):
     db = tmp_path / 'project.sqlite'
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
+    database.mark_iteration_workspace_prepared(db, 1)
+    with database.connect(db) as conn:
+        conn.execute("UPDATE iteration_workspace SET generation_policy='legacy' WHERE iteration=1")
     return SimpleNamespace(db_path=db, output=tmp_path, target_count=2, max_iteration=2)
 
 
@@ -98,7 +101,7 @@ def test_concurrent_inserts_respect_total_iteration_target(project):
         assert conn.execute('SELECT count(*),count(DISTINCT name) FROM compound').fetchone() == (2, 2)
 
 
-def test_generation_reuses_precomputed_descriptors(project, monkeypatch):
+def test_legacy_generation_reuses_precomputed_descriptors(project, monkeypatch):
     project.libinvent_prior = 'prior'
     project.libinvent_scaffold_file = project.output / 'scaffold.smi'
     project.sample_size = 4

@@ -28,8 +28,8 @@ aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 @pytest.mark.parametrize('extra, enabled, prime_count', [
     ('', False, 200),
     ('amber_gbsa = false\n', False, 200),
-    ('amber_gbsa = true\n', True, 50),
-    ('amber-gbsa-enabled = true\n', True, 50),
+    ('amber_gbsa = true\n', True, 200),
+    ('amber-gbsa-enabled = true\n', True, 200),
     ('amber_gbsa = true\ngbsa-input-count = 30\n', True, 30),
     ('gbsa-input-count = 100\n', False, 100),
 ])
@@ -38,11 +38,47 @@ def test_optional_amber_mode_defaults_and_stage_order(tmp_path, extra, enabled, 
     project.write_text(PROJECT_TOML + extra)
     settings = _core.load_project_toml(project)
     assert settings['amber_gbsa_enabled'] is enabled
-    assert settings['amber_keep_count'] == 200
+    assert settings['amber_keep_count'] == 500
     assert settings['gbsa_input_count'] == prime_count
     stages = [stage for stage, _ in driver.build_stages(False, False, enabled)]
-    assert stages == (['generate', 'ligprep', 'glide', 'amber-gbsa', 'mmgbsa'] if enabled
-                      else ['generate', 'ligprep', 'glide', 'mmgbsa'])
+    assert stages == (['generate', 'druglike', 'ligprep', 'glide', 'amber-gbsa', 'mmgbsa'] if enabled
+                      else ['generate', 'druglike', 'ligprep', 'glide', 'mmgbsa'])
+
+
+@pytest.mark.parametrize('extra, count', [
+    ('', 500),
+    ('amber-input-count = 300\n', 300),
+    ('amber-keep-count = 400\n', 400),
+    ('amber-input-count = 600\namber-keep-count = 600\n', 600),
+])
+def test_amber_input_count_aliases_reach_the_selection_worker(tmp_path, extra, count):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + 'amber_gbsa = true\n' + extra)
+    args = SimpleNamespace(**_core.load_project_toml(project))
+    assert database.amber_keep_count(args) == count
+
+
+@pytest.mark.parametrize('key', ['amber-input-count', 'amber-keep-count'])
+@pytest.mark.parametrize('value', [True, False, 0, -1, 500.0, '500'])
+def test_amber_input_count_alias_validation(tmp_path, key, value):
+    from molnova.config import amber_settings
+    with pytest.raises(ValueError, match=key):
+        amber_settings({'out-dir': 'output', key: value}, tmp_path)
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_conflicting_amber_input_count_aliases_are_rejected(tmp_path, enabled):
+    from molnova.config import amber_settings
+    with pytest.raises(ValueError, match='must agree'):
+        amber_settings({'out-dir': 'output', 'amber_gbsa': enabled,
+                        'amber-input-count': 500, 'amber-keep-count': 300}, tmp_path)
+
+
+def test_amber_input_count_must_cover_prime_input_count(tmp_path):
+    from molnova.config import amber_settings
+    with pytest.raises(ValueError, match='amber-input-count must be >= gbsa-input-count'):
+        amber_settings({'out-dir': 'output', 'amber_gbsa': True,
+                        'amber-input-count': 100, 'gbsa-input-count': 200}, tmp_path)
 
 
 @pytest.mark.parametrize('extra', [

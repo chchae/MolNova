@@ -2,6 +2,8 @@
 import argparse
 import csv
 import math
+import os
+import tempfile
 from pathlib import Path
 from molnova import _core as c
 from molnova import database
@@ -11,50 +13,33 @@ from molnova.stages._logging import work_started
 def choose_iteration(args, requested):
     if requested is not None:
         return requested
-    with c.open_sqlite(args.db_path) as conn:
-        iterations = [
-            row[0] for row in conn.execute(
-                "SELECT DISTINCT iteration FROM compound "
-                "WHERE iteration>0 AND gbsa_score IS NOT NULL ORDER BY iteration"
-            )
-        ]
-        for iteration in iterations:
-            top = conn.execute(
-                """
-                SELECT id,state,fep_score
-                FROM compound
-                WHERE iteration=? AND gbsa_score IS NOT NULL
-                ORDER BY gbsa_score ASC,id ASC
-                LIMIT ?
-                """,
-                (iteration, args.fep_input_count),
-            ).fetchall()
-            if any(fep_score is None for _, _, fep_score in top):
-                return iteration
-    return None
+    return next((iteration for iteration in database.fep_candidate_iterations(args.db_path)
+                 if database.fep_selection_pending(args.db_path, iteration, args.fep_input_count)), None)
 
 
 def export_candidates(args, iteration):
-    outdir = args.output / f"iter{iteration}" / "fep"
+    rows = database.fep_candidates(
+        args.db_path, iteration, args.fep_input_count,
+        target_count=getattr(args, 'target_count', 1),
+        prime_count=getattr(args, 'gbsa_input_count', None),
+        amber_keep_count=database.amber_keep_count(args))
+    outdir = args.output / f'iter{iteration}/fep'
     outdir.mkdir(parents=True, exist_ok=True)
-    outfile = outdir / "fep_candidates.tsv"
-    with c.open_sqlite(args.db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id,name,smiles,docking_score,gbsa_score,fep_score,state
-            FROM compound
-            WHERE iteration=? AND gbsa_score IS NOT NULL
-            ORDER BY gbsa_score ASC,id ASC
-            LIMIT ?
-            """,
-            (iteration, args.fep_input_count),
-        ).fetchall()
-    with outfile.open("w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f, delimiter="\t")
-        w.writerow(["id","name","smiles","docking_score","gbsa_score","fep_score","state"])
-        w.writerows(rows)
-    print(f"Iteration {iteration}: exported {len(rows)} FEP candidates")
-    print(f"Output: {outfile}")
+    outfile = outdir / 'fep_candidates.tsv'
+    fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'gbsa_score',
+              'fep_score', 'state', 'ranking_source', 'ranking_score']
+    fd, temporary = tempfile.mkstemp(dir=outdir, prefix='candidates-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields, delimiter='\t', lineterminator='\n')
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary, outfile)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    source = rows[0]['ranking_source'] if rows else 'none'
+    print(f'Iteration {iteration}: exported {len(rows)} FEP candidates; ranking={source}')
+    print(f'Output: {outfile}')
     return outfile
 
 
@@ -78,53 +63,12 @@ def import_scores(args, score_file, iteration=None):
         print("No FEP scores to import.")
         return 0
 
-    with c.open_sqlite(args.db_path) as conn:
-        if iteration is None:
-            iterations = [
-                row[0]
-                for row in conn.execute(
-                    "SELECT DISTINCT iteration FROM compound "
-                    "WHERE iteration>0 AND gbsa_score IS NOT NULL"
-                )
-            ]
-        else:
-            iterations = [iteration]
-
-        candidate_ids = set()
-        for candidate_iteration in iterations:
-            candidate_ids.update(
-                row[0]
-                for row in conn.execute(
-                    """
-                    SELECT id FROM compound
-                    WHERE iteration=? AND gbsa_score IS NOT NULL
-                    ORDER BY gbsa_score ASC, id ASC
-                    LIMIT ?
-                    """,
-                    (candidate_iteration, args.fep_input_count),
-                )
-            )
-
-        invalid_ids = set(updates) - candidate_ids
-        if invalid_ids:
-            raise ValueError(
-                "FEP scores include IDs outside the selected GBSA candidate set: "
-                + ", ".join(str(value) for value in sorted(invalid_ids))
-            )
-
-        updated = 0
-        for compound_id, score in updates.items():
-            cursor = conn.execute(
-                """
-                UPDATE compound
-                SET fep_score=?, state='fep_done', failed_stage=NULL,
-                    failure_message=NULL, modified_at=CURRENT_TIMESTAMP
-                WHERE id=? AND iteration>0 AND gbsa_score IS NOT NULL
-                """,
-                (score, compound_id),
-            )
-            updated += cursor.rowcount
-        conn.commit()
+    iterations = [iteration] if iteration is not None else database.fep_candidate_iterations(args.db_path)
+    candidate_ids = set()
+    for candidate_iteration in iterations:
+        rows = database.fep_candidates(args.db_path, candidate_iteration, args.fep_input_count, for_import=True)
+        candidate_ids.update(row['id'] for row in rows)
+    updated = database.store_fep_scores(args.db_path, updates, candidate_ids)
     print(f"Imported FEP scores: {updated}")
     return updated
 
@@ -141,8 +85,21 @@ def _run_stage(args, ns):
 
     iteration = choose_iteration(args, ns.iteration)
     if iteration is None:
-        print("No GBSA-ranked compounds currently require FEP staging.")
+        print("No scored compounds currently require FEP staging.")
         return
+    for stage in ('generate', 'druglike', 'synthetic_feasibility', 'ligprep', 'glide', 'amber_gbsa', 'mmgbsa'):
+        if database.stage_is_running(args.db_path, stage):
+            raise RuntimeError(f'FEP waiting for {stage} worker')
+    from molnova import amber_gbsa, prime_async, ligprep_recovery
+    directory = args.output / f'iter{iteration}'
+    if (amber_gbsa.load_job(directory / 'amber_gbsa') is not None
+            or prime_async.load_job(directory / 'mmgbsa') is not None
+            or ligprep_recovery.load_job(directory / 'ligprep') is not None):
+        raise RuntimeError('FEP waiting for saved external submissions to retire')
+    from molnova.driver import external_completion_reason
+    reason = external_completion_reason(args, iteration, 'glide')
+    if reason:
+        raise RuntimeError(f'FEP waiting: {reason}')
     work_started(f"Iteration {iteration}: exporting FEP candidates.")
     export_candidates(args, iteration)
     print("FEP+ execution is intentionally not automated yet; configure the FEP protocol first.")
@@ -151,7 +108,7 @@ def _run_stage(args, ns):
 def main(argv=None):
     p = argparse.ArgumentParser(
         description=(
-            "FEP staging utility. Exports GBSA-ranked candidates now; "
+            "FEP staging utility. Exports Prime/Amber/docking-ranked candidates now; "
             "can later import id/fep_score TSV results without assuming an FEP+ protocol."
         )
     )

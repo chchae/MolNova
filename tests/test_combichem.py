@@ -166,6 +166,10 @@ def project(tmp_path, monkeypatch):
     for name in ['run_libinvent_sampling', 'run_libinvent_elite_transfer_learning',
                  'write_elite_libinvent_training_files']:
         monkeypatch.setattr(_core, name, unexpected)
+    # Existing scientific regression fixtures represent resumed legacy iterations.
+    database.mark_iteration_workspace_prepared(path, 1)
+    with database.connect(path) as conn:
+        conn.execute("UPDATE iteration_workspace SET generation_policy='legacy' WHERE iteration=1")
     return args
 
 
@@ -184,6 +188,8 @@ def adaptive_project(project, monkeypatch):
 
 def test_new_combichem_iteration_clears_old_outputs_before_assembly(project, monkeypatch):
     from molnova import schrodinger_guard
+    with database.connect(project.db_path) as conn:
+        conn.execute('DELETE FROM iteration_workspace WHERE iteration=1')
     project.schrodinger = Path('/suite')
     monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     root = project.output / 'iter1'

@@ -235,7 +235,7 @@ def test_config_paths_and_stage_order(tmp_path):
     settings=amber_settings({'out-dir':'output'},tmp_path)
     assert settings['amber_receptor']==tmp_path/'output/iter0/mmgbsa/receptor.maegz'
     assert settings['amber_remote']['remote_env']=='/home1/amber26/envs/AmberTools26'
-    assert [s for s,_ in driver.build_stages(False,False,True)]==['generate','ligprep','glide','amber-gbsa','mmgbsa']
+    assert [s for s,_ in driver.build_stages(False,False,True)]==['generate','druglike','ligprep','glide','amber-gbsa','mmgbsa']
 
 
 def test_cli_dispatch(tmp_path,monkeypatch):

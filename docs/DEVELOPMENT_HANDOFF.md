@@ -1,5 +1,40 @@
 # MolNova Development Handoff
 
+## Latest staged selection policy (2026-10-20)
+
+SPEC section 16 is the current authority for new iterations. It supersedes the
+historical pre-DB selection and Amber-200/Prime-50 descriptions retained below
+for legacy recovery. New flow: Generate(DB raw target) → Drug likeness over the
+whole iteration → optional synthetic → LigPrep → Glide → Amber best 500 → Prime
+best 200 → FEP candidate export best 20. All workers remain independent.
+
+New workspace rows pin generation_policy=raw_v1; old rows default to legacy.
+Raw generation stores valid unique compounds before computing properties.
+The druglike worker calculates all properties, applies global RO5/QED/SA
+selection and freezes passing IDs/reasons in SQLite. Rejected rows remain
+`druglike_rejected`. Default optional SA ratio is 1.0; explicit smaller values
+apply only within this druglike stage. Legacy iterations keep original targets,
+selection, compounds, state and submitted jobs. Reject raw inserts after a frozen
+selection. CLI exposes `molnova druglike project.toml --iteration N`.
+
+Canonical TOML count is `amber-input-count` (default 500), which limits the
+Glide-ranked Amber inputs. Legacy `amber-keep-count` remains an alias; reject
+invalid values or unequal simultaneous aliases. Keep internal worker/API names
+and saved submission settings unchanged for recovery compatibility.
+
+Prime uses finite Amber ranking, falling back to Glide only when no Amber score
+exists after required work completes. Partial sets are never mixed or filled.
+FEP similarly uses one finite score tier: Prime, else Amber, else Glide; freeze
+IDs/source/ranking scores for restart and import. Counts are maxima, not promises
+of successful results. Active, uncertain, retryable or saved work blocks fallback.
+Keep 7 Prime slots and native recovery. FEP remains export/import only; no
+production FEP protocol is introduced. Next generation still requires Prime
+elites, independently of FEP candidate fallback.
+
+The EGFR TOML enables Amber 500, Prime 200 and FEP export 20 with raw target
+10,000 and no additional SA fraction cut. Existing reference/host/program
+settings are retained. No live calculations are authorized by editing this file.
+
 ## 1. Project Goal
 
 MolNova is an iterative lead-optimization platform integrating:

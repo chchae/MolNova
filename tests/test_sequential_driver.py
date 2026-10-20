@@ -33,6 +33,7 @@ def test_sequential_workers_share_iteration_and_wait_for_real_completion(tmp_pat
     waits = []
     transitions = {
         'generate': "UPDATE compound SET state='generated'",
+        'druglike': 'SELECT 1',
         'synthetic': "UPDATE compound SET synthetic_feasibility=1,sa_score=2",
         'ligprep': "UPDATE compound SET state='ligprepped'",
         'glide': "UPDATE compound SET state='docked',docking_score=-10",
@@ -58,7 +59,7 @@ def test_sequential_workers_share_iteration_and_wait_for_real_completion(tmp_pat
     monkeypatch.setattr(guard, 'active_jobs', lambda suite: [])
     assert driver.supervise_iteration(args, tmp_path/'project.toml', 3,
                                      driver.build_stages(True, False), 30, Stop())
-    assert calls == ['generate', 'synthetic', 'ligprep', 'glide', 'glide', 'mmgbsa', 'mmgbsa']
+    assert calls == ['generate', 'druglike', 'synthetic', 'ligprep', 'glide', 'glide', 'mmgbsa', 'mmgbsa']
     assert waits == [30, 5]
     with database.connect(args.db_path) as conn:
         assert conn.execute('SELECT DISTINCT iteration FROM compound').fetchall() == [(3,)]

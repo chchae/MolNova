@@ -67,6 +67,9 @@ def process_iteration(args, iteration):
         raise RuntimeError(
             "Enable synthetic-feasibility-enabled in the project TOML to run this stage."
         )
+    if database.druglike_completion_reason(args.db_path, iteration) or database.stage_is_running(args.db_path, 'druglike'):
+        print(f'Iteration {iteration}: synthetic assessment waiting for drug likeness.')
+        return 0
     if hasattr(args, 'sa_accepted_ratio'):
         reason = database.stage_completion_reason(args.db_path, iteration, 'generate', args.target_count, 0)
         if reason or database.stage_is_running(args.db_path, 'generate'):

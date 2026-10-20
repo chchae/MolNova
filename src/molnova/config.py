@@ -54,18 +54,27 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
             and config['amber_gbsa'] != config['amber-gbsa-enabled']):
         raise ValueError('amber_gbsa and amber-gbsa-enabled must agree')
     enabled = config.get('amber_gbsa', config.get('amber-gbsa-enabled', False))
-    prime_count = config.get('gbsa-input-count', 50 if enabled else 200)
+    prime_count = config.get('gbsa-input-count', 200)
     if isinstance(prime_count, bool) or not isinstance(prime_count, int) or prime_count < 1:
         raise ValueError('gbsa-input-count must be a positive integer')
     settings = {'amber_gbsa_enabled': enabled, 'gbsa_input_count': prime_count}
-    # amber-keep-count now limits the Glide-ranked population before Amber.
-    for key, default in [('amber-cpus', 128), ('amber-keep-count', 200)]:
+    for key, default in [('amber-cpus', 128)]:
         value = config.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f'{key} must be a positive integer')
         settings[key.replace('-', '_')] = value
+    for key in ('amber-input-count', 'amber-keep-count'):
+        if key in config:
+            value = config[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f'{key} must be a positive integer')
+    if ('amber-input-count' in config and 'amber-keep-count' in config
+            and config['amber-input-count'] != config['amber-keep-count']):
+        raise ValueError('amber-input-count and legacy amber-keep-count must agree')
+    # Retain the internal attribute for existing workers and API callers.
+    settings['amber_keep_count'] = config.get('amber-input-count', config.get('amber-keep-count', 500))
     if enabled and settings['amber_keep_count'] < prime_count:
-        raise ValueError('amber-keep-count must be >= gbsa-input-count')
+        raise ValueError('amber-input-count must be >= gbsa-input-count')
     host = str(config.get('amber-ssh-host', 'tensor'))
     if not host or host.startswith('-') or any(c.isspace() for c in host):
         raise ValueError('Invalid amber-ssh-host')
@@ -227,11 +236,21 @@ def sa_score_process_count(config: dict[str, Any]) -> int:
 
 
 def sa_accepted_ratio(config: dict[str, Any]) -> float:
-    value = config.get('sa-accepted-ratio', 0.75)
+    value = config.get('sa-accepted-ratio', 1.0)
     if (isinstance(value, bool) or not isinstance(value, (int, float))
             or not 0 < value <= 1):
         raise ValueError('sa-accepted-ratio must be a number greater than 0 and at most 1')
     return float(value)
+
+
+def fep_settings(config: dict[str, Any]) -> dict[str, Any]:
+    enabled = config.get('fep-enabled', False)
+    count = config.get('fep-input-count', 20)
+    if not isinstance(enabled, bool):
+        raise ValueError('fep-enabled must be a boolean')
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError('fep-input-count must be a positive integer')
+    return {'fep_enabled': enabled, 'fep_input_count': count}
 
 
 def elite_mcs(config: dict[str, Any]) -> str | None:

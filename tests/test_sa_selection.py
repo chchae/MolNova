@@ -99,7 +99,7 @@ def test_invalid_ratio(value):
 
 
 def test_ratio_configuration():
-    assert sa_accepted_ratio({}) == .75
+    assert sa_accepted_ratio({}) == 1.0
     assert sa_accepted_ratio({'sa-accepted-ratio': .5}) == .5
     assert sa_accepted_ratio({'sa-accepted-ratio': 1}) == 1
 
@@ -113,16 +113,19 @@ def test_new_generation_scores_full_population_then_filters(tmp_path, monkeypatc
     smiles = ['CCO', 'c1ccccc1', 'CC(=O)O', 'C1CC2CCC1C2',
               'CCN', 'c1ccncc1', 'Oc1ccccc1', 'CCOc1ccccc1']
     csv.write_text('SMILES\n' + '\n'.join(smiles) + '\n')
-    args = SimpleNamespace(db_path=db, output=tmp_path, target_count=4,
+    args = SimpleNamespace(db_path=db, output=tmp_path, target_count=8,
                            max_iteration=1, libinvent_prior='prior',
                            libinvent_scaffold_file=tmp_path / 'scaffold.smi',
                            sample_size=10, sa_score_cpus=1, sa_accepted_ratio=.75)
     monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: csv)
     generate._run_stage(args, 1)
+    from molnova.stages import druglike
+    druglike._run_stage(args, 1)
     with database.connect(db) as conn:
         rows = conn.execute('SELECT smiles,sa_score,state FROM compound ORDER BY sa_score,id').fetchall()
-    assert len(rows) == 4
-    assert [state for _, _, state in rows] == ['generated'] * 3 + ['sa_rejected']
+    assert len(rows) == 8
+    assert sum(state == 'generated' for _, _, state in rows) == 3
+    assert sum(state == 'druglike_rejected' for _, _, state in rows) == 5
     for smiles, score, _ in rows:
         assert score == pytest.approx(calculate_sa_score(smiles))
 

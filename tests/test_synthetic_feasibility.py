@@ -157,7 +157,7 @@ def test_driver_places_synthetic_stage_after_generation():
     stages = build_stages(synthetic_feasibility_enabled=True, fep_enabled=False)
     names = [stage for stage, _ in stages]
 
-    assert names == ["generate", "synthetic", "ligprep", "glide", "mmgbsa"]
+    assert names == ["generate", "druglike", "synthetic", "ligprep", "glide", "mmgbsa"]
 
 
 @pytest.mark.parametrize("flag, enabled", [("", True), ("true", True), ("false", False)])

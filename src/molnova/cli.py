@@ -4,7 +4,7 @@ from pathlib import Path
 
 from molnova import _core
 from molnova.driver import main as driver_main
-from molnova.stages import fep, generate, glide, ligprep, mmgbsa
+from molnova.stages import fep, generate, glide, ligprep, mmgbsa, druglike
 from molnova.stages import synthetic_feasibility, amber_gbsa
 
 
@@ -93,10 +93,10 @@ def main(argv=None):
     run.add_argument("--iteration", type=int)
     run.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
 
-    for name in ("generate", "ligprep", "glide", "amber-gbsa", "mmgbsa"):
+    for name in ("generate", "druglike", "ligprep", "glide", "amber-gbsa", "mmgbsa"):
         stage = sub.add_parser(name, help=f"Run {name} stage")
         stage.add_argument("project_toml", type=Path)
-        stage.add_argument("--iteration", type=int, required=name == "amber-gbsa")
+        stage.add_argument("--iteration", type=int, required=name in {"amber-gbsa", "druglike"})
         stage.add_argument("--schrodinger", type=Path)
         if name == "generate":
             stage.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
@@ -141,6 +141,9 @@ def main(argv=None):
 
     if ns.command == "generate":
         return generate.main(_project_args(ns))
+
+    if ns.command == "druglike":
+        return druglike.main(_project_args(ns))
 
     if ns.command == "ligprep":
         return ligprep.main(_project_args(ns))

@@ -53,6 +53,12 @@ def store_iteration_descriptors(args, iteration):
 
 
 def insert_druglike_batch(csv_file, iteration, target_count, db_path, cpus=1, *, combichem_progress=None):
+    if database.uses_raw_generation(db_path, iteration):
+        generated = c.read_generated_smiles(Path(csv_file))
+        novel = database.novel_generated_smiles(db_path, generated)
+        return database.insert_generated_candidates(
+            db_path, iteration, target_count, [dict(smiles=smiles) for smiles in novel],
+            raw=True, combichem_progress=combichem_progress)
     csv_file = Path(csv_file)
     generated = c.read_generated_smiles(csv_file)
     novel = database.novel_generated_smiles(db_path, generated)
@@ -102,6 +108,12 @@ def select_iteration_sa_compounds(args, iteration):
               'or preserved because downstream work has already started.', flush=True)
 
 
+def finalize_legacy_generation(args, iteration):
+    if not database.uses_raw_generation(args.db_path, iteration):
+        store_iteration_descriptors(args, iteration)
+        select_iteration_sa_compounds(args, iteration)
+
+
 def _run_combichem(args, iteration, directory):
     from molnova.chemistry import combichem
     work_started(f'Iteration {iteration}: starting local combichem generation.')
@@ -147,8 +159,7 @@ def _run_combichem(args, iteration, directory):
                   f'inserted={inserted}.', flush=True)
             start = stop
             plan = dict(plan, next_index=start)
-    store_iteration_descriptors(args, iteration)
-    select_iteration_sa_compounds(args, iteration)
+    finalize_legacy_generation(args, iteration)
 
 
 @timed_stage("Generate stage")
@@ -165,8 +176,7 @@ def _run_stage(args, requested_iteration):
     remaining = max(0, args.target_count - n)
     if remaining == 0:
         log_iteration_mcs(args, iteration)
-        store_iteration_descriptors(args, iteration)
-        select_iteration_sa_compounds(args, iteration)
+        finalize_legacy_generation(args, iteration)
         print(
             f"Iteration {iteration} already has the target "
             f"{args.target_count} compounds; generation skipped."
@@ -190,12 +200,11 @@ def _run_stage(args, requested_iteration):
         # Also check earlier iterations when recovering a DB created by the old
         # early-generation policy. Explicit --iteration cannot bypass this gate.
         for completed_iteration in range(1, iteration):
-            if database.amber_keep_count(args) is not None:
-                from molnova.amber_gbsa import load_job as load_amber
-                if (load_amber(args.output / f'iter{completed_iteration}/amber_gbsa') is not None
-                        or database.stage_is_running(args.db_path, 'amber_gbsa')):
-                    print(f'Iteration {iteration} not ready: preceding Amber work still requires recovery.')
-                    return
+            from molnova.amber_gbsa import load_job as load_amber
+            if (load_amber(args.output / f'iter{completed_iteration}/amber_gbsa') is not None
+                    or database.stage_is_running(args.db_path, 'amber_gbsa')):
+                print(f'Iteration {iteration} not ready: preceding Amber work still requires recovery.')
+                return
             reason = database.iteration_completion_reason(
                 args.db_path, completed_iteration, args.target_count,
                 args.gbsa_input_count, args.gbsa_elite_count,
@@ -254,12 +263,11 @@ def _run_stage(args, requested_iteration):
         db_path=args.db_path,
         cpus=getattr(args, 'sa_score_cpus', 1),
     )
-    store_iteration_descriptors(args, iteration)
-    select_iteration_sa_compounds(args, iteration)
+    finalize_legacy_generation(args, iteration)
     if inserted == 0:
         raise RuntimeError(
             f"Iteration {iteration} remains below target-count "
-            f"({n}/{args.target_count}) and no novel druglike compounds were inserted."
+            f"({n}/{args.target_count}) and no novel compounds were inserted."
         )
     print(f"Iteration {iteration}: inserted {inserted} novel compounds.")
 

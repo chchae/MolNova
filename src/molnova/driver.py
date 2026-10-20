@@ -30,7 +30,7 @@ CALCULATION_LABELS = {
 
 
 def build_stages(synthetic_feasibility_enabled, fep_enabled, amber_gbsa_enabled=False):
-    stages = [BASE_STAGES[0]]
+    stages = [BASE_STAGES[0], ('druglike', 'molnova.stages.druglike')]
     if synthetic_feasibility_enabled:
         stages.append(("synthetic", "molnova.stages.synthetic_feasibility"))
     stages.extend(BASE_STAGES[1:])
@@ -169,10 +169,9 @@ def choose_iteration(args, requested=None):
             "SELECT DISTINCT iteration FROM compound WHERE iteration>0 ORDER BY iteration"
         )]
     for iteration in iterations:
-        if getattr(args, 'amber_gbsa_enabled', False):
-            from molnova.amber_gbsa import load_job
-            if load_job(args.output / f'iter{iteration}/amber_gbsa') is not None:
-                return iteration
+        from molnova.amber_gbsa import load_job
+        if load_job(args.output / f'iter{iteration}/amber_gbsa') is not None:
+            return iteration
         if database.iteration_completion_reason(
             args.db_path, iteration, args.target_count, args.gbsa_input_count, 0, database.amber_keep_count(args)
         ) is not None:
@@ -195,9 +194,12 @@ def external_completion_reason(args, iteration, stage):
     from molnova import schrodinger_guard as guard
     from molnova.ligprep_recovery import load_job as load_ligprep
     from molnova.prime_async import load_job as load_prime
+    from molnova.amber_gbsa import load_job as load_amber
 
     directory = args.output / f"iter{iteration}"
     try:
+        if stage == 'mmgbsa' and load_amber(directory / 'amber_gbsa') is not None:
+            return 'Amber remote submission still requires recovery'
         if stage == "ligprep" and load_ligprep(directory / "ligprep") is not None:
             return "LigPrep submission still requires recovery"
         if stage == "mmgbsa" and load_prime(directory / "mmgbsa") is not None:

@@ -216,10 +216,13 @@ def stage_is_running(path, stage):
 def upstream_completion_reason(path, iteration, target_count, stage,
                                synthetic_enabled=False):
     """Require a full iteration and finished upstream workers before starting."""
-    upstream = ['generate', 'synthetic_feasibility'] if stage == 'ligprep' else ['generate', 'synthetic_feasibility', 'ligprep']
+    upstream = ['generate', 'druglike', 'synthetic_feasibility'] if stage == 'ligprep' else ['generate', 'druglike', 'synthetic_feasibility', 'ligprep']
     for worker in upstream:
         if stage_is_running(path, worker):
             return f'{worker} worker still running'
+    reason = druglike_completion_reason(path, iteration)
+    if reason:
+        return reason
     with connect(path) as conn:
         rows = _iteration_rows(conn, iteration)
         if len(rows) < target_count:
@@ -230,8 +233,8 @@ def upstream_completion_reason(path, iteration, target_count, stage,
         if any(state in blocked for _, state, _, _ in rows):
             return 'upstream compounds still pending or running'
         if synthetic_enabled and conn.execute(
-            'SELECT 1 FROM compound WHERE iteration=? AND state NOT IN (?,?) '
-            'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED, State.SA_REJECTED)
+            'SELECT 1 FROM compound WHERE iteration=? AND state NOT IN (?,?,?) '
+            'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED, State.SA_REJECTED, State.DRUGLIKE_REJECTED)
         ).fetchone():
             return 'synthetic feasibility assessment incomplete'
     return None
@@ -269,6 +272,22 @@ def _amber_rows(conn, iteration, keep_count=None):
                   key=lambda r: (r[3], r[0]))[:keep_count]
 
 
+def _remember_amber_failure(conn, cid, message):
+    conn.execute('CREATE TABLE IF NOT EXISTS amber_failure ('
+                 'compound_id INTEGER PRIMARY KEY REFERENCES compound(id),message TEXT NOT NULL)')
+    conn.execute('INSERT INTO amber_failure VALUES (?,?) ON CONFLICT(compound_id) DO NOTHING',
+                 (cid, message or 'Amber calculation failed'))
+
+
+def _amber_failure_ids(conn, iteration):
+    ids = {row[0] for row in conn.execute(
+        "SELECT id FROM compound WHERE iteration=? AND failed_stage='amber_gbsa'", (iteration,))}
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='amber_failure'").fetchone():
+        ids.update(row[0] for row in conn.execute('SELECT c.id FROM compound c JOIN amber_failure f '
+                                                 'ON f.compound_id=c.id WHERE c.iteration=?', (iteration,)))
+    return ids
+
+
 def _amber_completion_reason(conn, iteration, target_count, keep_count=500):
     reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count) if iteration > 0 else None
     if reason:
@@ -279,10 +298,11 @@ def _amber_completion_reason(conn, iteration, target_count, keep_count=500):
         # Glide shortlist. Its claims still require recovery, never abandonment.
         return f'{running} compounds still running Amber GBSA screening'
     rows = _amber_rows(conn, iteration, keep_count)
+    failed_ids = _amber_failure_ids(conn, iteration)
     pending = sum(
         state == State.AMBER_RUNNING or
-        (state != State.FAILED and failed_stage != 'amber_gbsa' and (score is None or not math.isfinite(score)))
-        for _, _, state, _, score, _, _, failed_stage in rows
+        (state != State.FAILED and cid not in failed_ids and (score is None or not math.isfinite(score)))
+        for cid, _, state, _, score, _, _, failed_stage in rows
     )
     return f'{pending} compounds await Amber GBSA screening' if pending else None
 
@@ -293,12 +313,15 @@ def amber_completion_reason(path, iteration, target_count, keep_count=500):
 
 
 def _prime_ranked_rows(conn, iteration, rows, amber_keep_count):
-    if amber_keep_count is None or iteration == 0:
-        return sorted((r for r in rows if r[2] is not None), key=lambda r: (r[2], r[0]))
+    docking = sorted((r for r in rows if r[2] is not None and math.isfinite(r[2])), key=lambda r: (r[2], r[0]))
+    if iteration == 0:
+        return docking
     scores = {r[0]: r[4] for r in _amber_rows(conn, iteration, amber_keep_count)
               if r[4] is not None and math.isfinite(r[4])}
+    if not scores:
+        return docking
     return sorted((r for r in rows if r[0] in scores),
-                  key=lambda r: (scores[r[0]], r[2], r[0]))[:amber_keep_count]
+                  key=lambda r: (scores[r[0]], r[2], r[0]))
 
 
 def prime_selection_rows(path, iteration, count, amber_keep_count=None):
@@ -314,10 +337,11 @@ def claim_amber_candidates(path, iteration, target_count, keep_count=500):
         conn.execute('BEGIN IMMEDIATE')
         if iteration > 0 and _docking_completion_reason(_iteration_rows(conn, iteration), target_count):
             return []
+        failed_ids = _amber_failure_ids(conn, iteration)
         rows = [r for r in _amber_rows(conn, iteration, keep_count)
                 if r[2] in ((State.REFERENCE, State.DOCKED, State.GBSA_DONE, State.FEP_DONE) if iteration == 0
                             else (State.DOCKED, State.GBSA_DONE, State.FEP_DONE)) and r[4] is None
-                and r[7] != 'amber_gbsa']
+                and r[0] not in failed_ids]
         for cid, *_ in rows:
             conn.execute('UPDATE compound SET state=?,modified_at=CURRENT_TIMESTAMP WHERE id=?',
                          (State.AMBER_RUNNING, cid))
@@ -388,6 +412,7 @@ def store_amber_results(path, iteration, results, allowed_ids):
                 ).rowcount
             else:
                 # Terminal parameterization/calculation failures cannot supply a ranking score.
+                _remember_amber_failure(conn, cid, error)
                 conn.execute('UPDATE compound SET state=?,failed_stage=?,failure_message=?,'
                              'modified_at=CURRENT_TIMESTAMP WHERE id=? AND state=?',
                              (state if row[2] is not None else State.FAILED, 'amber_gbsa', error,
@@ -397,6 +422,8 @@ def store_amber_results(path, iteration, results, allowed_ids):
 
 def _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count=None):
     rows = _iteration_rows(conn, iteration)
+    if any(state == State.AMBER_RUNNING for _, state, _, _ in rows):
+        return []
     if iteration == 0:
         if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count, amber_keep_count):
             return []
@@ -407,8 +434,11 @@ def _mmgbsa_candidates(conn, iteration, count, target_count, amber_keep_count=No
     if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count, amber_keep_count):
         return []
     docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
+    amber_failed = {row[0] for row in conn.execute(
+        "SELECT id FROM compound WHERE iteration=? AND state=? AND failed_stage='amber_gbsa'",
+        (iteration, State.FAILED))}
     return [cid for cid, state, _, score in docked[:count]
-            if score is None and state == State.DOCKED]
+            if score is None and (state == State.DOCKED or cid in amber_failed)]
 
 
 def mmgbsa_candidates(path: str | Path, iteration: int, count: int,
@@ -426,6 +456,9 @@ def claim_mmgbsa_candidates(path, iteration, count, target_count, amber_keep_cou
         for start in range(0, len(ids), 500):
             batch = ids[start:start + 500]
             marks = ",".join("?" for _ in batch)
+            for cid, message in conn.execute(
+                    f"SELECT id,failure_message FROM compound WHERE id IN ({marks}) AND failed_stage='amber_gbsa'", batch):
+                _remember_amber_failure(conn, cid, message)
             conn.execute(
                 f"UPDATE compound SET state=?, failed_stage=NULL, failure_message=NULL, "
                 f"modified_at=CURRENT_TIMESTAMP WHERE id IN ({marks})",
@@ -443,11 +476,17 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
     """
     with connect(path) as conn:
         rows = _iteration_rows(conn, iteration)
+        running_amber = sum(state == State.AMBER_RUNNING for _, state, _, _ in rows)
+        if running_amber:
+            return f'{running_amber} compounds still running Amber GBSA screening'
         if amber_keep_count is not None:
             reason = _amber_completion_reason(conn, iteration, target_count, amber_keep_count)
             if reason:
                 return reason
         docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
+        amber_failed = {row[0] for row in conn.execute(
+            "SELECT id FROM compound WHERE iteration=? AND state=? AND failed_stage='amber_gbsa'",
+            (iteration, State.FAILED))}
     reason = _docking_completion_reason(rows, target_count)
     if reason is not None:
         return reason
@@ -455,8 +494,8 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
     if running:
         return f"MM-GBSA still running for {running} compounds"
     pending = sum(
-        state != State.FAILED and (score is None or not math.isfinite(score))
-        for _, state, _, score in docked[:input_count]
+        (state != State.FAILED or cid in amber_failed) and (score is None or not math.isfinite(score))
+        for cid, state, _, score in docked[:input_count]
     )
     if pending:
         ranking = 'Amber' if amber_keep_count is not None else 'docking'
@@ -513,7 +552,7 @@ def iteration_has_saved_work(path, iteration):
     with connect(path) as conn:
         for table in ('compound', 'iteration_scaffold', 'iteration_combichem',
                       'iteration_combichem_history', 'iteration_sa_selection', 'combichem_batch',
-                      'iteration_workspace'):
+                      'iteration_workspace', 'iteration_druglike_selection', 'iteration_fep_selection'):
             if (conn.execute('SELECT 1 FROM sqlite_master WHERE type=? AND name=?',
                              ('table', table)).fetchone()
                     and conn.execute(f'SELECT 1 FROM {table} WHERE iteration=? LIMIT 1',
@@ -527,8 +566,89 @@ def mark_iteration_workspace_prepared(path, iteration):
     with connect(path) as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS iteration_workspace ('
                      'iteration INTEGER PRIMARY KEY, prepared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)')
-        conn.execute('INSERT INTO iteration_workspace(iteration) VALUES (?) ON CONFLICT(iteration) DO NOTHING',
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(iteration_workspace)')}
+        if 'generation_policy' not in columns:
+            conn.execute("ALTER TABLE iteration_workspace ADD COLUMN generation_policy TEXT NOT NULL DEFAULT 'legacy'")
+        conn.execute("INSERT INTO iteration_workspace(iteration,generation_policy) VALUES (?,'raw_v1') ON CONFLICT(iteration) DO NOTHING",
                      (iteration,))
+
+
+def _uses_raw_generation(conn, iteration):
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(iteration_workspace)')}
+    if 'generation_policy' not in columns:
+        return False
+    row = conn.execute('SELECT generation_policy FROM iteration_workspace WHERE iteration=?', (iteration,)).fetchone()
+    return row is not None and row[0] == 'raw_v1'
+
+
+def uses_raw_generation(path, iteration):
+    with connect(path) as conn:
+        return _uses_raw_generation(conn, iteration)
+
+
+def druglike_completion_reason(path, iteration):
+    with connect(path) as conn:
+        if not _uses_raw_generation(conn, iteration):
+            return None
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_druglike_selection'").fetchone():
+            if conn.execute('SELECT 1 FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone():
+                return None
+        return 'iteration-wide drug likeness selection incomplete'
+
+
+def druglike_population(path, iteration):
+    with connect(path) as conn:
+        return [dict(id=cid, smiles=smiles, qed=qed, sa_score=sa, ro5_violations=ro5)
+                for cid, smiles, qed, sa, ro5 in conn.execute(
+                    'SELECT id,smiles,rdk_qed,rdk_sa_score,rdk_ro5_violations '
+                    'FROM compound WHERE iteration=? ORDER BY id', (iteration,))]
+
+
+def druglike_report(path, iteration):
+    with connect(path) as conn:
+        return conn.execute('SELECT c.id,c.smiles,c.rdk_qed,c.rdk_sa_score,c.rdk_ro5_violations,s.passed,s.reason '
+                            'FROM compound c JOIN compound_druglike_selection s ON s.compound_id=c.id '
+                            'WHERE c.iteration=? ORDER BY c.id', (iteration,)).fetchall()
+
+
+def apply_druglike_selection(path, iteration, target_count, selections, sa_ratio=1.0):
+    """Freeze the full population and every exclusion in the same transaction."""
+    from molnova.config import sa_accepted_ratio
+    sa_ratio = sa_accepted_ratio({'sa-accepted-ratio': sa_ratio})
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('CREATE TABLE IF NOT EXISTS iteration_druglike_selection ('
+                     'iteration INTEGER PRIMARY KEY,population_count INTEGER NOT NULL,'
+                     'accepted_count INTEGER NOT NULL,sa_ratio REAL NOT NULL)')
+        conn.execute('CREATE TABLE IF NOT EXISTS compound_druglike_selection ('
+                     'compound_id INTEGER PRIMARY KEY REFERENCES compound(id),'
+                     'passed INTEGER NOT NULL CHECK(passed IN (0,1)),reason TEXT)')
+        saved = conn.execute('SELECT population_count,accepted_count,sa_ratio '
+                             'FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone()
+        if saved:
+            return saved
+        if not _uses_raw_generation(conn, iteration):
+            return None
+        rows = conn.execute('SELECT id,state FROM compound WHERE iteration=? ORDER BY id', (iteration,)).fetchall()
+        if len(rows) < target_count:
+            raise RuntimeError('Drug likeness waits for the complete generated population')
+        if any(state != State.GENERATED for _, state in rows):
+            raise RuntimeError('Drug likeness cannot change an iteration with downstream work')
+        if [cid for cid, _ in rows] != [row['id'] for row in selections]:
+            raise RuntimeError('Drug likeness population changed before commit')
+        chosen = [row for row in selections if row['druglike_selected']]
+        chosen.sort(key=lambda row: (row['sa_score'], row['id']))
+        sa_ids = {row['id'] for row in chosen[:math.ceil(len(chosen) * sa_ratio)]}
+        for row in selections:
+            passed = row['druglike_selected'] and row['id'] in sa_ids
+            reason = row['druglike_reject_reason'] if not row['druglike_selected'] else (None if passed else 'sa_rank')
+            conn.execute('INSERT INTO compound_druglike_selection VALUES (?,?,?)', (row['id'], int(passed), reason))
+            if not passed:
+                conn.execute('UPDATE compound SET state=?,modified_at=CURRENT_TIMESTAMP WHERE id=?',
+                             (State.DRUGLIKE_REJECTED, row['id']))
+        conn.execute('INSERT INTO iteration_druglike_selection VALUES (?,?,?,?)',
+                     (iteration, len(rows), len(sa_ids), sa_ratio))
+        return len(rows), len(sa_ids), sa_ratio
 
 
 def combichem_plan(path, iteration, plan=None):
@@ -743,12 +863,15 @@ def novel_generated_smiles(path, smiles):
     return [value for value in smiles if value not in existing]
 
 
-def insert_generated_candidates(path, iteration, target_count, candidates, *, combichem_progress=None):
+def insert_generated_candidates(path, iteration, target_count, candidates, *, combichem_progress=None, raw=False):
     """Recheck duplicates and atomically cap the iteration at its total target."""
     if iteration <= 0:
         raise ValueError('Generated candidates require a positive iteration')
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if raw and conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_druglike_selection'").fetchone():
+            if conn.execute('SELECT 1 FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone():
+                raise RuntimeError('Cannot append compounds to a frozen drug likeness population')
         if combichem_progress is not None:
             start, end, *round_ids = combichem_progress
             row = conn.execute('SELECT next_index,plan FROM iteration_combichem WHERE iteration=?',
@@ -788,21 +911,21 @@ def insert_generated_candidates(path, iteration, target_count, candidates, *, co
             if inserted >= remaining:
                 break
             smiles = row['smiles']
-            if not row['druglike_selected'] or smiles in existing:
+            if (not raw and not row['druglike_selected']) or smiles in existing:
                 continue
             sequence += 1
             name = f'GEN_I{iteration:02d}_{sequence:06d}'
             while name in names:
                 sequence += 1
                 name = f'GEN_I{iteration:02d}_{sequence:06d}'
-            values = [row[column] for column in columns]
-            if not all(math.isfinite(value) for value in values):
+            values = [None if raw else row[column] for column in columns]
+            if not raw and not all(math.isfinite(value) for value in values):
                 raise ValueError('Nonfinite RDKit property in generated candidate')
             marks = ','.join('?' for _ in range(len(columns) + 5))
             cursor = conn.execute(
                 f'INSERT INTO compound(name,smiles,iteration,state,sa_score,{",".join(columns)}) '
                 f'VALUES ({marks})',
-                [name, smiles, iteration, State.GENERATED, row['rdk_sa_score'], *values],
+                [name, smiles, iteration, State.GENERATED, None if raw else row['rdk_sa_score'], *values],
             )
             if combichem_progress is not None:
                 conn.execute('INSERT INTO combichem_compound_origin(compound_id,iteration,round) VALUES (?,?,?)',
@@ -852,6 +975,8 @@ def apply_sa_filter(path, iteration, target_count, ratio):
         return None
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if _uses_raw_generation(conn, iteration):
+            return None  # New iterations apply optional SA selection within drug likeness.
         conn.execute(
             'CREATE TABLE IF NOT EXISTS iteration_sa_selection ('
             'iteration INTEGER PRIMARY KEY, ratio REAL NOT NULL, '
@@ -1013,6 +1138,12 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
     if stage == 'fep':
         # Current FEP stage exports candidates; no automated calculation exists.
         return None
+    if stage == 'druglike':
+        return druglike_completion_reason(path, iteration)
+    if stage in {'synthetic', 'ligprep', 'glide'}:
+        reason = druglike_completion_reason(path, iteration)
+        if reason:
+            return reason
     with connect(path) as conn:
         rows = _iteration_rows(conn, iteration)
         if len(rows) < target_count:
@@ -1021,9 +1152,9 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
             return None
         if stage == 'synthetic':
             pending = conn.execute(
-                'SELECT COUNT(*) FROM compound WHERE iteration=? AND state NOT IN (?,?) '
+                'SELECT COUNT(*) FROM compound WHERE iteration=? AND state NOT IN (?,?,?) '
                 'AND (synthetic_feasibility IS NULL OR sa_score IS NULL OR state=?)',
-                (iteration, State.FAILED, State.SA_REJECTED, State.SYNTHETIC_RUNNING),
+                (iteration, State.FAILED, State.SA_REJECTED, State.DRUGLIKE_REJECTED, State.SYNTHETIC_RUNNING),
             ).fetchone()[0]
             return f'{pending} compounds await synthetic assessment' if pending else None
         if stage == 'ligprep':
@@ -1032,8 +1163,8 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
             if pending:
                 return f'{pending} compounds await LigPrep completion'
             if synthetic_enabled and conn.execute(
-                'SELECT 1 FROM compound WHERE iteration=? AND state NOT IN (?,?) '
-                'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED, State.SA_REJECTED)
+                'SELECT 1 FROM compound WHERE iteration=? AND state NOT IN (?,?,?) '
+                'AND synthetic_feasibility IS NULL LIMIT 1', (iteration, State.FAILED, State.SA_REJECTED, State.DRUGLIKE_REJECTED)
             ).fetchone():
                 return 'synthetic assessment incomplete'
             return None
@@ -1054,7 +1185,9 @@ def stage_summary_results(path, iteration, stage):
     failures = {cid for cid, state, failed, *_ in rows
                 if failed == failure_stage and (state == State.FAILED or stage == 'amber-gbsa')}
     if stage == 'generate':
-        successes = {row[0] for row in rows if row[1] != State.SA_REJECTED}
+        successes = {row[0] for row in rows if row[1] not in {State.SA_REJECTED, State.DRUGLIKE_REJECTED}}
+        if uses_raw_generation(path, iteration):
+            successes = {row[0] for row in rows}
     elif stage == 'ligprep':
         advanced = {State.LIGPREPPED, State.GLIDE_RUNNING, State.DOCKED,
                     State.AMBER_RUNNING, State.GBSA_RUNNING, State.GBSA_DONE,
@@ -1161,3 +1294,106 @@ def reference_mmgbsa_completion_reason(path):
     if running:
         return f'reference MM-GBSA still running for {running} compounds'
     return f'{pending} reference compounds await MM-GBSA results' if pending else None
+
+
+def fep_candidate_iterations(path):
+    with connect(path) as conn:
+        return [row[0] for row in conn.execute(
+            'SELECT DISTINCT iteration FROM compound WHERE iteration>0 AND '
+            '(gbsa_score IS NOT NULL OR amber_gbsa_score IS NOT NULL OR docking_score IS NOT NULL) ORDER BY iteration')]
+
+
+def fep_selection_pending(path, iteration, count):
+    import json
+    with connect(path) as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_fep_selection'").fetchone():
+            saved = conn.execute('SELECT candidates FROM iteration_fep_selection WHERE iteration=?', (iteration,)).fetchone()
+            if saved:
+                ids = {item['id'] for item in json.loads(saved[0])}
+                return any(cid in ids and score is None for cid, score in conn.execute(
+                    'SELECT id,fep_score FROM compound WHERE iteration=?', (iteration,)))
+        for column in ('gbsa_score', 'amber_gbsa_score', 'docking_score'):
+            rows = conn.execute(f'SELECT id,{column},fep_score FROM compound WHERE iteration=?', (iteration,)).fetchall()
+            ranked = sorted((row for row in rows if row[1] is not None and math.isfinite(row[1])),
+                            key=lambda row: (row[1], row[0]))
+            if ranked:
+                return any(row[2] is None for row in ranked[:count])
+    return False
+
+
+def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
+                   amber_keep_count=None, for_import=False):
+    """Freeze one score source and candidate list; never compare unlike energies."""
+    import json
+    if iteration <= 0:
+        raise ValueError('FEP candidate selection requires iteration > 0')
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('CREATE TABLE IF NOT EXISTS iteration_fep_selection ('
+                     'iteration INTEGER PRIMARY KEY,ranking_source TEXT NOT NULL,candidates TEXT NOT NULL)')
+        saved = conn.execute('SELECT ranking_source,candidates FROM iteration_fep_selection WHERE iteration=?',
+                             (iteration,)).fetchone()
+        rows = conn.execute('SELECT id,name,smiles,docking_score,amber_gbsa_score,gbsa_score,fep_score,state '
+                            'FROM compound WHERE iteration=? ORDER BY id', (iteration,)).fetchall()
+        if saved:
+            source, selected = saved[0], json.loads(saved[1])
+        else:
+            if for_import and _uses_raw_generation(conn, iteration):
+                return []  # Imports cannot implicitly select an unexported raw iteration.
+            if not for_import:
+                reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count)
+                if reason:
+                    raise RuntimeError(f'FEP waiting: {reason}')
+                if _uses_raw_generation(conn, iteration):
+                    if (not conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_druglike_selection'").fetchone()
+                            or not conn.execute('SELECT 1 FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone()):
+                        raise RuntimeError('FEP waiting for drug likeness')
+                if any(row[7] in {State.AMBER_RUNNING, State.GBSA_RUNNING} for row in rows):
+                    raise RuntimeError('FEP waiting for active Amber/Prime claims')
+                if amber_keep_count is not None:
+                    reason = _amber_completion_reason(conn, iteration, target_count, amber_keep_count)
+                    if reason:
+                        raise RuntimeError(f'FEP waiting: {reason}')
+                if prime_count is not None and _mmgbsa_candidates(conn, iteration, prime_count,
+                                                                target_count, amber_keep_count):
+                    raise RuntimeError('FEP waiting for unfinished Prime candidates')
+            selected, source = [], 'docking'
+            sources = [('prime', 5)] if for_import else [('prime', 5), ('amber', 4), ('docking', 3)]
+            for name, column in sources:
+                eligible = [row for row in rows if row[column] is not None and math.isfinite(row[column])]
+                if eligible:
+                    eligible.sort(key=lambda row: (row[column], row[0]))
+                    source = name
+                    selected = [dict(id=row[0], ranking_score=row[column]) for row in eligible[:count]]
+                    break
+            conn.execute('INSERT INTO iteration_fep_selection VALUES (?,?,?)',
+                         (iteration, source, json.dumps(selected)))
+        by_id = {row[0]: row for row in rows}
+        fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'gbsa_score', 'fep_score', 'state']
+        result = []
+        for item in selected:
+            if item['id'] not in by_id:
+                raise RuntimeError('Frozen FEP candidate is missing from its iteration')
+            result.append(dict(zip(fields, by_id[item['id']]), ranking_source=source,
+                               ranking_score=item['ranking_score']))
+        return result
+
+
+def store_fep_scores(path, updates, allowed_ids):
+    """Validate and import the entire batch without changing other scientific scores."""
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if set(updates) - set(allowed_ids):
+            raise ValueError('FEP scores include IDs outside the selected candidate set')
+        for cid, score in updates.items():
+            if not math.isfinite(score):
+                raise ValueError(f'FEP score for {cid} must be finite')
+            row = conn.execute('SELECT fep_score FROM compound WHERE id=? AND iteration>0', (cid,)).fetchone()
+            if row is None:
+                raise ValueError(f'Unknown FEP candidate {cid}')
+            if row[0] is not None and row[0] != score:
+                raise ValueError(f'Conflicting existing FEP score for {cid}')
+        for cid, score in updates.items():
+            conn.execute("UPDATE compound SET fep_score=?,state=?,modified_at=CURRENT_TIMESTAMP "
+                         'WHERE id=? AND fep_score IS NULL', (score, State.FEP_DONE, cid))
+        return len(updates)

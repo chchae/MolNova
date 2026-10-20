@@ -58,11 +58,11 @@ def test_fep_import_rejects_ids_outside_candidate_set(tmp_path, name):
     scores = tmp_path / "scores.tsv"
     _write_scores(scores, [(ids[name], -7.5)])
 
-    with pytest.raises(ValueError, match="outside the selected GBSA candidate set"):
+    with pytest.raises(ValueError, match="outside the selected candidate set"):
         import_scores(args, scores, iteration=1)
 
 
-def test_one_shot_worker_does_not_retry_failure(monkeypatch):
+def test_one_shot_worker_does_not_retry_failure(tmp_path, monkeypatch):
     calls = []
 
     def failed_process(*args):
@@ -71,7 +71,7 @@ def test_one_shot_worker_does_not_retry_failure(monkeypatch):
 
     monkeypatch.setattr("molnova.driver.stream_process", failed_process)
     assert not supervise_iteration(
-        SimpleNamespace(), Path("project.toml"), 1,
+        _fep_args(tmp_path)[0], Path("project.toml"), 1,
         [("generate", "molnova.stages.generate")], 1, StopFlag(), True,
     )
 

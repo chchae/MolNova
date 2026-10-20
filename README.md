@@ -74,13 +74,13 @@ the same options, such as `--once` and `--poll-interval`.
 
 To permit iteration numbers up to 10, set `max-iteration = 10` in
 `examples/egfr.toml` and invoke each iteration separately.
-The example uses 1000 compounds per iteration, sends the Glide top-200 directly to
-Prime MM-GBSA by default, and selects 20 Prime GBSA elites. Setting `amber_gbsa = true`
-runs restrained Amber GBSA on the Glide top-200 and sends the Amber top-50 to Prime. Each next iteration waits until the previous iterations'
-LigPrep/Glide work, optional Amber screening and Prime processing of the final selected top-N have
-finished. Terminal failures are processed but cannot supply elites; retryable
-or running calculations continue to block generation. The next LibInvent TL
-cycle uses the 20 lowest GBSA scores from the immediately previous iteration.
+The example stores 10,000 valid unique generated compounds per new iteration,
+then evaluates drug likeness over the whole database iteration. It runs
+Glide best-500 through Amber and Amber best-200 through Prime, and exports up to
+20 FEP candidates. Next generation still requires the configured finite Prime
+elites from the immediately preceding iteration. In this combichem example,
+`gbsa-elite-count=1` drives single-elite replacement; REINVENT TL still requires
+at least two usable training pairs. Existing iterations retain their saved policy.
 MM-GBSA waits for all docking work in its iteration to finish:
 
 ```bash
@@ -99,8 +99,8 @@ molnova status egfr.toml
 ```
 
 The database and locks are in `examples/output/`. The single-thread driver runs
-one iteration and exits: generate → synthetic assessment (if enabled) → LigPrep
-→ Glide → MM-GBSA → FEP candidate export (if enabled). Set `--iteration N` to
+one iteration and exits: generate → drug likeness → synthetic assessment (if enabled)
+→ LigPrep → Glide → Amber (if enabled) → Prime → FEP candidate export (if enabled). Set `--iteration N` to
 select it explicitly. Without that option, the driver selects the oldest unfinished
 iteration, or the next new iteration, once at startup. It does not automatically
 advance to another iteration. `max-iteration` bounds explicit and new iteration
@@ -122,7 +122,7 @@ most every five seconds. Glide groups still calculate in parallel and stream
 results; MM-GBSA still maintains seven independent jobs and refills completed
 slots. `--once` attempts stages in order but stops at the first unfinished or
 failed stage, without launching downstream stages. Ctrl-C stops the local worker;
-submitted external jobs remain recoverable. FEP remains disabled by default.
+submitted external jobs remain recoverable. FEP execution remains external; candidate export is optional.
 
 Run one stage independently:
 
@@ -182,9 +182,9 @@ the lock when its file handle closes.
 
 ## Pipeline
 
-`generate → synthetic feasibility → LigPrep → Glide → MM-GBSA → FEP(optional)`
+`generate → druglike → synthetic(optional) → LigPrep → Glide → Amber(optional) → Prime → FEP export(optional)`
 
-The driver supervises independent subprocess workers. SQLite is the source of truth. Completed Glide groups are written immediately; MM-GBSA waits until all upstream work in the iteration finishes, then selects the final top-N by Amber score when screening is enabled, or by docking score otherwise.
+The driver supervises independent subprocess workers. SQLite is the source of truth. Completed Glide groups are written immediately; MM-GBSA waits until all upstream work in the iteration finishes, then selects the final top-N by finite Amber score when available, otherwise by final Glide score. Pending work never triggers fallback.
 
 During supervised runs, each successful idle poll prints one line such as
 `[ligprep ] skip: No iteration requires LigPrep.` Generate, synthetic feasibility,
@@ -236,7 +236,7 @@ To generate by combinatorial sidechain assembly instead of REINVENT4, set:
 ```toml
 sidechain-library = "./input/edges-50k.smi"
 sidechain-max-heavy-atoms = 10  # optional; omit for no size limit
-sample-size = 3000  # combinations attempted per assembly/filtering batch
+sample-size = 3000  # combinations attempted per assembly batch
 ```
 
 Omit `sidechain-library` to keep REINVENT4. Combichem runs locally without a prior,
@@ -256,8 +256,8 @@ changes apply to new iteration plans. Legacy plans remain unlimited.
 Combichem supports one or more scaffold attachments and uses every inferred
 attachment position. It independently selects up to 1000 unique fragments per
 site with weight `1/heavy_atoms`, favoring smaller fragments. It explores the
-full Cartesian space in a saved shuffled order, batch by batch, until the filtered
-target is reached. If a sampled pool is exhausted below target, it saves fresh
+full Cartesian space in a saved shuffled order, batch by batch, until the raw
+generation target is reached. Drug likeness then runs over the complete DB population. If a sampled pool is exhausted below target, it saves fresh
 pools for another round and continues, preserving existing compounds and filters.
 If each pool already covers the full eligible library, exhaustion remains
 incomplete. Pools, seeds, round history, cursors, library fingerprint and batch
@@ -546,16 +546,18 @@ least one solved route was found, and `0` means none were found within the
 configured search limits and stock. A value of `0` is not proof that a compound
 is impossible to synthesize.
 
-Generation first validates and deduplicates the sampled CSV, then calculates
-RDKit properties for every valid novel molecule **before** selecting the DB target.
-Keep RO5 violations<=1 and at most half of that batch (rounded up), ranked by
-QED descending then SA ascending. Equal-score ties keep input order. Insert
-passing molecules in original input order up to the remaining `target-count`,
-with their precomputed properties. Too few passing molecules cause additional
-sampling; zero insertions are reported as an error. No failing RO5 candidates
-are added to fill the target. Save each valid novel batch and its properties,
-selection and rejection reasons in `druglike_selection-<timestamp>.csv` beside
-`generated.csv`. Batch indices in these reports are not SQLite compound IDs.
+New generation validates/canonicalizes/deduplicates the sampled CSV and stores
+all admitted molecules up to the raw `target-count`, before drug likeness.
+The independent druglike worker computes RDKit properties for every molecule
+in that DB iteration. It keeps RO5 violations<=1 and at most half of the whole
+population (rounded up), ranked by QED descending, SA ascending and ID. Decisions
+are independent of sampling batch boundaries. Rejected compounds, descriptors
+and reasons remain in SQLite (`druglike_rejected`). Only passing compounds enter
+LigPrep and Glide. Selection and population are frozen atomically; reports are
+published in `iterN/druglike/druglike_selection.csv` from committed records.
+A property failure preserves generated rows for retry and blocks downstream work.
+A report failure can be retried without reranking. Legacy saved iterations retain
+their former pre-DB batch filters and target meaning.
 
 RDKit calculation runs locally,
 even when `synthetic-feasibility-enabled = false`. Store SA in
@@ -579,19 +581,13 @@ MW>500, cLogP>5, HBD>5 and HBA>10; Veber is 1 when rotatable bonds<=10 and
 TPSA<=140. PAINS (A/B/C) and Brenk are counts of matching catalog entries, not
 occurrences or exclusion flags. Veber/alerts introduce no additional filters.
 Calculate the original SMILES without neutralizing or stripping salts. Schema
-migration retains old results; generation reruns fill only missing properties.
-See SPEC section 6 for definitions and sources. Re-running
-`molnova generate project.toml --iteration N` fills missing properties even when
-that iteration has already reached its target count, preserving existing scores,
-results and failure details. The existing later SA acceptance filter remains:
-once the DB iteration reaches its target after druglikeness preselection,
-`sa-accepted-ratio = 0.75` (default) passes only the lowest-SA-score 75% to the
-next stages. For 10,000 generated compounds, 7,500 proceed to LigPrep. The count
-is rounded up for fractional counts, with compound ID breaking score ties. Set
-a ratio in `(0, 1]`; `1.0` passes all compounds. Excluded compounds remain in
-SQLite as `sa_rejected`, preserving their SA scores. The selection is saved once
-per iteration, so restarts or later TOML changes do not rerank it. Existing
-iterations that already started downstream work retain their prior population.
+migration retains old results. For raw iterations, run
+`molnova druglike project.toml --iteration N` to calculate missing properties and
+publish the frozen selection report. The optional `sa-accepted-ratio` defaults
+to 1.0, adding no further cut. A smaller explicit ratio keeps that lowest-SA
+fraction of druglike survivors within the same stage; ID breaks ties. Existing
+legacy generation reruns still backfill descriptors and preserve their original
+SA selections. No started scientific work is retrospectively filtered.
 
 The synthetic feasibility stage also fills missing RDKit SA scores in
 `compound.sa_score` (1–10; lower means easier synthetic accessibility). SA scores
@@ -619,7 +615,7 @@ and the generation worker to exit (and for optional synthetic screening).
 Glide waits for all LigPrep work, including retryable work, to finish. Completed
 Glide reference groups still persist results immediately; MM-GBSA starts only
 once docking and enabled Amber screening finish, using the final `gbsa-input-count`
-ranking (200 by Glide score by default, 50 by Amber score when enabled). New GBSA claims exclude `gbsa_running`, so concurrent claimers
+ranking (200 by finite Amber score when available, otherwise Glide score). New GBSA claims exclude `gbsa_running`, so concurrent claimers
 cannot submit the same compound again.
 
 On restart, stage locks prevent overlapping local workers. Saved Prime and
@@ -705,20 +701,23 @@ reference failures are recorded and do not cause endless resubmission.
 
 ### AmberTools screening before Prime
 
-`examples/egfr.toml` skips Amber by default and sends the Glide top-200 directly to Prime.
-Set `amber_gbsa = true` to enable `Glide → AmberTools → Prime` screening on t41.
-Amber selects only the 200 lowest finite Glide scores after docking completes,
-then minimizes/scores those compounds with up to 124 independent single-core jobs.
-Its 50 lowest finite Amber scores go to Prime. Other project
-configs also skip Amber by default. The legacy `amber-gbsa-enabled` key is supported;
-conflicting switches are rejected. Omit `gbsa-input-count` to select 200 without Amber
-or 50 with Amber automatically; an explicit count overrides this selection.
+`examples/egfr.toml` enables Amber screening on final Glide best-500, followed
+by Prime on up to 200 best finite Amber results. The loader still leaves Amber
+disabled unless requested; in that case Prime can use existing finite Amber
+results or fall back to Glide. Defaults are `amber-input-count=500` and
+`gbsa-input-count=200`, with explicit overrides supported. An empty completed
+Amber result set falls back to Glide; running/uncertain work does not. Partial
+Amber sets remain smaller and are not filled from docking. Saved native jobs
+and existing scientific results are preserved.
+`amber-input-count` is the canonical TOML name for the number of Glide-ranked
+compounds entering Amber. Legacy `amber-keep-count` remains supported; if both
+keys are supplied, both must be positive integers with the same value.
 
 ```toml
 amber_gbsa = true
 amber-cpus = 124
-amber-keep-count = 200  # Glide-ranked Amber input count
-# gbsa-input-count omitted: automatically 50 when Amber is enabled
+amber-input-count = 500  # Glide-ranked Amber input count
+gbsa-input-count = 200
 amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
@@ -751,3 +750,16 @@ errors stop the batch; native ligand failures receive diagnostics and no score.
 Amber and Prime scores are separate protocols. A small synthetic real-calculator
 smoke test passed; target scoring quality and 128-core throughput remain unverified.
 See [SPEC section 15](docs/SPEC.md#15-ambertools-prescreen-before-prime--2026-10-12-user-change).
+
+### FEP candidate fallback
+
+Set `fep-enabled=true` and `fep-input-count=20` to export candidates after upstream
+work completes. Choose one ranking source for each iteration: finite Prime,
+otherwise finite Amber, otherwise finite Glide. Select up to 20 from that source;
+do not mix energies or fill a partial higher-tier set from lower tiers. Candidate
+IDs, ranking source and ranking scores are frozen in SQLite. The TSV includes
+all score columns and current state. Restart/config changes and later scores
+retain that list. Import validates against those frozen IDs, including candidates
+without Prime scores; invalid/conflicting batches write no scores. Raw iterations
+must export before import. FEP execution remains external and is not launched by
+the export stage. Next generation still needs finite preceding Prime elites.
