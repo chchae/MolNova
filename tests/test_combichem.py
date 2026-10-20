@@ -1027,3 +1027,38 @@ sidechain-library = "edges.smi"
     assert database.iteration_compound_count(project.db_path, 1) == 4
     assert database.iteration_scaffold(project.db_path, 1)['supplied_elite_mcs'] == core
     assert database.combichem_plan(project.db_path, 1)['total_combinations'] == '16'
+
+
+@pytest.mark.parametrize('smiles,scaffold,core,sidechain_size', [
+    ('C#CC#C[N+](C)(CCl)CCc1ccccc1',
+     'c1ccccc1CC[N+](C)(CCl)[*:0]', 'c1ccccc1CC[N+](C)CCl', 4),
+    ('C#CCN(C)CCc1ccccc1', 'c1ccccc1CCN(C)[*:0]', 'c1ccccc1CCNC', 3),
+])
+def test_symmetric_attachment_uses_valid_decomposition_and_same_replacement_match(
+        smiles, scaffold, core, sidechain_size, monkeypatch):
+    original = Chem.MolFromSmiles(smiles)
+    smiles = Chem.MolToSmiles(original, isomericSmiles=True)
+    original = Chem.MolFromSmiles(smiles)
+    pair = _core.decompose_elite_for_libinvent(smiles, scaffold)
+    assert pair is not None
+    assert combichem.assemble(Chem.MolFromSmiles(scaffold),
+                             [Chem.MolFromSmiles(pair[1])]) == smiles
+    previous = dict(mcs_smarts=core, scaffold_smiles=scaffold)
+    before = dict(previous)
+    monkeypatch.setattr(combichem.secrets, 'choice',
+                        lambda candidates: max(candidates, key=lambda cut: len(cut['removed_atom_indices'])))
+    info = combichem.prepare_single_elite_scaffold(dict(id=100, mol=original), previous, 'c1ccccc1')
+    assert len(info['replacement_candidates']) == 1
+    assert len(info['replacement_cuts'][0]['removed_atom_indices']) == sidechain_size
+    retained = Chem.MolFromSmiles(info['scaffold_smiles'])
+    assert retained.HasSubstructMatch(Chem.MolFromSmarts(core))
+    assert retained.GetNumHeavyAtoms() == original.GetNumHeavyAtoms() - sidechain_size
+    assert previous == before
+
+
+@pytest.mark.parametrize('smiles,scaffold', [
+    ('CCc1ccc(CC)cc1', 'c1ccccc1[*:0]'),  # undeclared branch
+    ('c1ccc2c(c1)CCC2', '[*:0]c1ccccc1[*:1]'),  # one component bridges attachments
+])
+def test_alternative_scaffold_matches_do_not_relax_decomposition_constraints(smiles, scaffold):
+    assert _core.decompose_elite_for_libinvent(smiles, scaffold) is None

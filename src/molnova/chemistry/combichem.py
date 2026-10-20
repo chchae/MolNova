@@ -122,13 +122,14 @@ def prepare_single_elite_scaffold(elite, previous, docking_smarts, *, selected_c
     old_attachments = attachment_atoms(old_scaffold)
     if sorted(old_scaffold.GetAtomWithIdx(i).GetAtomMapNum() for i in old_attachments) != list(range(len(old_attachments))):
         raise RuntimeError('Preceding combichem scaffold needs consecutive attachment labels starting at 0')
+    decomposition = _core._match_elite_to_scaffold(mol, previous['scaffold_smiles'])
     if (not old_scaffold.HasSubstructMatch(old_core, useChirality=False)
             or not old_scaffold.HasSubstructMatch(docking, useChirality=False)
             or not mol.HasSubstructMatch(docking, useChirality=False)
-            or _core.decompose_elite_for_libinvent(smiles, previous['scaffold_smiles']) is None):
+            or decomposition is None):
         raise RuntimeError('Single elite is incompatible with the preceding scaffold or fixed docking core')
-    query, by_label, _, dummy_indices, _ = _core._scaffold_attachment_layout(previous['scaffold_smiles'])
-    match = mol.GetSubstructMatch(query, useChirality=False)
+    _, by_label, _, dummy_indices, _ = _core._scaffold_attachment_layout(previous['scaffold_smiles'])
+    match = decomposition[1]
     core_atoms = {index for qidx, index in enumerate(match) if qidx not in dummy_indices}
     candidate_groups = []
     for label in range(len(old_attachments)):

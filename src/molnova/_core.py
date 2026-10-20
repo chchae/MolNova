@@ -1771,6 +1771,12 @@ def decompose_elite_for_libinvent(smiles, scaffold_smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
+    result = _match_elite_to_scaffold(mol, scaffold_smiles)
+    return result[0] if result is not None else None
+
+
+def _match_elite_to_scaffold(mol, scaffold_smiles):
+    """Return a valid decomposition and its exact attachment-aware atom match."""
 
     (
         scaffold_query,
@@ -1780,16 +1786,23 @@ def decompose_elite_for_libinvent(smiles, scaffold_smiles):
         tl_scaffold,
     ) = _scaffold_attachment_layout(scaffold_smiles)
 
-    match = mol.GetSubstructMatch(
-        scaffold_query,
-        useChirality=False,
-    )
-    if not match:
-        return None
+    # Symmetric cores can put a wildcard on a retained branch in the first
+    # embedding. Preserve the first valid match, including label permutations.
+    for match in mol.GetSubstructMatches(scaffold_query, useChirality=False, uniquify=False):
+        decorators = _decompose_elite_match(
+            mol, match, attachment_by_label, label_order, dummy_query_indices,
+        )
+        if decorators is not None:
+            return (tl_scaffold, "|".join(decorators)), match
+    return None
+
+
+def _decompose_elite_match(mol, match, attachment_by_label, label_order, dummy_query_indices):
+    """Validate and extract decorators for one fixed scaffold embedding."""
 
     core_atoms = {
         match[qidx]
-        for qidx in range(scaffold_query.GetNumAtoms())
+        for qidx in range(len(match))
         if qidx not in dummy_query_indices
     }
 
@@ -1864,7 +1877,8 @@ def decompose_elite_for_libinvent(smiles, scaffold_smiles):
     if not decorators:
         return None
 
-    return tl_scaffold, "|".join(decorators)
+    return decorators
+
 
 def write_elite_libinvent_training_files(
     elites,

@@ -226,6 +226,11 @@ effective supplied core or pinned fixed scaffold, skip automatic MCS extraction.
 This supersedes the former whole-elite C-H expansion policy. Require exactly
 N-1's valid saved generation core/scaffold, containing the fixed docking core,
 and successful decomposition of the connected elite against that scaffold.
+For symmetric attachment environments, validate alternative RDKit atom matches
+rather than rejecting the elite after only the first match. Keep the first valid
+decomposition and use that exact atom mapping for terminal-sidechain cut selection;
+undeclared branches, overlapping decorators and multiple core contacts remain
+invalid. Preserve already saved snapshots, cuts and scientific results.
 Preserve its number of attachments and their labels 0..K-1, where K is the
 attachment count. Map each attachment to its own external elite sidechain.
 **Implementation choice:** enumerate non-ring single bonds in that sidechain,

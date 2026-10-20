@@ -1,5 +1,18 @@
 # MolNova Development Handoff
 
+## Symmetric single-elite scaffold matching (2026-10-20)
+
+Iteration 7 rejected elite 62121 because the first symmetric atom embedding put
+an attachment dummy on a retained methyl branch. The saved scaffold and fixed
+docking core are compatible; a later embedding decomposes and reassembles exactly.
+Validate alternative non-unique RDKit matches using the existing branch/component
+rules, retain the first valid decomposition, and reuse its exact atom map for
+single-elite replacement cuts. Do not relax core/attachment constraints or change
+saved snapshots, elite ranking, scores or submissions. Regression tests cover
+charged/neutral branch symmetry, reassembly, cut membership and invalid branches/
+bridged decorators. Read-only RDKit reproduction used the actual iteration-6
+elite and saved scaffold; no new generation, docking or GBSA was launched.
+
 ## Amber SLURM 30-minute limit (2026-10-20)
 
 New array manifests pin `slurm_time_limit="00:30:00"`; propagate it to remote
