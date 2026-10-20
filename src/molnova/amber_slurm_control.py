@@ -113,7 +113,15 @@ def submit(root):
 def status(job_id, array_count=None):
     if not str(job_id).isdigit():
         raise ValueError('Invalid Slurm JobId')
-    queued = query(['squeue', '--noheader', '--jobs', str(job_id), '--format=%T']).strip()
+    try:
+        queued = query(['squeue', '--noheader', '--jobs', str(job_id), '--format=%T']).strip()
+    except subprocess.CalledProcessError as exc:
+        # Slurm may evict finished jobs from squeue before we poll them.
+        # Only this specific absence permits an accounting lookup; transport,
+        # permission and scheduler errors must remain uncertain.
+        if 'Invalid job id specified' not in (exc.stderr or ''):
+            raise
+        queued = ''
     if queued:
         return {'active': True, 'state': queued, 'job_id': str(job_id)}
     if array_count is not None:
@@ -151,6 +159,10 @@ def array_status(job_id, count):
         raise RuntimeError(f'Slurm array {job_id} has missing/unexpected task history; recovery pending')
     return {'active': any(state not in TERMINAL for state in states.values()),
             'state': ','.join(sorted({states[key] for key in expected})), 'job_id': job_id,
+            'task_states': {key: states[key] for key in sorted(expected)},
+            'task_successful': {key: all(value == 'COMPLETED' for name, value in states.items()
+                                         if name == key or name.startswith(key + '.'))
+                                for key in sorted(expected)},
             'successful': all(state == 'COMPLETED' for state in states.values())}
 
 

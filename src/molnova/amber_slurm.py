@@ -63,9 +63,43 @@ def job_state(directory, record):
         record['slurm_job_id'] = job_id
         amber.save(directory / 'amber_job.json', record)
     count = f' {len(record["compound_ids"])}' if record.get('mode') == ARRAY else ''
-    response = amber.ssh(record['settings'], f'python3 {control} status {record["slurm_job_id"]}{count}',
+    # Run the current read-only status helper, including for saved submissions.
+    # Leave the remote journal, submission helper and scientific worker intact.
+    response = amber.ssh(record['settings'], f'python3 - status {record["slurm_job_id"]}{count}',
+                          input=Path(__file__).with_name('amber_slurm_control.py').read_text(),
                           capture_output=True, text=True)
     return json.loads(response.stdout)
+
+
+def resolve_timeouts(record, saved_input, native, snapshot):
+    """Accept only verified terminal array timeouts with released task locks."""
+    if record.get('mode') != ARRAY or native['active'] or snapshot['active']:
+        return None
+    entries = saved_input.get('entries', [])
+    tasks = snapshot.get('tasks', [])
+    states = native.get('task_states', {})
+    successful = native.get('task_successful', {})
+    if (len(entries) != len(record['compound_ids']) or len(tasks) != len(entries)
+            or {entry['id'] for entry in entries} != set(record['compound_ids'])):
+        return None
+    expected = {f'{record["slurm_job_id"]}_{i}' for i in range(len(entries))}
+    if set(states) != expected or not any(value == 'TIMEOUT' for value in states.values()):
+        return None
+    results = {result['id']: result for result in snapshot['results']}
+    timed_out = []
+    for index, (entry, task) in enumerate(zip(entries, tasks)):
+        key, cid = f'{record["slurm_job_id"]}_{index}', entry['id']
+        if task['active']:
+            return None
+        if states[key] == 'TIMEOUT':
+            timed_out.append(cid)
+            if cid not in results:
+                results[cid] = {'id': cid, 'error':
+                    f'Amber Slurm task {key} reached its time limit (TIMEOUT)'}
+        elif (states[key] != 'COMPLETED' or not successful.get(key)
+              or task['status'] != 'done' or cid not in results):
+            return None
+    return list(results.values()), timed_out
 
 
 def poll(args, iteration, directory, record):

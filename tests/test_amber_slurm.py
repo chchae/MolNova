@@ -146,7 +146,9 @@ def child_record(project, mode=slurm.SINGLE):
     record['slurm_job_id'] = '123'
     folder = project.output / record['run_id']
     folder.mkdir()
-    amber.save(folder / 'input.json', {'identities': database.amber_identity_rows(project.db_path, 1, [1,2,3,4])})
+    amber.save(folder / 'input.json', {
+        'identities': database.amber_identity_rows(project.db_path, 1, [1,2,3,4]),
+        'entries': [{'id': i, 'charge': 0} for i in [3, 1, 4, 2]]})
     amber.save(project.output / 'amber_job.json', record)
     return record
 
@@ -173,7 +175,7 @@ def test_queued_or_terminal_slurm_does_not_bypass_worker_completion(project, mon
     assert not (project.output / 'amber_job.json').exists()
 
 
-@pytest.mark.parametrize('successful,state', [(False, 'FAILED'), (True, 'COMPLETED')])
+@pytest.mark.parametrize('successful,state', [(False, 'FAILED'), (False, 'TIMEOUT'), (True, 'COMPLETED')])
 @pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
 def test_incomplete_terminal_slurm_retains_identity_and_claims(project, monkeypatch, successful, state, mode):
     record = child_record(project, mode)
@@ -237,6 +239,41 @@ def test_missing_accounting_is_not_completion(monkeypatch):
     monkeypatch.setattr(control, 'query', lambda c: '')
     with pytest.raises(RuntimeError, match='no verified status'):
         control.status('123')
+
+
+@pytest.mark.parametrize('array_count', [None, 2])
+def test_evicted_queue_job_uses_verified_accounting(monkeypatch, array_count):
+    def query(command):
+        if command[0] == 'squeue':
+            raise subprocess.CalledProcessError(1, command,
+                stderr='slurm_load_jobs error: Invalid job id specified\n')
+        return ('123|TIMEOUT|\n123.0|CANCELLED|\n' if array_count is None else
+                '123_0|TIMEOUT|\n123_0.0|CANCELLED|\n123_1|COMPLETED|\n')
+    monkeypatch.setattr(control, 'query', query)
+    result = control.status('123', array_count)
+    assert not result['active'] and not result['successful']
+    assert 'TIMEOUT' in result['state']
+
+
+@pytest.mark.parametrize('rows', ['', '123_0|TIMEOUT|'])
+def test_evicted_queue_job_without_full_accounting_stays_uncertain(monkeypatch, rows):
+    def query(command):
+        if command[0] == 'squeue':
+            raise subprocess.CalledProcessError(1, command, stderr='Invalid job id specified')
+        return rows
+    monkeypatch.setattr(control, 'query', query)
+    with pytest.raises(RuntimeError, match='task history'):
+        control.status('123', 2)
+
+
+@pytest.mark.parametrize('error', ['Unable to contact slurm controller', 'Permission denied', None])
+def test_other_queue_errors_never_establish_absence(monkeypatch, error):
+    def query(command):
+        assert command[0] == 'squeue'
+        raise subprocess.CalledProcessError(1, command, stderr=error)
+    monkeypatch.setattr(control, 'query', query)
+    with pytest.raises(subprocess.CalledProcessError):
+        control.status('123', 2)
 
 
 @pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
@@ -367,11 +404,14 @@ def test_ambiguous_array_history_blocks_resubmission(tmp_path, monkeypatch, hist
     ('123_0|COMPLETED|\n123_1|COMPLETED|\n123_1.0|RUNNING|', True, False),
     ('123_0|COMPLETED|\n123_1|FAILED|', False, False),
     ('123_0|COMPLETED|\n123_1|CANCELLED by 1023|', False, False),
+    ('123_0|COMPLETED|\n123_1|TIMEOUT|\n123_1.0|FAILED|', False, False),
 ])
 def test_array_status_requires_all_tasks_and_steps(monkeypatch, rows, active, successful):
     monkeypatch.setattr(control, 'query', lambda command: '' if command[0] == 'squeue' else rows)
     result = control.status('123', 2)
     assert result['active'] is active and result['successful'] is successful
+    assert result['task_states']['123_1'] == rows.split('123_1|')[1].split('|')[0].split()[0]
+    assert result['task_successful']['123_1'] is successful
 
 
 @pytest.mark.parametrize('rows', ['', '123|COMPLETED|', '123_0|COMPLETED|',
@@ -421,3 +461,102 @@ def test_array_job_state_checkpoints_id_before_status_lookup(project, monkeypatc
     with pytest.raises(RuntimeError, match='unavailable'):
         slurm.job_state(project.output, amber.load_job(project.output))
     assert sum(' submit ' in command for command in calls) == 1
+
+
+def timeout_run(project, monkeypatch):
+    record = child_record(project, slurm.ARRAY)
+    # Saved array predates the pinned limit; entry order differs from DB/ID order.
+    record.pop('slurm_time_limit')
+    amber.save(project.output / 'amber_job.json', record)
+    native = dict(active=False, successful=False, state='COMPLETED,TIMEOUT',
+        task_states={f'123_{i}': 'TIMEOUT' if i == 1 else 'COMPLETED' for i in range(4)},
+        task_successful={f'123_{i}': i != 1 for i in range(4)})
+    snapshot = dict(active=False, status='running', results=[
+        {'id': i, 'score': -i} for i in [3, 4, 2]], tasks=[
+        dict(active=False, status='running' if i == 1 else 'done') for i in range(4)])
+    monkeypatch.setattr(slurm, 'job_state', lambda *a: native)
+    monkeypatch.setattr(amber, 'ssh', lambda *a, **kw: SimpleNamespace(stdout=json.dumps(snapshot)))
+    monkeypatch.setattr(amber, 'launch', lambda *a: pytest.fail('Timeout resubmission'))
+    monkeypatch.setattr(amber, 'download_logs', lambda *a: None)
+    return record, native, snapshot
+
+
+def test_timeout_fails_only_mapped_compound_and_unblocks_prime(project, monkeypatch):
+    record, native, snapshot = timeout_run(project, monkeypatch)
+    assert amber.poll(project, 1, project.output, record)
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT state,failed_stage,failure_message FROM compound WHERE id=1').fetchone() == (
+            'failed', 'amber_gbsa', 'Amber Slurm task 123_1 reached its time limit (TIMEOUT)')
+        assert conn.execute('SELECT COUNT(amber_gbsa_score) FROM compound').fetchone()[0] == 3
+    assert database.amber_completion_reason(project.db_path, 1, 4, 4) is None
+    assert database.claim_mmgbsa_candidates(project.db_path, 1, 2, 4, 4) == [4, 3]
+    archived = json.loads((project.output / f'{record["run_id"]}.completed.json').read_text())
+    assert archived['timeout_compound_ids'] == [1]
+    assert archived['slurm_terminal_state'] == native['state']
+    assert not (project.output / 'amber_job.json').exists()
+
+
+@pytest.mark.parametrize('condition', ['queued', 'lock', 'task_lock', 'missing_history',
+    'failed_task', 'cancelled_task', 'failed_step', 'missing_marker', 'missing_result', 'no_tasks'])
+def test_timeout_never_retires_live_uncertain_or_other_failed_work(project, monkeypatch, condition):
+    record, native, snapshot = timeout_run(project, monkeypatch)
+    if condition == 'queued':
+        native['active'] = True
+    elif condition == 'lock':
+        snapshot['active'] = True
+    elif condition == 'task_lock':
+        snapshot['tasks'][1]['active'] = True
+    elif condition == 'missing_history':
+        del native['task_states']['123_2']
+    elif condition in ('failed_task', 'cancelled_task'):
+        native['task_states']['123_2'] = 'FAILED' if condition == 'failed_task' else 'CANCELLED'
+    elif condition == 'failed_step':
+        native['task_successful']['123_2'] = False
+    elif condition == 'missing_marker':
+        snapshot['tasks'][2]['status'] = 'running'
+    elif condition == 'missing_result':
+        snapshot['results'] = [r for r in snapshot['results'] if r['id'] != 4]
+    else:
+        del snapshot['tasks']
+    try:
+        assert not amber.poll(project, 1, project.output, record)
+    except RuntimeError as exc:
+        assert 'retained' in str(exc)
+    assert (project.output / 'amber_job.json').exists()
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT state FROM compound WHERE id=1').fetchone() == ('amber_running',)
+
+
+@pytest.mark.parametrize('has_result', [False, True])
+def test_timeout_restart_after_db_commit_preserves_results(project, monkeypatch, has_result):
+    record, native, snapshot = timeout_run(project, monkeypatch)
+    if has_result:
+        snapshot['results'].append({'id': 1, 'score': -12})
+    def interrupted_download(*a):
+        raise RuntimeError('download interrupted')
+    monkeypatch.setattr(amber, 'download_logs', interrupted_download)
+    with pytest.raises(RuntimeError, match='interrupted'):
+        amber.poll(project, 1, project.output, record)
+    assert (project.output / 'amber_job.json').exists()
+    monkeypatch.setattr(amber, 'download_logs', lambda *a: None)
+    assert amber.poll(project, 1, project.output, amber.load_job(project.output))
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT amber_gbsa_score,state FROM compound WHERE id=1').fetchone() == (
+            (-12, 'docked') if has_result else (None, 'failed'))
+
+
+def test_reference_timeout_recovery_preserves_existing_prime_and_fep(project, monkeypatch):
+    record, native, snapshot = timeout_run(project, monkeypatch)
+    with database.connect(project.db_path) as conn:
+        conn.execute('UPDATE compound SET iteration=0,docking_score=NULL')
+        conn.execute('UPDATE compound SET gbsa_score=-20,fep_score=-30 WHERE id=1')
+    project.reference_poses = project.output / 'iter1/glide/best_poses.maegz'
+    record['iteration'] = 0
+    record['source_fingerprints'] = amber.source_fingerprints(project, 0)
+    amber.save(project.output / 'amber_job.json', record)
+    assert amber.poll(project, 0, project.output, record)
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT state,gbsa_score,fep_score,failed_stage FROM compound WHERE id=1').fetchone() == (
+            'fep_done', -20, -30, 'amber_gbsa')
+    assert database.amber_completion_reason(project.db_path, 0, 10000) is None
+    assert database.claim_mmgbsa_candidates(project.db_path, 0, 50, 10000, 500) == [2, 3, 4]

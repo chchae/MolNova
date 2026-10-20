@@ -242,18 +242,32 @@ def poll(args, iteration, directory, record):
     native = amber_slurm.job_state(directory, record) if slurm else None
     helper = 'amber_array.py' if record.get('mode') == amber_slurm.ARRAY else 'worker.py'
     collect_command = f'python3 {remote}/{helper} collect {remote}'
-    response = ssh(record['settings'], collect_command if slurm else environment_command(
-                   record['settings'], collect_command), capture_output=True, text=True)
+    if record.get('mode') == amber_slurm.ARRAY:
+        # Collect task markers with the current read-only helper while retaining
+        # the saved scientific worker and immutable inputs for old arrays too.
+        response = ssh(record['settings'], f'cd {remote} && python3 - collect {remote}',
+                       input=Path(__file__).with_name('amber_array.py').read_text(),
+                       capture_output=True, text=True)
+    else:
+        response = ssh(record['settings'], collect_command if slurm else environment_command(
+                       record['settings'], collect_command), capture_output=True, text=True)
     snapshot = json.loads(response.stdout)
     save(directory / 'remote_snapshot.json', snapshot)
     results = snapshot['results']
     database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
+    resolved = amber_slurm.resolve_timeouts(record, saved_input, native, snapshot) if native else None
+    if resolved is not None:
+        results, timed_out = resolved
+        database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
+        record['timeout_compound_ids'] = timed_out
+        record['slurm_terminal_state'] = native['state']
+        snapshot = dict(snapshot, status='done')
     if not snapshot['active'] and snapshot['status'] == 'failed' and not (native and native['active']):
         download_logs(directory, record)
         raise RuntimeError(snapshot.get('error') or 'Amber receptor preparation failed')
     if snapshot['active'] or (native and native['active']):
         return False
-    if native and not native.get('successful'):
+    if native and not native.get('successful') and resolved is None:
         download_logs(directory, record)
         raise RuntimeError(f'Amber Slurm JobId {record["slurm_job_id"]} ended as {native["state"]}; saved work retained')
     completed = {r['id'] for r in results}

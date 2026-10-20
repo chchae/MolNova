@@ -6,9 +6,21 @@ New array manifests pin `slurm_time_limit="00:30:00"`; propagate it to remote
 input and pass `--time=00:30:00` to sbatch. The limit is per compound task,
 includes receptor setup and excludes queue waiting. Saved records lacking the
 field keep their prior limit even if not yet prepared. Leave uploaded workers,
-existing jobs, legacy recovery and direct SSH work intact. TIMEOUT still retains
-partial results, manifests and unscored claims for reconciliation; automatic
-skip/retry is not introduced. See SPEC section 22. Mock tests only.
+existing jobs, legacy recovery and direct SSH work intact.
+
+Later user-approved correction: terminal one-compound array TIMEOUTs become
+per-compound Amber failures when they have no result, allowing Prime to proceed
+through existing gates. Require complete task/step history and all locks released;
+other tasks still need native success, done markers and results. Preserve existing
+scores, Prime/FEP states and scientific workers. Use saved input entry order for
+mapping, archive timeout IDs/native state and download logs before retirement.
+Current read-only helpers also reconcile saved arrays; do not resubmit them.
+Other failures/uncertainty retain work. If squeue returns "Invalid job id
+specified" for an evicted finished job, query sacct and require complete verified
+history. Other squeue errors remain uncertain. See SPEC section 22. Regression
+tests cover queue eviction; read-only inspection of job 87945 confirmed six
+TIMEOUT tasks and subsequent archived recovery with Prime claims. No new
+scientific calculation was launched for verification.
 
 ## Amber one-core Slurm arrays (2026-10-20)
 

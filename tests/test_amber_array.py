@@ -129,4 +129,10 @@ def test_uploaded_standalone_helpers_collect_without_amber_activation(run):
         (run / name).write_bytes(source.read_bytes())
     response = subprocess.run([sys.executable, str(run / 'amber_array.py'), 'collect', str(run)],
                               check=True, capture_output=True, text=True)
-    assert json.loads(response.stdout) == dict(active=False, status='running', error=None, results=[])
+    assert json.loads(response.stdout) == dict(active=False, status='running', error=None, results=[],
+        tasks=[dict(active=False, status=None, error=None, results=[]) for _ in range(2)])
+    # The current collector also works through stdin beside an older saved worker.
+    response = subprocess.run([sys.executable, '-', 'collect', str(run)], cwd=run,
+                              input=Path(array.__file__).read_text(),
+                              check=True, capture_output=True, text=True)
+    assert len(json.loads(response.stdout)['tasks']) == 2

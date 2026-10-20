@@ -1425,9 +1425,28 @@ terminates tasks reaching the limit under its configured termination policy.
 
 Saved records without this field retain the original partition-default limit,
 including not-yet-prepared records. Never update existing jobs or uploaded workers.
-Direct SSH work and legacy recovery remain unchanged. Preserve partial scores;
-TIMEOUT remains an unsuccessful native job under the existing recovery policy,
-retaining the manifest and unscored claims for reconciliation. This change does
-not authorize automatic skipping, retrying or resetting timed-out compounds.
-Mock tests verify pinned limits, submission flags and legacy preservation; no
-real calculation or timeout handling on the cluster was exercised.
+Direct SSH work and legacy single/batch recovery remain unchanged.
+
+**Later confirmed timeout recovery correction (2026-10-20):** for new and saved
+one-compound arrays, a verified terminal TIMEOUT must not block the whole stage.
+Use the immutable input entry order to map array indices to compound IDs. Require
+complete native task/step history, every task terminal, and every inherited lock
+released. Non-timeout tasks still require COMPLETED parents/steps, a done marker
+and a result. Only TIMEOUT tasks may lack their done marker/result. Preserve any
+already persisted result; for a timed-out task without a result, store a terminal
+Amber failure with failed_stage="amber_gbsa" and a task-specific TIMEOUT message.
+Keep Prime/FEP results and states intact. Retain timeout IDs and native state in
+the completed run archive, and download logs before retiring the manifest. Resume
+Prime selection through its existing readiness/ranking gates using valid Amber
+scores (including the existing zero-score fallback policy). Do not retry or
+resubmit timed-out tasks. Missing history, surviving locks, unrelated native
+failures and missing successful-task results continue to retain the manifest.
+Use current read-only status/collection helpers for saved arrays without changing
+uploaded scientific workers, inputs, native resources or JobIds. A finished job
+may leave squeue with an "Invalid job id specified" nonzero response; handle only
+that specific absence by querying sacct and requiring the same complete verified
+history. Other queue errors remain uncertain and block recovery. DB commits and
+archive retries must be idempotent. This supersedes the timeout retention policy
+above and the blanket native-success/marker requirements in sections 19 and 21
+only for these verified array timeouts. Mock tests cover recovery and Prime
+readiness; no real cluster timeout or scientific calculation was exercised.

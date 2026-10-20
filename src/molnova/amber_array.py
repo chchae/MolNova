@@ -57,7 +57,8 @@ def snapshot(root):
     return {'active': any(value['active'] for value in snapshots),
             'status': 'failed' if errors else
                       'done' if all(value['status'] == 'done' for value in snapshots) else 'running',
-            'error': '; '.join(errors) or None, 'results': results}
+            'error': '; '.join(errors) or None, 'results': results,
+            'tasks': snapshots}
 
 
 def archive_logs(root):
