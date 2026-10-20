@@ -155,8 +155,8 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_flexdist, fep_settings
-    return {
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_flexdist, fep_settings, debug_settings
+    return debug_settings(config, {
         **generation,
         **amber_settings(config, base),
         **gbsa_license_retry_settings(config),
@@ -206,7 +206,7 @@ def load_project_toml(filename):
         "ligprep_max_states": int(config.get("ligprep-max-states", 2)),
         "ligprep_max_stereo": int(config.get("ligprep-max-stereo", 1)),
         "ligprep_ring_confs": int(config.get("ligprep-ring-confs", 1)),
-    }
+    })
 
 
 def create_sqlite_schema(conn: sqlite3.Connection) -> None:

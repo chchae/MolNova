@@ -47,6 +47,9 @@ def log_level(config: dict[str, Any]) -> int:
 
 
 def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
+    use_slurm = config.get('use-slurm', False)
+    if not isinstance(use_slurm, bool):
+        raise ValueError('use-slurm must be a boolean')
     for key in ('amber_gbsa', 'amber-gbsa-enabled'):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f'{key} must be a boolean')
@@ -54,10 +57,11 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
             and config['amber_gbsa'] != config['amber-gbsa-enabled']):
         raise ValueError('amber_gbsa and amber-gbsa-enabled must agree')
     enabled = config.get('amber_gbsa', config.get('amber-gbsa-enabled', False))
-    prime_count = config.get('gbsa-input-count', 200)
+    prime_count = config.get('gbsa-input-count', 50)
     if isinstance(prime_count, bool) or not isinstance(prime_count, int) or prime_count < 1:
         raise ValueError('gbsa-input-count must be a positive integer')
-    settings = {'amber_gbsa_enabled': enabled, 'gbsa_input_count': prime_count}
+    settings = {'amber_gbsa_enabled': enabled, 'gbsa_input_count': prime_count,
+                'use_slurm': use_slurm}
     for key, default in [('amber-cpus', 128)]:
         value = config.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -91,12 +95,56 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     ssh_config = config.get('amber-ssh-config')
     if ssh_config:
         settings['amber_remote']['ssh_config'] = str((base / Path(ssh_config).expanduser()).resolve())
+    if use_slurm:
+        import getpass
+        cpus = config.get('amber-slurm-cpus', 384)
+        if isinstance(cpus, bool) or not isinstance(cpus, int) or not 1 <= cpus <= 384:
+            raise ValueError('amber-slurm-cpus must be an integer between 1 and 384')
+        settings['amber_cpus'] = cpus
+        defaults = {
+            'host': 'slurm', 'partition': 'cpu',
+            'env': '/share/opt/amber26/envs/AmberTools26',
+            'work-dir': f'/homes1/{getpass.getuser()}/molnova-amber-slurm-runs',
+        }
+        # The shared Amber installation has amber.sh but no conda installation.
+        settings['amber_remote'].pop('conda_init', None)
+        if 'amber-slurm-conda-init' in config:
+            defaults['conda-init'] = config['amber-slurm-conda-init']
+        keys = {'host': 'host', 'partition': 'partition', 'env': 'remote_env',
+                'conda-init': 'conda_init', 'work-dir': 'remote_work_dir'}
+        for suffix, default in defaults.items():
+            key = f'amber-slurm-{suffix}'
+            value = config.get(key, default)
+            if not isinstance(value, str) or not value or '\n' in value or '\r' in value:
+                raise ValueError(f'Invalid {key}')
+            if suffix in ('host', 'partition'):
+                if value.startswith('-') or any(c.isspace() for c in value):
+                    raise ValueError(f'Invalid {key}')
+            elif not value.startswith('/'):
+                raise ValueError(f'{key} must be an absolute remote path')
+            settings['amber_remote'][keys[suffix]] = value
     receptor = Path(config.get('amber-receptor', Path(config['out-dir']) / 'iter0/mmgbsa/receptor.maegz')).expanduser()
     settings['amber_receptor'] = (base / receptor).resolve()
     charge = config.get('amber-charge-method', 'bcc')
     if charge not in ('bcc', 'abcg2'):
         raise ValueError('amber-charge-method must be bcc or abcg2')
     settings['amber_charge_method'] = charge
+    return settings
+
+
+def debug_settings(config: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """Scale population limits once at load time; preserve runtime/scientific knobs."""
+    enabled = config.get('debug', False)
+    if not isinstance(enabled, bool):
+        raise ValueError('debug must be a boolean')
+    settings['debug'] = enabled
+    if enabled:
+        for key in ('sample_size', 'target_count', 'amber_keep_count',
+                    'gbsa_input_count', 'gbsa_elite_count', 'fep_input_count'):
+            value = settings[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f'{key.replace("_", "-")} must be a positive integer')
+            settings[key] = max(1, value // 10)
     return settings
 
 

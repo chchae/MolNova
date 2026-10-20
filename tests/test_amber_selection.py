@@ -25,7 +25,7 @@ def finish(db, ids):
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_mode_defaults_select_prime_200_or_amber_500_then_prime_200(population, tmp_path, enabled):
+def test_mode_defaults_select_prime_50_or_amber_500_then_prime_50(population, tmp_path, enabled):
     from molnova.config import amber_settings
     settings = amber_settings({'out-dir': 'output', 'amber_gbsa': enabled}, tmp_path)
     args = SimpleNamespace(**settings)
@@ -35,9 +35,9 @@ def test_mode_defaults_select_prime_200_or_amber_500_then_prime_200(population, 
         assert ids == list(range(1000, 500, -1))
         assert database.claim_mmgbsa_candidates(population, 1, args.gbsa_input_count, 1000, keep) == []
         finish(population, ids)
-        expected = list(range(501, 701))
+        expected = list(range(501, 551))
     else:
-        expected = list(range(1000, 800, -1))
+        expected = list(range(1000, 950, -1))
     assert database.claim_mmgbsa_candidates(
         population, 1, args.gbsa_input_count, 1000, keep
     ) == expected

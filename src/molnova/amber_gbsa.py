@@ -73,10 +73,14 @@ def ssh(settings, command, **kwargs):
 
 def environment_command(settings, body):
     quote = shlex.quote
+    if 'conda_init' in settings:
+        activation = (f"source {quote(settings['conda_init'])}; "
+                      f"conda activate {quote(settings['remote_env'])}; "
+                      'source "$CONDA_PREFIX/amber.sh"; ')
+    else:
+        activation = f"source {quote(settings['remote_env'] + '/amber.sh')}; "
     script = (
-        f"set -e; source {quote(settings['conda_init'])}; "
-        f"conda activate {quote(settings['remote_env'])}; "
-        'source "$CONDA_PREFIX/amber.sh"; '
+        'set -e; ' + activation +
         'export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1; '
         + body
     )
@@ -173,6 +177,12 @@ def prepare_remote(args, iteration, directory, record):
     config = {'receptor_normalization_version': NORMALIZATION_VERSION, 'entries': entries, 'cpus': args.amber_cpus, 'charge_method': args.amber_charge_method,
               'protocol': PROTOCOL, 'minimization': MINIMIZATION,
               'identities': identities}
+    slurm_files = []
+    from molnova import amber_slurm
+    if record.get('mode') == amber_slurm.SINGLE:
+        config['slurm'] = {'partition': record['settings']['partition'],
+                           'job_name': 'molnova-amber-' + record['run_id']}
+        slurm_files = amber_slurm.prepare_files(folder, record)
     save(folder / 'input.json', config)
     worker = Path(__file__).with_name('amber_runner.py')
     (folder / 'worker.py').write_bytes(worker.read_bytes())
@@ -181,7 +191,7 @@ def prepare_remote(args, iteration, directory, record):
     archive = folder / 'inputs.tar'
     with tarfile.open(archive, 'w') as stream:
         for path in [folder / 'receptor.pdb', folder / 'receptor.normalized.pdb', folder / 'receptor_pdb.py',
-                     folder / 'receptor_bonds.in', folder / 'input.json', folder / 'worker.py',
+                     folder / 'receptor_bonds.in', folder / 'input.json', folder / 'worker.py', *slurm_files,
                      *(folder / f"CMPID_{e['id']}/input.mol2" for e in entries)]:
             stream.add(path, arcname=str(path.relative_to(folder)))
     remote = shlex.quote(record['remote_dir'])
@@ -204,6 +214,9 @@ def launch(record):
 
 
 def poll(args, iteration, directory, record):
+    from molnova import amber_slurm
+    if record.get('mode') == amber_slurm.MODE:
+        return amber_slurm.poll(args, iteration, directory, record)
     if record['iteration'] != iteration or record['db_path'] != str(args.db_path.resolve()):
         raise RuntimeError('Saved Amber run belongs to a different project/iteration')
     if record['settings'] != args.amber_remote or record['charge_method'] != args.amber_charge_method:
@@ -216,19 +229,27 @@ def poll(args, iteration, directory, record):
     if saved_input['identities'] != [list(r) for r in identities]:
         raise RuntimeError('Compound identity changed during saved Amber work')
     remote = shlex.quote(record['remote_dir'])
-    response = ssh(record['settings'], environment_command(record['settings'],
-                   f'python {remote}/worker.py collect {remote}'), capture_output=True, text=True)
+    slurm = record.get('mode') == amber_slurm.SINGLE
+    native = amber_slurm.job_state(directory, record) if slurm else None
+    collect_command = f'python3 {remote}/worker.py collect {remote}'
+    response = ssh(record['settings'], collect_command if slurm else environment_command(
+                   record['settings'], collect_command), capture_output=True, text=True)
     snapshot = json.loads(response.stdout)
     save(directory / 'remote_snapshot.json', snapshot)
-    if not snapshot['active'] and snapshot['status'] == 'failed':
+    if not snapshot['active'] and snapshot['status'] == 'failed' and not (native and native['active']):
         download_logs(directory, record)
         raise RuntimeError(snapshot.get('error') or 'Amber receptor preparation failed')
     results = snapshot['results']
     database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
-    if snapshot['active']:
+    if snapshot['active'] or (native and native['active']):
         return False
+    if native and not native.get('successful'):
+        download_logs(directory, record)
+        raise RuntimeError(f'Amber Slurm JobId {record["slurm_job_id"]} ended as {native["state"]}; saved work retained')
     completed = {r['id'] for r in results}
     if snapshot['status'] != 'done' or completed != set(record['compound_ids']):
+        if slurm:
+            raise RuntimeError('Slurm job terminated without all Amber results and terminal marker; saved work retained')
         launch(record)
         return False
     # A terminal marker plus a released inherited lock establishes completion.
@@ -246,8 +267,10 @@ def download_logs(directory, record):
     archive = folder / 'results.tar.pending'
     try:
         with archive.open('wb') as stream:
-            ssh(record['settings'], environment_command(record['settings'],
-                f'python {remote}/worker.py archive {remote}'), stdout=stream)
+            command = f'python3 {remote}/worker.py archive {remote}'
+            from molnova.amber_slurm import SINGLE
+            ssh(record['settings'], command if record.get('mode') == SINGLE else
+                environment_command(record['settings'], command), stdout=stream)
         allowed = {'calculation.log'} | {
             f'CMPID_{cid}/{name}' for cid in record['compound_ids']
             for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat')}
@@ -287,6 +310,9 @@ def write_rankings(args, iteration, directory):
 
 
 def new_record(args, iteration, directory, ids):
+    if getattr(args, 'use_slurm', False):
+        from molnova import amber_slurm
+        return amber_slurm.new_record(args, iteration, directory, ids)
     run_id = 'run-' + uuid.uuid4().hex
     record = {'run_id': run_id, 'compound_ids': ids, 'prepared': False,
               'iteration': iteration, 'db_path': str(args.db_path.resolve()),

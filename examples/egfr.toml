@@ -1,7 +1,10 @@
 # MolNova EGFR: Generate(DB) → Drug likeness → LigPrep → Glide
-# → Amber best 500 → Prime best 200 → FEP 후보 best 20 export
+# → Amber best 500 → Prime best 50 → FEP 후보 best 20 export
 # 로컬 상대 경로는 이 TOML의 위치를 기준으로 해석합니다.
 # 기존 iteration은 저장된 선별/작업/결과를 유지합니다. 아래 정책은 새 iteration에 적용합니다.
+
+# 실행 옵션: debug=true이면 화합물 수를 1/10로 축소(최소 1), 계산 조건·CPU 수 유지
+debug = true
 
 # 1. 프로젝트 입력과 생성 목표
 out-dir = "./output"
@@ -56,6 +59,13 @@ glide-job-timeout = 1800          # 0이면 native Glide timeout 비활성화
 # 5. Amber GBSA: 모든 Glide 작업이 끝난 뒤 최종 Glide best 500 평가
 amber_gbsa = true
 amber-input-count = 500
+# true: Amber만 slurm:cpu로 제출. false 또는 생략: 아래 t41 설정 사용
+use-slurm = true
+amber-slurm-host = "slurm"
+amber-slurm-partition = "cpu"
+amber-slurm-cpus = 384           # 전체 Amber 작업 합계 상한; 각 단일 노드 작업은 최대 192
+amber-slurm-env = "/share/opt/amber26/envs/AmberTools26"
+# amber-slurm-work-dir = "/homes1/사용자명/molnova-amber-slurm-runs"  # 기본값: 현재 사용자별 디렉터리
 amber-cpus = 124
 amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
 amber-charge-method = "bcc"
@@ -65,16 +75,16 @@ amber-remote-env = "/home1/amber26/envs/AmberTools26"
 amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
 amber-ssh-config = "/home1/chchae/.ssh/config"
 
-# 6. Prime GBSA: 유효 Amber 결과 best 200; 유효 Amber 결과가 0개이면 Glide best 200
+# 6. Prime GBSA: 유효 Amber 결과 best 50; 유효 Amber 결과가 0개이면 Glide best 50
 # 진행 중·복구 대기·재시도 가능 작업은 기다립니다. 서로 다른 score를 섞어 순위를 만들지 않습니다.
-# 유효 결과가 일부만 있으면 그 집합에서 최대 200개만 선택하며 다른 tier로 보충하지 않습니다.
-gbsa-input-count = 200
+# 유효 결과가 일부만 있으면 그 집합에서 최대 50개만 선택하며 다른 tier로 보충하지 않습니다.
+gbsa-input-count = 50
 prime-flexdist = 6.0
 gbsa-license-retry-seconds = 300
 gbsa-license-retries = 3
 # Prime은 선택한 화합물 전체를 한 batch로 제출하고 JobDJ가 최대 7개 subjob을 동시에 실행합니다.
 # 유연한 receptor는 화합물별 complex 입력으로 처리하여 각 ligand 주변 6 Å 설정을 유지합니다.
-# Iteration 0은 입력 reference 전체를 평가하므로 500/200 제한을 적용하지 않습니다.
+# Iteration 0은 입력 reference 전체를 평가하므로 500/50 제한을 적용하지 않습니다.
 
 # 7. FEP 후보 export / 결과 import; 실제 FEP 계산은 외부 protocol로 별도 수행
 # Prime 결과가 있으면 Prime best 20, 없으면 Amber best 20, 둘 다 없으면 Glide best 20

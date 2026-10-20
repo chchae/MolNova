@@ -702,10 +702,10 @@ reference failures are recorded and do not cause endless resubmission.
 ### AmberTools screening before Prime
 
 `examples/egfr.toml` enables Amber screening on final Glide best-500, followed
-by Prime on up to 200 best finite Amber results. The loader still leaves Amber
+by Prime on up to 50 best finite Amber results. The loader still leaves Amber
 disabled unless requested; in that case Prime can use existing finite Amber
 results or fall back to Glide. Defaults are `amber-input-count=500` and
-`gbsa-input-count=200`, with explicit overrides supported. An empty completed
+`gbsa-input-count=50`, with explicit overrides supported. An empty completed
 Amber result set falls back to Glide; running/uncertain work does not. Partial
 Amber sets remain smaller and are not filled from docking. Saved native jobs
 and existing scientific results are preserved.
@@ -717,7 +717,7 @@ keys are supplied, both must be positive integers with the same value.
 amber_gbsa = true
 amber-cpus = 124
 amber-input-count = 500  # Glide-ranked Amber input count
-gbsa-input-count = 200
+gbsa-input-count = 50
 amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
@@ -730,6 +730,24 @@ Run `molnova run egfr.toml --iteration 1` to supervise the full iteration, or
 `molnova amber-gbsa egfr.toml --iteration 1` for one Amber submit/recovery pass.
 The receptor path is local and relative to TOML; environment/work/init paths
 belong to t41. Optional `amber-ssh-config` points to a local SSH config.
+
+Set `use-slurm = true` to run **Amber only** on the `slurm` SSH host's `cpu`
+partition. Omission or false retains direct t41 execution. LigPrep, Glide and
+Prime keep their configured host. `amber-slurm-cpus` defaults to 384 (maximum
+384 total); the adapter splits work into at most two single-node allocations of
+up to 192 CPUs and never requests more workers than compounds. The shared Amber
+environment defaults to `/share/opt/amber26/envs/AmberTools26`; override with
+`amber-slurm-env`. Runs use `/homes1/<current-user>/molnova-amber-slurm-runs` by default;
+`amber-slurm-work-dir` overrides it. `amber-slurm-host` and
+`amber-slurm-partition` override the submission host/partition. Saved uncertain
+submissions are reconciled through Slurm JobIds before any retry.
+
+Set `debug = true` to divide generation target, generation batch size, Amber
+input count, Prime input/elite counts and FEP candidate count by ten (integer
+floor, minimum one). For example, Amber 500 becomes 50 and Prime 50 becomes 5.
+CPU counts and scientific parameters stay unchanged. Reference iteration 0
+still evaluates all eligible references. Use a separate `out-dir` for a fresh
+debug run; existing selections, results and submissions are preserved.
 
 Amber results go to `output/iterN/amber_gbsa/`; Prime keeps
 `output/iterN/mmgbsa/`. SQLite migrates non-destructively to add

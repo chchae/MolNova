@@ -1285,3 +1285,49 @@ old iteration-2 compound count was zero with a frozen population of 10,000;
 backup and reset preserved iterations 0/1, regenerated 10,000 new compound IDs,
 accepted 5,000 for LigPrep, and left `PRAGMA foreign_key_check` empty. This is
 state/recovery evidence, not validation of scientific score values.
+
+
+## 19. Confirmed Amber SLURM and debug populations (2026-10-20)
+
+This later user request supersedes earlier Prime population defaults: new Prime
+selection defaults to 50 original compounds, both with and without Amber. Explicit
+`gbsa-input-count` still overrides it. The EGFR example uses Amber 500 → Prime 50.
+
+`use-slurm = true` applies **only to Amber**. Omission or false preserves the
+existing direct SSH worker (EGFR: t41); LigPrep, Glide and Prime host settings
+are unchanged. Amber SLURM defaults are SSH host `slurm`, partition `cpu`,
+`amber-slurm-cpus=384` (validated 1..384), environment
+`/share/opt/amber26/envs/AmberTools26`, and shared work directory
+`/homes1/<current-user>/molnova-amber-slurm-runs`. Override these with
+`amber-slurm-host`, `amber-slurm-partition`, `amber-slurm-env`,
+`amber-slurm-work-dir`; optional `amber-slurm-conda-init` enables conda activation.
+Without that optional key source the shared environment's `amber.sh` directly.
+Do not activate Amber or calculate on the submission host. Use system Python
+there for journals, status and result transfer only.
+
+Implementation choice: split the total budget into at most two independent
+single-node sbatch allocations of at most 192 CPUs each, capped by the submitted
+compound count. All shards together request at most 384 CPUs. Use srun for each
+scientific worker and keep native thread counts at one. The local Amber stage
+owns SQLite; remote calculators never coordinate stages. Persist parent/shard
+identities before submission, reconcile uncertain sbatch responses by unique name
+through both squeue and sacct, and never resubmit when lookup is unavailable or
+ambiguous. Completion requires terminal successful Slurm parent/steps, all submitted
+results, the remote done marker and released inherited worker lock. Persist partial
+results while queued/running. Failed or uncertain jobs retain claims/manifests for
+reconciliation. Preserve saved t41 work; changed runtime settings require recovery
+with the original configuration, not relocation or duplicate submission.
+
+`debug = true` divides `target-count`, `sample-size`, Amber input count, Prime
+input count, Prime elite count and FEP candidate count by ten using integer floor
+and minimum one. Omission/false leaves populations unchanged. Thus Amber 500 → 50,
+Prime 50 → 5, FEP 20 → 2. It does not scale CPUs, iterations, epochs, scientific
+parameters, or LigPrep state/stereo settings. Generated downstream populations
+inherit the smaller generation target. Iteration-0 reference scoring still uses
+all eligible references. Existing frozen selections, submitted work and scores
+are retained; use a separate output directory for a fresh debug project. Existing
+LibInvent vocabulary/minimum training-pair checks still apply.
+
+Read-only cluster inspection verified cpu nodes and sbatch/srun options and the
+shared Amber environment. Regression tests mock external calculations; no real
+SLURM calculation, throughput or scientific ranking validation is claimed.

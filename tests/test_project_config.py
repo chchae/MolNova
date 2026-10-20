@@ -26,10 +26,10 @@ aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 
 
 @pytest.mark.parametrize('extra, enabled, prime_count', [
-    ('', False, 200),
-    ('amber_gbsa = false\n', False, 200),
-    ('amber_gbsa = true\n', True, 200),
-    ('amber-gbsa-enabled = true\n', True, 200),
+    ('', False, 50),
+    ('amber_gbsa = false\n', False, 50),
+    ('amber_gbsa = true\n', True, 50),
+    ('amber-gbsa-enabled = true\n', True, 50),
     ('amber_gbsa = true\ngbsa-input-count = 30\n', True, 30),
     ('gbsa-input-count = 100\n', False, 100),
 ])
