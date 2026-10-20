@@ -1423,3 +1423,22 @@ still match. New arrays apply only to newly created records, including iteration
 0. Regression tests validate scheduling, isolation, partial-result persistence and
 restart logic using mocks; no real array calculation, throughput, memory sizing
 or scientific ranking validation is claimed.
+
+
+## 22. Confirmed Amber SLURM 30-minute limit (2026-10-20)
+
+New Amber Slurm array records pin `slurm_time_limit="00:30:00"` and copy it
+into the immutable remote input. Submit with `sbatch --time=00:30:00`: each
+original-compound task has 30 minutes of allocation runtime, including receptor
+preparation and scientific calculation, excluding queue waiting. This is a
+scheduler limit, not a change to minimization or scoring parameters. Slurm
+terminates tasks reaching the limit under its configured termination policy.
+
+Saved records without this field retain the original partition-default limit,
+including not-yet-prepared records. Never update existing jobs or uploaded workers.
+Direct SSH work and legacy recovery remain unchanged. Preserve partial scores;
+TIMEOUT remains an unsuccessful native job under the existing recovery policy,
+retaining the manifest and unscored claims for reconciliation. This change does
+not authorize automatic skipping, retrying or resetting timed-out compounds.
+Mock tests verify pinned limits, submission flags and legacy preservation; no
+real calculation or timeout handling on the cluster was exercised.

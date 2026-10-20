@@ -96,6 +96,9 @@ def submit(root):
                    '--error', str(root / ('slurm-%A_%a.err' if count is not None else 'slurm-%j.err'))]
         if count is not None:
             command += ['--array', f'0-{count - 1}%{min(cpus, count)}']
+        # Only new manifests pin a limit; saved submissions keep their protocol.
+        if 'time_limit' in options:
+            command.append('--time=' + options['time_limit'])
         command.append(str(root / 'amber.sbatch'))
         # Preserve the journal/uncertainty even on timeout or interrupted SSH.
         output = subprocess.check_output(command, text=True, stderr=subprocess.PIPE,

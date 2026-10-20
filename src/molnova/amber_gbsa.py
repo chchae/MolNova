@@ -182,6 +182,8 @@ def prepare_remote(args, iteration, directory, record):
     if record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY):
         config['slurm'] = {'partition': record['settings']['partition'],
                            'job_name': 'molnova-amber-' + record['run_id']}
+        if 'slurm_time_limit' in record:
+            config['slurm']['time_limit'] = record['slurm_time_limit']
         if record['mode'] == amber_slurm.ARRAY:
             config['slurm']['array_count'] = len(entries)
             from molnova.amber_array import prepare_tasks

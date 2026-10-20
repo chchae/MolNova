@@ -240,9 +240,14 @@ def test_missing_accounting_is_not_completion(monkeypatch):
 
 
 @pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
-def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode):
+@pytest.mark.parametrize('saved_array', [False, True])
+def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode, saved_array):
     import tarfile
     record = child_record(project, mode)
+    if mode == slurm.ARRAY:
+        assert record['slurm_time_limit'] == '00:30:00'
+        if saved_array:
+            del record['slurm_time_limit']
     record['prepared'] = False
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
@@ -260,6 +265,10 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     assert config['cpus'] == record['cpus']
     assert config['slurm']['partition'] == 'cpu'
     assert config['slurm']['job_name'].endswith(record['run_id'])
+    if mode == slurm.ARRAY and not saved_array:
+        assert config['slurm']['time_limit'] == '00:30:00'
+    else:
+        assert 'time_limit' not in config['slurm']
     script = (folder / 'amber.sbatch').read_text()
     assert f'srun --ntasks=1 --cpus-per-task={1 if mode == slurm.ARRAY else 4}' in script
     assert '/shared/env/amber.sh' in script
@@ -300,9 +309,13 @@ def test_parent_collects_other_shard_even_when_one_is_uncertain(project, monkeyp
 
 
 @pytest.mark.parametrize('count,cpus,throttle', [(50, 384, 50), (500, 384, 384), (4, 2, 2), (1, 1, 1)])
-def test_array_submission_requests_one_core_and_bounded_memory(tmp_path, monkeypatch, count, cpus, throttle):
+@pytest.mark.parametrize('time_limit', [None, '00:30:00'])
+def test_array_submission_requests_one_core_and_bounded_memory(tmp_path, monkeypatch, count, cpus, throttle, time_limit):
+    options = {'partition': 'cpu', 'job_name': 'unique', 'array_count': count}
+    if time_limit is not None:
+        options['time_limit'] = time_limit
     amber.save(tmp_path / 'input.json', {'cpus': cpus, 'entries': [{'id': i} for i in range(count)],
-               'slurm': {'partition': 'cpu', 'job_name': 'unique', 'array_count': count}})
+               'slurm': options})
     commands = []
     def submit(command, **kwargs):
         commands.append(command)
@@ -313,6 +326,8 @@ def test_array_submission_requests_one_core_and_bounded_memory(tmp_path, monkeyp
     assert command[command.index('--cpus-per-task') + 1] == '1'
     assert command[command.index('--array') + 1] == f'0-{count - 1}%{throttle}'
     assert '--mem=2G' in command and '--mem=0' not in command
+    assert [value for value in command if value.startswith('--time=')] == (
+        [] if time_limit is None else ['--time=00:30:00'])
     assert str(tmp_path / 'slurm-%A_%a.out') in command
     assert str(tmp_path / 'slurm-%A_%a.err') in command
     assert control.submit(tmp_path)['job_id'] == '123'

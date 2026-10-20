@@ -21,6 +21,7 @@ def new_record(args, iteration, directory, ids):
               'charge_method': args.amber_charge_method, 'compound_ids': ids,
               'source_fingerprints': amber.source_fingerprints(args, iteration),
               'prepared': False, 'cpus': args.amber_cpus,
+              'slurm_time_limit': '00:30:00',
               'remote_dir': str(PurePosixPath(args.amber_remote['remote_work_dir']) / run_id)}
     amber.save(directory / 'amber_job.json', record)
     return record
