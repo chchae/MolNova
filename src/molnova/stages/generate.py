@@ -169,6 +169,8 @@ def _run_stage(args, requested_iteration):
         print(f"Maximum iteration ({args.max_iteration}) reached.")
         return
 
+    if not database.iteration_was_deleted(args.db_path, iteration):
+        database.validate_generation_population(args.db_path, iteration, args.target_count)
     with c.open_sqlite(args.db_path) as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM compound WHERE iteration=?", (iteration,)
@@ -188,6 +190,7 @@ def _run_stage(args, requested_iteration):
 
     if iteration == 1:
         prepare_iteration_directory(args, iteration)
+        database.validate_generation_population(args.db_path, iteration, args.target_count)
         run_dir.mkdir(parents=True, exist_ok=True)
         prepare_iteration_scaffold(args, iteration, create=True)
         if combichem:
@@ -225,6 +228,7 @@ def _run_stage(args, requested_iteration):
                 f"Need {args.gbsa_elite_count} previous MM-GBSA elites; only {len(elites)} available."
             )
         prepare_iteration_directory(args, iteration)
+        database.validate_generation_population(args.db_path, iteration, args.target_count)
         run_dir.mkdir(parents=True, exist_ok=True)
         prepare_iteration_scaffold(args, iteration, elites, create=True)
         if combichem:

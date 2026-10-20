@@ -561,17 +561,102 @@ def iteration_has_saved_work(path, iteration):
     return False
 
 
+def _deleted_iteration(conn, iteration):
+    if conn.execute('SELECT 1 FROM compound WHERE iteration=? LIMIT 1', (iteration,)).fetchone():
+        return False
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ('iteration_druglike_selection', 'iteration_sa_selection', 'combichem_compound_origin'):
+        if table in tables and conn.execute(f'SELECT 1 FROM {table} WHERE iteration=? LIMIT 1',
+                                            (iteration,)).fetchone():
+            return True
+    return ('combichem_batch' in tables and conn.execute(
+        'SELECT 1 FROM combichem_batch WHERE iteration=? AND inserted>0 LIMIT 1',
+        (iteration,)).fetchone() is not None)
+
+
+def iteration_was_deleted(path, iteration):
+    """Zero rows plus evidence of prior compounds; a new zero-row plan is a resume."""
+    with connect(path) as conn:
+        return _deleted_iteration(conn, iteration)
+
+
+def reset_deleted_iteration(path, iteration, backup, report_ids=()):
+    """Under all stage locks, back up SQLite/WAL and reset only a deleted iteration.
+
+    The caller verifies native jobs and archives working files. Membership IDs
+    must come from saved combichem origins or the original druglike report, never
+    from guessed SQLite ID ranges. Existing compound rows are never removed.
+    """
+    if iteration < 1:
+        raise ValueError('Cannot reset iteration zero')
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not _deleted_iteration(conn, iteration):
+            raise RuntimeError('Iteration is no longer empty/deleted; files and database retained')
+        if conn.execute('SELECT 1 FROM compound WHERE iteration>? LIMIT 1', (iteration,)).fetchone():
+            raise RuntimeError('Later iteration compounds depend on this iteration; reset blocked')
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        ids = {row[0] for row in conn.execute(
+            'SELECT compound_id FROM combichem_compound_origin WHERE iteration=?', (iteration,))
+               } if 'combichem_compound_origin' in tables else set()
+        reported = set(report_ids)
+        if reported:
+            if ids and reported != ids:
+                raise RuntimeError('Druglike report and saved compound origins disagree; reset blocked')
+            ids = reported
+        saved = conn.execute('SELECT population_count FROM iteration_druglike_selection WHERE iteration=?',
+                             (iteration,)).fetchone() if 'iteration_druglike_selection' in tables else None
+        if saved and len(ids) != saved[0]:
+            raise RuntimeError('Cannot identify deleted selection members; original druglike report '
+                               'or compound origins required before reset')
+        conn.execute('CREATE TEMP TABLE reset_compound_ids(id INTEGER PRIMARY KEY)')
+        conn.executemany('INSERT INTO reset_compound_ids VALUES (?)', ((cid,) for cid in ids))
+        if conn.execute('SELECT 1 FROM compound WHERE id IN (SELECT id FROM reset_compound_ids) '
+                        'OR similar_to IN (SELECT id FROM reset_compound_ids) LIMIT 1').fetchone():
+            raise RuntimeError('Deleted iteration IDs are referenced by current compounds; reset blocked')
+        backup = Path(backup)
+        if backup.exists():
+            raise FileExistsError(f'Refusing to overwrite iteration backup: {backup}')
+        # Use a separate reader: backing up the connection holding a write
+        # transaction would wait on itself. SQLite backup includes committed WAL.
+        with sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True) as source:
+            with sqlite3.connect(backup) as target:
+                source.backup(target)
+        for table in ('compound_druglike_selection', 'amber_failure'):
+            if table in tables:
+                conn.execute(f'DELETE FROM {table} WHERE compound_id IN (SELECT id FROM reset_compound_ids)')
+        for table in ('combichem_compound_origin', 'combichem_batch', 'iteration_combichem_history',
+                      'iteration_combichem', 'iteration_druglike_selection', 'iteration_sa_selection',
+                      'iteration_fep_selection', 'iteration_scaffold', 'iteration_workspace'):
+            if table in tables:
+                conn.execute(f'DELETE FROM {table} WHERE iteration=?', (iteration,))
+        # The supervising driver already owns timing rows; restart their clocks
+        # rather than deleting rows it will finish after the worker exits.
+        now = time.time()
+        if 'iteration_timing' in tables:
+            conn.execute("UPDATE iteration_timing SET started_at=?,finished_at=NULL,start_source='driver' "
+                         'WHERE iteration=?', (now, iteration))
+        if 'stage_timing' in tables:
+            conn.execute('DELETE FROM stage_timing WHERE iteration=? AND stage!=?', (iteration, 'generate'))
+            conn.execute('UPDATE stage_timing SET started_at=?,finished_at=NULL WHERE iteration=?',
+                         (now, iteration))
+        _mark_iteration_workspace_prepared(conn, iteration)
+
+
 def mark_iteration_workspace_prepared(path, iteration):
     """Checkpoint cleanup before generation so zero-row retries keep their files."""
     with connect(path) as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS iteration_workspace ('
-                     'iteration INTEGER PRIMARY KEY, prepared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)')
-        columns = {row[1] for row in conn.execute('PRAGMA table_info(iteration_workspace)')}
-        if 'generation_policy' not in columns:
-            conn.execute("ALTER TABLE iteration_workspace ADD COLUMN generation_policy TEXT NOT NULL DEFAULT 'legacy'")
-        conn.execute("INSERT INTO iteration_workspace(iteration,generation_policy) VALUES (?,'raw_v1') ON CONFLICT(iteration) DO NOTHING",
-                     (iteration,))
+        _mark_iteration_workspace_prepared(conn, iteration)
 
+
+def _mark_iteration_workspace_prepared(conn, iteration):
+    conn.execute('CREATE TABLE IF NOT EXISTS iteration_workspace ('
+                 'iteration INTEGER PRIMARY KEY, prepared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)')
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(iteration_workspace)')}
+    if 'generation_policy' not in columns:
+        conn.execute("ALTER TABLE iteration_workspace ADD COLUMN generation_policy TEXT NOT NULL DEFAULT 'legacy'")
+    conn.execute("INSERT INTO iteration_workspace(iteration,generation_policy) VALUES (?,'raw_v1') ON CONFLICT(iteration) DO NOTHING",
+                 (iteration,))
 
 def _uses_raw_generation(conn, iteration):
     columns = {row[1] for row in conn.execute('PRAGMA table_info(iteration_workspace)')}
@@ -586,8 +671,41 @@ def uses_raw_generation(path, iteration):
         return _uses_raw_generation(conn, iteration)
 
 
+def _validate_druglike_population(conn, iteration):
+    """Never reinterpret deleted/replaced rows as an unfinished generation."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_druglike_selection'").fetchone():
+        return None
+    saved = conn.execute('SELECT population_count FROM iteration_druglike_selection WHERE iteration=?',
+                         (iteration,)).fetchone()
+    if saved is None:
+        return None
+    actual = conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=?', (iteration,)).fetchone()[0]
+    selected = conn.execute('SELECT COUNT(*) FROM compound c JOIN compound_druglike_selection s '
+                            'ON s.compound_id=c.id WHERE c.iteration=?', (iteration,)).fetchone()[0]
+    if actual != saved[0] or selected != actual:
+        raise RuntimeError(
+            f'Iteration {iteration}: frozen drug likeness population is inconsistent '
+            f'(expected={saved[0]}, compounds={actual}, selection members={selected}). '
+            'Compound rows may have been manually deleted or replaced. '
+            'Restore the original database or explicitly reset the whole iteration, '
+            'including selection records, combichem progress and calculation files; '
+            'automatic regeneration is blocked to preserve results and saved jobs.')
+    return saved[0]
+
+
+def validate_generation_population(path, iteration, target_count=None):
+    """Fail before expensive sampling when a frozen population cannot be resumed."""
+    with connect(path) as conn:
+        count = _validate_druglike_population(conn, iteration)
+    if count is not None and target_count is not None and target_count > count:
+        raise RuntimeError(f'Iteration {iteration}: cannot increase target-count to {target_count} '
+                           f'after drug likeness froze {count} compounds; restore the original '
+                           'target-count or start a new iteration.')
+
+
 def druglike_completion_reason(path, iteration):
     with connect(path) as conn:
+        _validate_druglike_population(conn, iteration)
         if not _uses_raw_generation(conn, iteration):
             return None
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_druglike_selection'").fetchone():
@@ -626,6 +744,7 @@ def apply_druglike_selection(path, iteration, target_count, selections, sa_ratio
         saved = conn.execute('SELECT population_count,accepted_count,sa_ratio '
                              'FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone()
         if saved:
+            _validate_druglike_population(conn, iteration)
             return saved
         if not _uses_raw_generation(conn, iteration):
             return None
@@ -871,6 +990,7 @@ def insert_generated_candidates(path, iteration, target_count, candidates, *, co
         conn.execute('BEGIN IMMEDIATE')
         if raw and conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_druglike_selection'").fetchone():
             if conn.execute('SELECT 1 FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone():
+                _validate_druglike_population(conn, iteration)
                 raise RuntimeError('Cannot append compounds to a frozen drug likeness population')
         if combichem_progress is not None:
             start, end, *round_ids = combichem_progress

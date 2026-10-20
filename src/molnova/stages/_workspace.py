@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import re
 import time
+import csv
+from contextlib import ExitStack
 
 from molnova import database
 from molnova import schrodinger_guard as guard
@@ -12,12 +14,21 @@ def prepare_iteration_directory(args, iteration):
     """Run under the generation stage lock, after preceding-iteration gates."""
     if iteration < 1:
         raise ValueError('Iteration workspace cleanup requires iteration >= 1')
-    if database.iteration_has_saved_work(args.db_path, iteration):
+    deleted = database.iteration_was_deleted(args.db_path, iteration)
+    if database.iteration_has_saved_work(args.db_path, iteration) and not deleted:
         return None  # Resume exactly the saved iteration, including zero-row plans.
+    with ExitStack() as locks:
+        if deleted:
+            for stage in ('druglike', 'synthetic', 'ligprep', 'glide', 'amber_gbsa', 'mmgbsa', 'fep'):
+                locks.enter_context(database.stage_lock(args.db_path, stage))
+        return _prepare(args, iteration, deleted)
+
+
+def _prepare(args, iteration, deleted):
     root = Path(args.output) / f'iter{iteration}'
     if root.is_symlink():
         raise RuntimeError(f'Iteration directory is a symlink; files retained: {root}')
-    if not root.exists() or not any(root.iterdir()):
+    if not deleted and (not root.exists() or not any(root.iterdir())):
         database.mark_iteration_workspace_prepared(args.db_path, iteration)
         return None
 
@@ -46,7 +57,7 @@ def prepare_iteration_directory(args, iteration):
                              re.IGNORECASE | re.MULTILINE)
             jobs.update((job_id, path.parent) for job_id in ids)
             if not ids and (path.name.startswith('ligprep') or path.name.startswith('glide_constrained')
-                            or path.name.startswith('mmgbsa_input') or path.name == 'glide_launch.log'):
+                            or path.name.startswith('mmgbsa_') or path.name == 'glide_launch.log'):
                 unidentified_logs.append(path)
     for path in unidentified_logs:
         if path.parent not in jobs.values():
@@ -58,6 +69,10 @@ def prepare_iteration_directory(args, iteration):
     live = guard.active_jobs(args.schrodinger)
     if any(guard.belongs_to_directory(job, folder) for job in live for folder in directories):
         raise RuntimeError(f'Iteration has live external jobs; files retained: {root}')
+    for job in live:
+        launch = job.get('spec', {}).get('launchParams', {}).get('launchDirectory')
+        if launch and Path(launch).resolve().is_relative_to(root.resolve()):
+            raise RuntimeError(f'Iteration has live external jobs; files retained: {root}')
     for job_id, folder in jobs.items():
         details = guard.job_details(args.schrodinger, job_id, folder)
         if (not any(job.get('jobId') == job_id for job in details)
@@ -69,9 +84,33 @@ def prepare_iteration_directory(args, iteration):
         raise RuntimeError(f'Iteration archive is a symlink; files retained: {archive_root}')
     archive_root.mkdir(exist_ok=True)
     archive = archive_root / f'iter{iteration}-{time.time_ns()}'
-    root.rename(archive)
-    root.mkdir()
-    database.mark_iteration_workspace_prepared(args.db_path, iteration)
+    report_ids = []
+    report = root / 'druglike/druglike_selection.csv'
+    if deleted and report.exists():
+        with report.open(newline='') as stream:
+            report_ids = [int(row['id']) for row in csv.DictReader(stream)]
+    had_root = root.exists()
+    if had_root:
+        root.rename(archive)
+    else:
+        archive.mkdir()
+    root.mkdir(parents=True)
+    try:
+        if deleted:
+            database.reset_deleted_iteration(args.db_path, iteration,
+                                             archive / f'database-before-reset-{time.time_ns()}.sqlite', report_ids)
+        else:
+            database.mark_iteration_workspace_prepared(args.db_path, iteration)
+    except BaseException:
+        # No worker can modify this iteration while the stage locks are held.
+        # Restore its original files if the DB transaction/backup did not finish.
+        root.rmdir()
+        if had_root:
+            archive.rename(root)
+        raise
     print(f'Iteration {iteration}: cleared previous calculation files before generation; '
           f'preserved in {archive}.', flush=True)
+    if deleted:
+        print(f'Iteration {iteration}: backed up SQLite/WAL and reset orphaned selection, '
+              'scaffold and generation progress; starting a fresh population.', flush=True)
     return archive

@@ -1246,3 +1246,42 @@ and preferring previously published structures. Preserve partial completed-child
 coordinates on verified terminal failure as well as normal parent completion.
 A merge/transfer/status failure leaves the live identity intact for recovery.
 Do not alter submitted production jobs merely to migrate scheduling.
+
+
+## 18. Confirmed fresh start after deleting iteration compounds (2026-10-20)
+
+The user confirmed manual deletion of iteration-2 compound rows and requested
+that the first generation start back up and clear leftover calculation data and
+DB metadata automatically. This extends section 4's clean-start behavior.
+
+Treat an iteration as a deleted population only when it has **zero compound
+rows** plus evidence that compounds previously existed: a frozen druglike/SA
+selection, saved compound origins, or a committed combichem batch with insertions.
+A saved workspace, scaffold or zero-insertion plan alone remains a normal retry;
+never clear such resumable work. An iteration retaining any compounds is also
+resumed. A partially deleted/replaced frozen population must fail clearly before
+sampling rather than resetting remaining results or silently accepting new IDs.
+
+Perform cleanup under the generate lock and all other stage locks. Verify saved
+native parents/children are terminal and no live jobs belong to the iteration.
+Unknown status, surviving remote work markers, active stages or uncertain launches
+block cleanup. Archive the original iteration folder under
+`output/.previous/iterN-<timestamp>/`; save a complete SQLite backup including
+committed WAL as `database-before-reset-*.sqlite` in the archive before deleting
+any metadata. The initial observed recovery used `database-before-reset.sqlite`.
+Keep reference/other-iteration compound rows and the AUTOINCREMENT sequence.
+
+In one transaction clear only the deleted iteration's scaffold, pools/cursors,
+combichem history/origins/batches, frozen druglike/SA/FEP selections and associated
+orphan selection/failure rows. Attribute orphan IDs through saved origins or the
+original druglike report; never guess ID ranges or delete all global orphans.
+Missing/contradictory ownership evidence blocks reset. Later dependent iteration
+compounds also block reset. Restart timing and pin a fresh raw_v1 workspace in
+the same transaction. Roll back and restore the files on reset failure; retained
+backups permit retry. Never overwrite a previous backup.
+
+The initial production recovery was observed through the already running driver:
+old iteration-2 compound count was zero with a frozen population of 10,000;
+backup and reset preserved iterations 0/1, regenerated 10,000 new compound IDs,
+accepted 5,000 for LigPrep, and left `PRAGMA foreign_key_check` empty. This is
+state/recovery evidence, not validation of scientific score values.

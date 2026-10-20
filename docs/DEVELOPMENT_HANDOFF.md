@@ -1,5 +1,17 @@
 # MolNova Development Handoff
 
+## Deleted-iteration restart (2026-10-20)
+
+SPEC section 18 extends clean-start cleanup: zero compounds plus durable evidence
+of a prior population triggers automatic archive and metadata reset before new
+generation. Preserve zero-row preparation retries and all nonempty populations.
+Use `_workspace.py` for file/job/lock checks and `database.py` for transactional
+reset plus a full SQLite/WAL backup. Retain all original files and other iterations;
+never reset live/uncertain work. Druglike membership/cursor snapshots must be reset
+together, using attributable original IDs only. Corrupt partially deleted frozen
+populations fail before expensive sampling. The already running EGFR driver
+successfully recovered iteration 2 with this path; backup is in `.previous`.
+
 ## Native Prime batching (2026-10-20)
 
 SPEC section 17 supersedes individual buffering for new Prime calculations.

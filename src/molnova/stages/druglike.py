@@ -15,6 +15,7 @@ from molnova.stages._logging import work_started, timed_stage
 def _run_stage(args, iteration):
     if iteration < 1:
         raise ValueError('Drug likeness requires iteration >= 1')
+    database.validate_generation_population(args.db_path, iteration, args.target_count)
     if not database.uses_raw_generation(args.db_path, iteration):
         print(f'Iteration {iteration}: retaining legacy drug likeness/SA selection.')
         return
