@@ -81,3 +81,49 @@ def test_insert_generated_is_idempotent_for_existing_smiles(tmp_path):
         assert conn.execute(
             "SELECT COUNT(*) FROM compound WHERE iteration=1"
         ).fetchone()[0] == 2
+
+
+def test_generated_element_filter_uses_atoms_and_preserves_valid_smiles(tmp_path, capsys):
+    from rdkit import Chem
+
+    accepted = ['CCBr', 'CCl', 'CF', 'CI', 'CP(=O)(O)O', 'CS', 'CCN',
+                'CCO', '[2H]C', 'c1ccncc1', 'N[C@@H](C)C(=O)O']
+    rejected = ['B(O)O', '[10B](O)O', '[b-]1ccccc1', 'C[Si](C)(C)C',
+                'C[Se]C', 'C[Ge](C)(C)C', 'C[Sn](C)(C)C',
+                '[Na+].CC(=O)[O-]', '[K+]', '[Ca+2]', '[Mg+2]',
+                '[Zn+2]', '[Fe+2]', '[Cu+2]', '[Al+3]', '*CC']
+    generated = tmp_path / 'generated.csv'
+    original = 'SMILES\n' + '\n'.join(rejected + accepted + ['OCC', 'invalid', '']) + '\n'
+    generated.write_text(original)
+
+    assert _core.read_generated_smiles(generated) == [
+        Chem.MolToSmiles(Chem.MolFromSmiles(smiles), isomericSmiles=True) for smiles in accepted]
+    output = capsys.readouterr().out
+    assert f'Element rejected    : {len(rejected)}' in output
+    assert 'B=3' in output and 'Si=1' in output
+    assert 'Internal duplicates : 1' in output
+    assert generated.read_text() == original
+
+
+@pytest.mark.parametrize('policy', ['raw_v1', 'legacy'])
+def test_generated_element_filter_precedes_target_and_preserves_existing_rows(tmp_path, policy):
+    from molnova import database
+
+    args = _project_args(tmp_path)
+    database.mark_iteration_workspace_prepared(args.db_path, 1)
+    with database.connect(args.db_path) as conn:
+        conn.execute('UPDATE iteration_workspace SET generation_policy=? WHERE iteration=1', (policy,))
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,gbsa_score) "
+                     "VALUES ('old_boron','B(O)O',0,'gbsa_done',-40)")
+        before = conn.execute('SELECT * FROM compound').fetchall()
+    generated = tmp_path / 'generated.csv'
+    generated.write_text('SMILES\nB(O)O\nC[Si](C)(C)C\n[Zn+2]\nCCO\nCCN\nCC\nCCC\n')
+
+    assert _core.insert_generated(generated, 1, 2, args.db_path) == 2
+    with database.connect(args.db_path) as conn:
+        assert conn.execute('SELECT * FROM compound WHERE iteration=0').fetchall() == before
+        rows = conn.execute('SELECT smiles FROM compound WHERE iteration=1 ORDER BY id').fetchall()
+    assert len(rows) == 2
+    assert all(smiles in {'CCO', 'CCN', 'CC', 'CCC'} for smiles, in rows)
+    if policy == 'raw_v1':
+        assert rows == [('CCO',), ('CCN',)]

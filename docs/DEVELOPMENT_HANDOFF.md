@@ -1,5 +1,16 @@
 # MolNova Development Handoff
 
+## Generation element filter (2026-10-20)
+
+New combichem/LibInvent batch admissions allow only H, C, N, O, F, P, S, Cl, Br
+and I, using RDKit atomic numbers in `read_generated_smiles`. Reject any other
+element or dummy atom before descriptors/selection/target insertion, for both
+raw and legacy policies, regardless of Amber's enabled flag. This is a project
+GAFF2/AM1-BCC allowlist, not the full standalone AM1 parameter set. Log rejected
+row counts and per-element counts, keeping source CSVs. Existing rows, scores,
+reference imports, saved plans/cursors and submitted work remain unchanged.
+No calculation parameters change; element eligibility does not assure convergence.
+
 ## Prime sidechain-only flexibility (2026-10-20)
 
 SPEC section 20 supersedes the historical whole-residue choice for new native

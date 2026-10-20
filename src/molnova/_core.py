@@ -2535,6 +2535,11 @@ def find_smiles_column(fieldnames):
     )
 
 
+# Project ligand policy for the GAFF2 / AM1-BCC workflow. This is deliberately
+# narrower than the complete set of elements supported by standalone AM1.
+GENERATED_ALLOWED_ATOMIC_NUMBERS = frozenset({1, 6, 7, 8, 9, 15, 16, 17, 35, 53})
+
+
 def read_generated_smiles(csv_file):
     molecules = []
     seen = set()
@@ -2542,6 +2547,8 @@ def read_generated_smiles(csv_file):
     total_rows = 0
     invalid = 0
     duplicates = 0
+    element_rejected = 0
+    rejected_elements = {}
 
     with csv_file.open(
         "r",
@@ -2557,14 +2564,21 @@ def read_generated_smiles(csv_file):
         for row in reader:
             total_rows += 1
 
-            canonical = canonicalize_smiles(
-                row[smiles_column]
-            )
-
-            if canonical is None:
+            smiles = row[smiles_column]
+            mol = Chem.MolFromSmiles(smiles) if isinstance(smiles, str) and smiles.strip() else None
+            if mol is None or mol.GetNumAtoms() == 0:
                 invalid += 1
                 continue
 
+            unsupported = {atom.GetSymbol() for atom in mol.GetAtoms()
+                           if atom.GetAtomicNum() not in GENERATED_ALLOWED_ATOMIC_NUMBERS}
+            if unsupported:
+                element_rejected += 1
+                for symbol in unsupported:
+                    rejected_elements[symbol] = rejected_elements.get(symbol, 0) + 1
+                continue
+
+            canonical = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
             if canonical in seen:
                 duplicates += 1
                 continue
@@ -2574,6 +2588,10 @@ def read_generated_smiles(csv_file):
 
     print(f"Generated rows      : {total_rows}")
     print(f"Invalid structures  : {invalid}")
+    print(f"Element rejected    : {element_rejected}")
+    if rejected_elements:
+        print("Excluded elements   : " + ", ".join(
+            f"{symbol}={count}" for symbol, count in sorted(rejected_elements.items())))
     print(f"Internal duplicates : {duplicates}")
     print(f"Unique valid        : {len(molecules)}")
 

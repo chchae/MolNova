@@ -1123,12 +1123,29 @@ cross-project submission exclusion. This policy authorizes code changes, not
 production calculations or an automated FEP protocol.
 
 **Generation and drug likeness:** for a new iteration, `target-count` counts
-valid, canonical, DB-wide unique generated molecules before drug likeness.
+valid, canonical, DB-wide unique generated molecules before drug likeness,
+subject to the confirmed generation element filter below.
 Persist every admitted molecule in original input order, up to that raw target;
 leave properties nullable until the independent druglike worker runs. Invalid,
 duplicate and over-target sampling entries do not become compound rows. Commit
 combichem rows, origin, batch outcome and cursor atomically as before. Stop at
 the raw target; do not generate replacements for druglikeness rejections.
+
+**Confirmed generation element filter (2026-10-20):** newly admitted molecules
+from both combichem and LibInvent must contain only H, C, N, O, F, P, S, Cl,
+Br and I. Use RDKit atomic numbers, including every disconnected component;
+reject the entire candidate for any other element or dummy atom before
+descriptor calculation, selection and target-count insertion. This project
+allowlist targets GAFF2/AM1-BCC compatibility and deliberately excludes B, Si,
+other nonlisted elements and metals; it is not an exhaustive statement of
+standalone AM1 parameter support. Br remains allowed, and isotopes follow their
+element. Apply to new batch admissions under raw and legacy generation policies,
+independent of Amber's enabled flag. Excluded candidates do not count toward the
+target. Log rejected row counts and per-element counts; retain original generated
+CSVs as evidence. Preserve existing compound/reference rows, scores, scaffold and
+combichem plans/cursors, and live/submitted jobs. Never retrospectively remove
+existing molecules or alter calculator parameters. An allowed element set does
+not guarantee successful charge typing, convergence or scientific validity.
 
 Once generation finishes, compute all 16 existing RDKit properties for the full
 iteration from DB SMILES. Apply unchanged RO5<=1 and at most ceil(population/2)

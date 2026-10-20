@@ -1137,12 +1137,26 @@ cross-project submission exclusion. This policy authorizes code changes, not
 production calculations or an automated FEP protocol.
 
 **Generation and drug likeness:** for a new iteration, `target-count` counts
-valid, canonical, DB-wide unique generated molecules before drug likeness.
+valid, canonical, DB-wide unique generated molecules before drug likeness,
+subject to the confirmed generation element filter below.
 Persist every admitted molecule in original input order, up to that raw target;
 leave properties nullable until the independent druglike worker runs. Invalid,
 duplicate and over-target sampling entries do not become compound rows. Commit
 combichem rows, origin, batch outcome and cursor atomically as before. Stop at
 the raw target; do not generate replacements for druglikeness rejections.
+
+**Confirmed generation element filter (2026-10-20):** for newly admitted
+combichem and LibInvent candidates, allow only H, C, N, O, F, P, S, Cl, Br and I
+by RDKit atomic number across all components. Reject any molecule containing
+another element or a dummy atom before descriptors, selection and target-count
+insertion, under both raw and legacy policies regardless of Amber's enabled flag.
+Excluded candidates do not count toward the target. Log rejected row counts and
+per-element counts, preserving original generated CSVs. This GAFF2/AM1-BCC
+project allowlist excludes B, Si, metals and all other nonlisted elements; it is
+deliberately narrower than standalone AM1 support. Preserve Br and allowed-element
+isotopes. Keep all existing compound/reference rows, scores, plans/cursors,
+scaffold snapshots and submitted jobs intact; do not change calculator settings.
+Element eligibility alone does not establish successful calculation or validity.
 
 Once generation finishes, compute all 16 existing RDKit properties for the full
 iteration from DB SMILES. Apply unchanged RO5<=1 and at most ceil(population/2)
