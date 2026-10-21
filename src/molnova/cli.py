@@ -124,7 +124,15 @@ def main(argv=None):
     status = sub.add_parser("status", help="Show project DB status")
     status.add_argument("project_toml", type=Path)
 
+    report = sub.add_parser('report', help='Write chemical-space, substituent and distribution report from existing DB')
+    report.add_argument('project_toml', type=Path)
+    report.add_argument('--iteration', type=int, help='Include iterations through N (default: all)')
+
     ns = parser.parse_args(argv)
+
+    if ns.command == 'report':
+        from molnova.distributions import main as report_main
+        return report_main(_project_args(ns))
 
     if ns.command == "run":
         args = [str(ns.project_toml), "--poll-interval", str(ns.poll_interval)]

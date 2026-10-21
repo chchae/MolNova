@@ -179,6 +179,8 @@ def test_cli_elite_mcs_reaches_generation_without_changing_toml(tmp_path, monkey
                         lambda args, iteration: seen.append((args.elite_mcs_smarts, iteration)))
 
     def worker(stage, cmd, cwd, stop):
+        if stage == 'report':
+            return 0
         assert stage == 'generate'
         generate.main(cmd[3:])
         return 0

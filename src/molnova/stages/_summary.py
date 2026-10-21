@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import statistics
 
+from molnova.paths import iteration_directory, stage_in_iteration
 from molnova import database
 
 
@@ -17,10 +18,10 @@ def _read_json(path):
 
 def _native_times(output, iteration, stage, successful):
     """One duration per original compound, from verified completed run records."""
-    directory = Path(output) / f'iter{iteration}'
+    directory = iteration_directory(Path(output), iteration)
     times = {}
     if stage == 'mmgbsa':
-        root = directory / 'mmgbsa'
+        root = stage_in_iteration(directory, 'mmgbsa')
         for path in sorted(root.glob('queue-*.completed.json')):
             record = _read_json(path)
             if not isinstance(record, dict) or record.get('mode') != 'compound_queue_v1':
@@ -44,7 +45,7 @@ def _native_times(output, iteration, stage, successful):
                     times[cid] = h * 3600 + m * 60 + s
     elif stage == 'amber-gbsa':
         # Older remote workers did not record durations; never invent them.
-        snapshot = _read_json(directory / 'amber_gbsa/remote_snapshot.json')
+        snapshot = _read_json(stage_in_iteration(directory, 'amber_gbsa') / 'remote_snapshot.json')
         if isinstance(snapshot, dict) and isinstance(snapshot.get('results'), list):
             for result in snapshot.get('results', []):
                 if not isinstance(result, dict):

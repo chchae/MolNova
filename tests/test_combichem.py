@@ -182,7 +182,7 @@ def adaptive_project(project, monkeypatch):
     project.target_count = 100
     monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[-1])
     prepare_iteration_scaffold(project, 2, [(100, 'elite', 'CCCc1ccc(CCC)cc1', 1, -10, -40)], create=True)
-    combichem.prepare_plan(project, 2, project.output / 'iter2/combichem')
+    combichem.prepare_plan(project, 2, project.output / 'iter02/02-generate')
     return project
 
 
@@ -192,21 +192,21 @@ def test_new_combichem_iteration_clears_old_outputs_before_assembly(project, mon
         conn.execute('DELETE FROM iteration_workspace WHERE iteration=1')
     project.schrodinger = Path('/suite')
     monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
-    root = project.output / 'iter1'
-    (root / 'combichem').mkdir(parents=True)
-    (root / 'combichem/plan.json').write_text('stale plan')
-    (root / 'glide').mkdir()
-    (root / 'glide/best_poses.maegz').write_text('stale poses')
+    root = project.output / 'iter01'
+    (root / '02-generate').mkdir(parents=True)
+    (root / '02-generate/plan.json').write_text('stale plan')
+    (root / '06-glide').mkdir()
+    (root / '06-glide/best_poses.maegz').write_text('stale poses')
     generate._run_stage(project, 1)
     assert database.iteration_compound_count(project.db_path, 1) == project.target_count
-    assert not (root / 'glide/best_poses.maegz').exists()
-    assert json.loads((root / 'combichem/plan.json').read_text())['protocol'] == 'combichem_v1'
+    assert not (root / '06-glide/best_poses.maegz').exists()
+    assert json.loads((root / '02-generate/plan.json').read_text())['protocol'] == 'combichem_v1'
     archive = next((project.output / '.previous').iterdir())
-    assert (archive / 'glide/best_poses.maegz').read_text() == 'stale poses'
+    assert (archive / '06-glide/best_poses.maegz').read_text() == 'stale poses'
 
 
 def test_next_iteration_gate_precedes_workspace_cleanup(project):
-    root = project.output / 'iter2'
+    root = project.output / 'iter02'
     root.mkdir()
     (root / 'stale.csv').write_text('old output')
     generate._run_stage(project, 2)
@@ -220,7 +220,7 @@ def test_size_limit_is_pinned_across_restart_and_refill(project, monkeypatch, ma
     prepare_iteration_scaffold(project, 1, create=True)
     project.sidechain_max_heavy_atoms = maximum
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     saved = combichem.prepare_plan(project, 1, directory)
     assert saved['sidechain_max_heavy_atoms'] == maximum
     assert saved['eligible_sidechains'] == (4 if maximum is None else 3)
@@ -267,7 +267,7 @@ def test_empty_batch_streak_is_atomic_persistent_and_resets_on_insert(project):
 def test_empty_streak_continues_across_pool_refills(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(row) for row in library[:2]])
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     plan = combichem.prepare_plan(project, 1, directory)
     for round_id in range(2):
         for i in range(4):
@@ -299,11 +299,11 @@ def test_attachment_switch_requires_ten_batches_and_archives_partial_round(adapt
         database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(i, i + 1, 0))
     before = database.combichem_plan(args.db_path, 2)
     with pytest.raises(RuntimeError, match='10 consecutive'):
-        combichem.refill_plan(args, 2, args.output / 'iter2/combichem', before, change_attachments=True)
+        combichem.refill_plan(args, 2, args.output / 'iter02/02-generate', before, change_attachments=True)
     assert database.combichem_plan(args.db_path, 2) == before
     database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(9, 10, 0))
     before = database.combichem_plan(args.db_path, 2)
-    switched = combichem.refill_plan(args, 2, args.output / 'iter2/combichem', before, change_attachments=True)
+    switched = combichem.refill_plan(args, 2, args.output / 'iter02/02-generate', before, change_attachments=True)
     assert switched['round'] == switched['attachment_revision'] == 1
     assert switched['next_index'] == 0
     assert switched['attachment_selection']['replacement_cuts'] != original['replacement_cuts']
@@ -316,7 +316,7 @@ def test_attachment_switch_requires_ten_batches_and_archives_partial_round(adapt
     with pytest.raises(RuntimeError, match='batch round'):
         database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(10, 11, 0))
     args.sidechain_library.unlink()
-    assert combichem.prepare_plan(args, 2, args.output / 'iter2/combichem') == switched
+    assert combichem.prepare_plan(args, 2, args.output / 'iter02/02-generate') == switched
 
 
 def test_concurrent_attachment_switches_install_only_one_round(adaptive_project):
@@ -325,7 +325,7 @@ def test_concurrent_attachment_switches_install_only_one_round(adaptive_project)
         database.insert_generated_candidates(args.db_path, 2, 100, [], combichem_progress=(i, i + 1, 0))
     previous = database.combichem_plan(args.db_path, 2)
     def switch(_):
-        return combichem.refill_plan(args, 2, args.output / 'iter2/combichem', previous, change_attachments=True)
+        return combichem.refill_plan(args, 2, args.output / 'iter02/02-generate', previous, change_attachments=True)
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(switch, range(2)))
     assert results[0] == results[1] and results[0]['round'] == 1
@@ -350,14 +350,14 @@ def test_generation_switches_after_tenth_empty_batch_and_restores_compound_origi
         raise RuntimeError('attachment switch committed')
     monkeypatch.setattr(combichem, 'refill_plan', interrupt_after_switch)
     with pytest.raises(RuntimeError, match='attachment switch committed'):
-        generate._run_combichem(args, 2, args.output / 'iter2/combichem')
+        generate._run_combichem(args, 2, args.output / 'iter02/02-generate')
     assert len(calls) == 10
     active = database.combichem_plan(args.db_path, 2)
     args.target_count = 2
     args.sidechain_library.unlink()
     monkeypatch.setattr(generate, 'filter_druglike', original_filter)
     monkeypatch.setattr(combichem, 'refill_plan', original_refill)
-    generate._run_combichem(args, 2, args.output / 'iter2/combichem')
+    generate._run_combichem(args, 2, args.output / 'iter02/02-generate')
     with database.connect(args.db_path) as conn:
         assert conn.execute("SELECT state,gbsa_score FROM compound WHERE name='preserved'").fetchone() == ('gbsa_done', -40)
         cid, name, smiles = conn.execute("SELECT id,name,smiles FROM compound WHERE iteration=2 AND name<>'preserved'").fetchone()
@@ -390,7 +390,7 @@ def test_untried_attachment_combinations_are_not_repeated_and_exhaustion_stops(a
             database.insert_generated_candidates(args.db_path, 2, 100, [],
                 combichem_progress=(i, i + 1, current.get('round', 0)))
         current = database.combichem_plan(args.db_path, 2)
-        new = combichem.refill_plan(args, 2, args.output / 'iter2/combichem', current, change_attachments=True)
+        new = combichem.refill_plan(args, 2, args.output / 'iter02/02-generate', current, change_attachments=True)
         signature = tuple(cut['bond_index'] for cut in new['attachment_selection']['replacement_cuts'])
         assert signature not in tried
         tried.add(signature)
@@ -413,8 +413,8 @@ def test_combichem_generation_uses_existing_filters_target_and_scaffold(project,
         assert len(rows) == len({row[0] for row in rows}) == 4
         assert sum(row[1] == 'sa_rejected' for row in rows) == 1
         assert all(row[2] is not None and row[3] <= 1 and '*' not in row[0] for row in rows)
-    assert list((project.output / 'iter1/combichem').glob('assembly-*.tsv'))
-    assert list((project.output / 'iter1/combichem').glob('druglike_selection-*.csv'))
+    assert list((project.output / 'iter01/02-generate').glob('assembly-*.tsv'))
+    assert list((project.output / 'iter01/02-generate').glob('druglike_selection-*.csv'))
     generate._run_stage(project, 1)
     assert database.combichem_plan(project.db_path, 1) == plan
     assert database.iteration_scaffold(project.db_path, 1) == snapshot
@@ -422,7 +422,7 @@ def test_combichem_generation_uses_existing_filters_target_and_scaffold(project,
 
 def test_saved_pools_and_parameters_survive_library_and_config_changes(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     monkeypatch.setattr(combichem.secrets, 'randbits', lambda _: 123)
     first = combichem.prepare_plan(project, 1, directory)
     assert int(first['seed']) == 123
@@ -445,7 +445,7 @@ def test_combichem_exhaustion_does_not_complete_underfilled_iteration(project):
         assert plan['next_index'] == int(plan['total_combinations'])
         assert database.stage_completion_reason(project.db_path, 1, 'generate', 100, 2) is not None
         assert database.iteration_compound_count(project.db_path, 1) < 100
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     attempts = [row for audit in directory.glob('assembly-*.tsv')
                 for row in csv.DictReader(audit.open(), delimiter='\t')]
     assert len(attempts) == len({row['combination'] for row in attempts}) == 16
@@ -603,14 +603,14 @@ def test_refill_resumes_after_install_crash_and_preserves_existing_compounds(pro
         assert conn.execute('SELECT id,name,smiles,rdk_sa_score FROM compound WHERE id=?',
                             (original_compound[0],)).fetchone() == original_compound
         assert conn.execute('SELECT MAX(rdk_ro5_violations) FROM compound WHERE iteration=1').fetchone()[0] <= 1
-    root = project.output / 'iter1/combichem'
+    root = project.output / 'iter01/02-generate'
     assert (root / 'generated-0-1.csv').exists()
     assert list((root / 'round-000001').glob('generated-*.csv'))
 
 
 def test_legacy_refill_is_atomic_and_old_round_batches_cannot_replay(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
     saved = combichem.prepare_plan(project, 1, directory)
     # Represent an installed legacy plan with no round metadata.
@@ -641,7 +641,7 @@ def test_legacy_refill_is_atomic_and_old_round_batches_cannot_replay(project, mo
 @pytest.mark.parametrize('change', ['modified', 'missing'])
 def test_refill_library_failure_preserves_exhausted_plan_and_results(project, monkeypatch, change):
     prepare_iteration_scaffold(project, 1, create=True)
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
     combichem.prepare_plan(project, 1, directory)
     candidate = dict(calculate_rdkit_descriptors('CCO'), smiles='CCO', druglike_selected=True)
@@ -659,7 +659,7 @@ def test_refill_library_failure_preserves_exhausted_plan_and_results(project, mo
 
 def test_refill_requires_exhaustion_and_keeps_saved_parameters(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
     previous = combichem.prepare_plan(project, 1, directory)
     following = {key: value for key, value in previous.items() if key != 'next_index'}
@@ -679,7 +679,7 @@ def test_refill_requires_exhaustion_and_keeps_saved_parameters(project, monkeypa
 
 def test_refill_rolls_back_archive_if_new_plan_cannot_commit(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
     combichem.prepare_plan(project, 1, directory)
     database.insert_generated_candidates(project.db_path, 1, 4, [], combichem_progress=(0, 1, 0))
@@ -701,7 +701,7 @@ def test_refill_rolls_back_archive_if_new_plan_cannot_commit(project, monkeypatc
 
 def test_refill_cannot_install_new_round_after_target_is_met(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
-    directory = project.output / 'iter1/combichem'
+    directory = project.output / 'iter01/02-generate'
     monkeypatch.setattr(combichem, 'select_sidechains', lambda library, rng: [dict(library[0])])
     combichem.prepare_plan(project, 1, directory)
     candidate = dict(calculate_rdkit_descriptors('CCO'), smiles='CCO', druglike_selected=True)
@@ -990,11 +990,11 @@ def test_fixed_combichem_core_stays_pinned_with_fresh_pools_per_iteration(projec
     first_core = database.iteration_scaffold(project.db_path, 1)
     seeds = iter([101, 202])
     monkeypatch.setattr(combichem.secrets, 'randbits', lambda _: next(seeds))
-    first = combichem.prepare_plan(project, 1, project.output / 'iter1/combichem')
+    first = combichem.prepare_plan(project, 1, project.output / 'iter01/02-generate')
     elites = [(100, 'A', 'CCc1ccc(C)cc1', 1, -10, -40),
               (101, 'B', 'CCCc1ccc(C)cc1', 1, -9, -30)]
     prepare_iteration_scaffold(project, 2, elites, create=True)
-    second = combichem.prepare_plan(project, 2, project.output / 'iter2/combichem')
+    second = combichem.prepare_plan(project, 2, project.output / 'iter02/02-generate')
     assert first['scaffold_smiles'] == second['scaffold_smiles'] == first_core['scaffold_smiles']
     assert first['seed'] != second['seed']
     assert first['pools'] != second['pools']
@@ -1019,6 +1019,8 @@ sidechain-library = "edges.smi"
     monkeypatch.setattr(driver, 'reference_work_pending', lambda args: False)
     monkeypatch.setattr(driver, 'build_stages', lambda *args: [('generate', 'molnova.stages.generate')])
     def worker(stage, cmd, cwd, stop):
+        if stage == 'report':
+            return 0
         generate.main(cmd[3:])
         return 0
     monkeypatch.setattr(driver, 'stream_process', worker)

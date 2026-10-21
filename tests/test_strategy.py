@@ -43,11 +43,11 @@ def test_generation_commits_all_before_iteration_wide_druglike(raw_project, monk
     pending = database.ligprep_pending_rows(args.db_path, 1, False)
     assert {row[0] for row in pending} == {row['id'] for row in expected if row['druglike_selected']}
     assert database.upstream_completion_reason(args.db_path, 1, 4, 'ligprep') is None
-    assert len(list(csv.DictReader((args.output/'iter1/druglike/druglike_selection.csv').open()))) == 4
+    assert len(list(csv.DictReader((args.output/'iter01/03-druglike/druglike_selection.csv').open()))) == 4
     # Both decisions and reporting survive configuration changes and a lost report.
     saved = database.druglike_report(args.db_path, 1)
     args.sa_accepted_ratio = .1
-    (args.output/'iter1/druglike/druglike_selection.csv').unlink()
+    (args.output/'iter01/03-druglike/druglike_selection.csv').unlink()
     druglike._run_stage(args, 1)
     assert database.druglike_report(args.db_path, 1) == saved
 
@@ -215,7 +215,7 @@ def test_druglike_results_do_not_depend_on_generation_batch_size(raw_project):
 def test_saved_uncertain_job_blocks_fep_before_any_snapshot(ranked_project):
     import json
     args = ranked_project
-    root = args.output/'iter1/mmgbsa'
+    root = args.output/'iter01/08-mmgbsa'
     root.mkdir(parents=True)
     (root/'prime_job.json').write_text(json.dumps(dict(job_id=None, launching=True)))
     with pytest.raises(RuntimeError, match='saved external'):

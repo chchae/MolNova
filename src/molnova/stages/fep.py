@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 from pathlib import Path
+from molnova.paths import iteration_directory, stage_directory, stage_in_iteration
 from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started
@@ -23,7 +24,7 @@ def export_candidates(args, iteration):
         target_count=getattr(args, 'target_count', 1),
         prime_count=getattr(args, 'gbsa_input_count', None),
         amber_keep_count=database.amber_keep_count(args))
-    outdir = args.output / f'iter{iteration}/fep'
+    outdir = stage_directory(args.output, iteration, 'fep')
     outdir.mkdir(parents=True, exist_ok=True)
     outfile = outdir / 'fep_candidates.tsv'
     fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'gbsa_score',
@@ -91,10 +92,10 @@ def _run_stage(args, ns):
         if database.stage_is_running(args.db_path, stage):
             raise RuntimeError(f'FEP waiting for {stage} worker')
     from molnova import amber_gbsa, prime_async, ligprep_recovery
-    directory = args.output / f'iter{iteration}'
-    if (amber_gbsa.load_job(directory / 'amber_gbsa') is not None
-            or prime_async.load_job(directory / 'mmgbsa') is not None
-            or ligprep_recovery.load_job(directory / 'ligprep') is not None):
+    directory = iteration_directory(args.output, iteration)
+    if (amber_gbsa.load_job(stage_in_iteration(directory, 'amber_gbsa')) is not None
+            or prime_async.load_job(stage_in_iteration(directory, 'mmgbsa')) is not None
+            or ligprep_recovery.load_job(stage_in_iteration(directory, 'ligprep')) is not None):
         raise RuntimeError('FEP waiting for saved external submissions to retire')
     from molnova.driver import external_completion_reason
     reason = external_completion_reason(args, iteration, 'glide')

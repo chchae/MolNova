@@ -233,7 +233,7 @@ def test_config_validation(tmp_path,key,value):
 
 def test_config_paths_and_stage_order(tmp_path):
     settings=amber_settings({'out-dir':'output'},tmp_path)
-    assert settings['amber_receptor']==tmp_path/'output/iter0/mmgbsa/receptor.maegz'
+    assert settings['amber_receptor']==tmp_path/'output/iter00/08-mmgbsa/receptor.maegz'
     assert settings['amber_remote']['remote_env']=='/home1/amber26/envs/AmberTools26'
     assert [s for s,_ in driver.build_stages(False,False,True)]==['generate','druglike','ligprep','glide','amber-gbsa','mmgbsa']
 
@@ -365,13 +365,13 @@ def test_reference_worker_and_rankings_use_all_references(references, monkeypatc
         return True
     monkeypatch.setattr(amber_gbsa, 'poll', poll)
     stage._run_stage(args, 0)
-    assert len((args.output / 'iter0/amber_gbsa/prime_candidates.tsv').read_text().splitlines()) == 5
+    assert len((args.output / 'iter00/07-amber_gbsa/prime_candidates.tsv').read_text().splitlines()) == 5
     assert str(args.reference_poses.resolve()) in amber_gbsa.source_fingerprints(args, 0)
 
 
 def test_reference_receptor_bootstrap_uses_existing_grid_extractor(references, monkeypatch):
     args = references
-    args.amber_receptor = args.output / 'iter0/mmgbsa/receptor.maegz'
+    args.amber_receptor = args.output / 'iter00/08-mmgbsa/receptor.maegz'
     args.schrodinger = Path('/suite')
     args.grid = args.output / 'grid.zip'
     calls = []

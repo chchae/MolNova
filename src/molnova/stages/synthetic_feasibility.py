@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from molnova.paths import stage_directory
 from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started, timed_stage
@@ -123,7 +124,7 @@ def process_iteration(args, iteration):
         return 0
 
     work_started(f"Iteration {iteration}: starting AiZynthFinder for {len(compounds)} compounds.")
-    output_dir = args.output / f"iter{iteration}" / "synthetic_feasibility"
+    output_dir = stage_directory(args.output, iteration, 'synthetic_feasibility')
     output_dir.mkdir(parents=True, exist_ok=True)
     smiles_file = output_dir / "targets.smi"
     result_file = output_dir / "aizynthfinder_results.json.gz"

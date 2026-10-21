@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
+from molnova.paths import iteration_directory, stage_directory
 from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import work_started, timed_stage, progress
@@ -35,7 +36,7 @@ def _run_stage(args, requested_iteration):
             )]
         processed = False
         for iteration in iterations:
-            if (load_job(args.output / f"iter{iteration}" / "mmgbsa") is not None
+            if (load_job(stage_directory(args.output, iteration, 'mmgbsa')) is not None
                     or database.has_running_mmgbsa(args.db_path, iteration)
                     or database.mmgbsa_candidates(args.db_path, iteration, args.gbsa_input_count,
                                                   getattr(args, "target_count", 1), database.amber_keep_count(args))
@@ -51,7 +52,7 @@ def _run_stage(args, requested_iteration):
         print("No completed docking iteration requires MM-GBSA.")
         return
 
-    directory = args.output / f"iter{iteration}" / "mmgbsa"
+    directory = stage_directory(args.output, iteration, 'mmgbsa')
     target_count = getattr(args, "target_count", 1)
     reason = database.docking_completion_reason(args.db_path, iteration, target_count) if iteration > 0 else None
     if reason is not None:
@@ -76,7 +77,7 @@ def _run_stage(args, requested_iteration):
     else:
         # Disabling future Amber screening must not bypass saved/live work.
         from molnova.amber_gbsa import load_job as load_amber
-        if (load_amber(args.output / f'iter{iteration}/amber_gbsa') is not None
+        if (load_amber(stage_directory(args.output, iteration, 'amber_gbsa')) is not None
                 or database.stage_is_running(args.db_path, 'amber_gbsa')):
             print(f'Iteration {iteration}: Prime waiting for Amber remote work to retire.')
             return
@@ -98,8 +99,8 @@ def _run_stage(args, requested_iteration):
         updated = c.run_iteration_mmgbsa(
             iteration=iteration,
             args=args,
-            iteration_dir=args.output / f"iter{iteration}",
-            glide_dir=args.output / f"iter{iteration}" / "glide",
+            iteration_dir=iteration_directory(args.output, iteration),
+            glide_dir=stage_directory(args.output, iteration, 'glide'),
             compound_ids=pending,
         )
     except Exception as exc:

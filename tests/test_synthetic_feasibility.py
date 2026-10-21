@@ -278,7 +278,7 @@ def test_remote_failure_restores_claims_and_rejects_stale_results(tmp_path, monk
     args = _project(tmp_path)
     args.remote_aizynth = {"host": "tensor", "env": "/remote/env",
                            "work_dir": "/remote/jobs", "config": "/remote/config.yml"}
-    output = args.output / "iter1/synthetic_feasibility/aizynthfinder_results.json.gz"
+    output = args.output / "iter01/04-synthetic_feasibility/aizynthfinder_results.json.gz"
     output.parent.mkdir(parents=True)
     output.write_bytes(b"stale")
 

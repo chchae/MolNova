@@ -4,7 +4,38 @@ import math
 from types import SimpleNamespace
 from typing import Any
 
+from molnova.paths import stage_directory
 from molnova import _core
+
+
+def distribution_settings(config):
+    enabled = config.get('distribution-report', True)
+    interval = config.get('distribution-report-interval', 300)
+    if not isinstance(enabled, bool):
+        raise ValueError('distribution-report must be a boolean')
+    if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
+        raise ValueError('distribution-report-interval must be a positive integer in seconds')
+    return {'distribution_report_enabled': enabled, 'distribution_report_interval': interval}
+
+
+def distribution_project(path):
+    """Resolve report inputs without initializing a project or external programs."""
+    import tomllib
+    path = Path(path).expanduser().resolve()
+    with path.open('rb') as stream:
+        config = tomllib.load(stream)
+    output = (path.parent / Path(config['out-dir']).expanduser()).resolve()
+    project = str(config.get('project', path.stem)).strip()
+    if not project or Path(project).name != project:
+        raise ValueError('Invalid project name')
+    db_path = output / f'{project}.sqlite'
+    if not db_path.is_file():
+        legacy = path.parent / f'{project}.sqlite'
+        if not legacy.is_file():
+            raise FileNotFoundError(f'Project database not found: {db_path}')
+        db_path = legacy  # Read in place; reporting never migrates a database.
+    return SimpleNamespace(output=output, db_path=db_path, project=project,
+                           gbsa_elite_count=int(config.get('gbsa-elite-count', 10)))
 
 
 def prime_flexdist(config: dict[str, Any]) -> float:
@@ -62,6 +93,12 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
         raise ValueError('gbsa-input-count must be a positive integer')
     settings = {'amber_gbsa_enabled': enabled, 'gbsa_input_count': prime_count,
                 'use_slurm': use_slurm}
+    time_limit = config.get('amber-slurm-time-limit', 600)
+    if isinstance(time_limit, bool) or not isinstance(time_limit, int) or time_limit < 1:
+        raise ValueError('amber-slurm-time-limit must be a positive integer in seconds')
+    hours, remainder = divmod(time_limit, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    settings['amber_slurm_time_limit'] = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
     for key, default in [('amber-cpus', 128)]:
         value = config.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -123,7 +160,11 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
             elif not value.startswith('/'):
                 raise ValueError(f'{key} must be an absolute remote path')
             settings['amber_remote'][keys[suffix]] = value
-    receptor = Path(config.get('amber-receptor', Path(config['out-dir']) / 'iter0/mmgbsa/receptor.maegz')).expanduser()
+    if 'amber-receptor' in config:
+        receptor = Path(config['amber-receptor']).expanduser()
+    else:
+        output = (base / Path(config['out-dir']).expanduser()).resolve()
+        receptor = stage_directory(output, 0, 'mmgbsa') / 'receptor.maegz'
     settings['amber_receptor'] = (base / receptor).resolve()
     charge = config.get('amber-charge-method', 'bcc')
     if charge not in ('bcc', 'abcg2'):

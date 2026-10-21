@@ -3,6 +3,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from molnova.paths import stage_manifests
 from molnova.stages._logging import detail
 
 from molnova import _core as c, database
@@ -96,7 +97,7 @@ def _folder(directory, record, cid):
 def other_active_slots(args, directory):
     """The seven-slot ceiling applies across all project iterations."""
     active = 0
-    for path in args.output.glob('iter*/mmgbsa/prime_job.json'):
+    for path in stage_manifests(args.output, 'mmgbsa', 'prime_job.json'):
         if path.parent == directory:
             continue
         other = json.loads(path.read_text())

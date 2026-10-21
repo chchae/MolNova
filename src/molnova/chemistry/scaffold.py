@@ -1,4 +1,5 @@
 """Scaffold-related public helpers."""
+from molnova.paths import stage_directory
 from molnova import _core
 from molnova import database
 from pathlib import Path
@@ -299,7 +300,7 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
             'provide a compatible reference pose or an explicit reference-mcs.'
         )
     snapshot = database.iteration_scaffold(args.db_path, iteration, snapshot)
-    directory = args.output / f'iter{iteration}' / 'scaffold'
+    directory = stage_directory(args.output, iteration, 'scaffold')
     _publish(directory / 'mcs.smarts', snapshot['mcs_smarts'] + '\n')
     _publish(directory / 'libinvent_scaffold.smi', snapshot['scaffold_smiles'] + '\n')
     _publish(directory / 'scaffold_info.json', json.dumps(snapshot, indent=2) + '\n')

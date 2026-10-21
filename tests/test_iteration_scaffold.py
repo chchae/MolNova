@@ -64,7 +64,7 @@ def test_reference_first_then_previous_elites_and_restart(project, monkeypatch):
     assert restarted.generation_mcs_smarts == later['mcs_smarts']
     assert restarted.mcs_smarts == first_core
     assert restarted.libinvent_scaffold_file.read_text().strip() == later['scaffold_smiles']
-    assert json.loads((project.output / 'iter3/scaffold/scaffold_info.json').read_text()) == later
+    assert json.loads((project.output / 'iter03/01-scaffold/scaffold_info.json').read_text()) == later
 
 
 @pytest.mark.parametrize('supplied', [None, '[*:0]c1ccc([*:1])cc1'])
@@ -87,7 +87,7 @@ def test_generation_passes_ranked_elites_and_new_scaffold_to_tl(project, monkeyp
     monkeypatch.setattr(_core, 'write_elite_libinvent_training_files', training)
     monkeypatch.setattr(_core, 'run_libinvent_elite_transfer_learning', lambda **k: 'model')
     def sample(**kwargs):
-        assert kwargs['scaffold_file'] == project.output / 'iter2/scaffold/libinvent_scaffold.smi'
+        assert kwargs['scaffold_file'] == project.output / 'iter02/01-scaffold/libinvent_scaffold.smi'
         assert kwargs['libinvent_prior'] == 'model'
         seen.append('sampling')
         return 'generated.csv'
@@ -102,7 +102,7 @@ def test_first_generation_uses_reference_core_and_original_prior(project, monkey
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
     def sample(**kwargs):
         assert kwargs['libinvent_prior'] == project.libinvent_prior
-        assert kwargs['scaffold_file'] == project.output / 'iter1/scaffold/libinvent_scaffold.smi'
+        assert kwargs['scaffold_file'] == project.output / 'iter01/01-scaffold/libinvent_scaffold.smi'
         assert database.iteration_scaffold(project.db_path, 1)['source'] == 'iteration0_references'
         return 'generated.csv'
     monkeypatch.setattr(_core, 'run_libinvent_sampling', sample)
@@ -312,7 +312,7 @@ def test_rejected_previous_scaffold_stops_without_snapshot_or_result_changes(
     with pytest.raises(RuntimeError, match=message):
         prepare_iteration_scaffold(project, 2, elites, create=True)
     assert database.iteration_scaffold(project.db_path, 2) is None
-    assert not (project.output / 'iter2/scaffold').exists()
+    assert not (project.output / 'iter02/01-scaffold').exists()
     with database.connect(project.db_path) as conn:
         assert conn.execute("SELECT gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'gbsa_done')
 
@@ -789,7 +789,7 @@ def test_readable_mcs_log_preserves_original_query_and_scaffold(project, capsys)
     assert f'generation core summary (iteration 1 elites): {summary}' in output
     assert f'generation scaffold SMILES: {saved["scaffold_smiles"]}' in output
     assert database.iteration_scaffold(project.db_path, 2) == saved
-    assert (project.output / 'iter2/scaffold/mcs.smarts').read_text().strip() == original
+    assert (project.output / 'iter02/01-scaffold/mcs.smarts').read_text().strip() == original
     assert project.generation_mcs_smarts == original
 
 

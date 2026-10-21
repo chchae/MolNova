@@ -47,7 +47,7 @@ def test_worker_handles_zero_explicitly_and_only_calculates_missing_references(t
     def calculate(**kw):
         calls.append(kw)
         assert kw['iteration'] == 0 and kw['compound_ids'] == [2, 3]
-        assert kw['iteration_dir'] == tmp_path / 'iter0'
+        assert kw['iteration_dir'] == tmp_path / 'iter00'
         scores = tmp_path / 'scores.tsv'
         scores.write_text('id\tgbsa_score\n2\t-35\n3\t-30\n')
         return c.update_gbsa_scores(scores, args.db_path, allowed_ids=kw['compound_ids'])

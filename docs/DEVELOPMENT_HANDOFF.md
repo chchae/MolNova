@@ -15,6 +15,22 @@ elite and saved scaffold; no new generation, docking or GBSA was launched.
 
 ## Amber SLURM 30-minute limit (2026-10-20)
 
+**Superseding user change (2026-10-21):** newly created Amber Slurm array
+records now pin `slurm_time_limit="00:10:00"` and submit with
+`sbatch --time=00:10:00`, limiting each original-compound task to 10 minutes of
+allocation runtime including preparation/calculation and excluding queue waiting.
+Existing records keep their saved 30-minute or partition-default limits, including
+not-yet-prepared records. Do not update existing jobs or uploaded inputs/workers.
+The verified TIMEOUT recovery policy below remains unchanged: retain scores,
+record unscored timed-out compounds as terminal Amber failures, and proceed through
+the existing readiness/ranking gates without resubmission. Direct SSH is unchanged.
+The original 30-minute policy below is retained as historical context only.
+TOML now exposes `amber-slurm-time-limit = 600` (default), in seconds.
+Validate a positive integer (reject bool, float and strings), normalize to
+`HH:MM:SS` for Slurm, and pin it only when creating new array records.
+Keep it outside remote-environment settings so editing the TOML does not block
+recovery of an existing manifest, which retains its original time limit.
+
 New array manifests pin `slurm_time_limit="00:30:00"`; propagate it to remote
 input and pass `--time=00:30:00` to sbatch. The limit is per compound task,
 includes receptor setup and excludes queue waiting. Saved records lacking the

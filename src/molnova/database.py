@@ -41,6 +41,40 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return _core.open_sqlite(Path(path))
 
 
+def distribution_snapshot(path, iteration=None):
+    """Read one consistent diagnostic snapshot, without migrations or claims."""
+    import json
+
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('PRAGMA busy_timeout=30000')
+        conn.execute('PRAGMA foreign_keys=ON')
+        conn.execute('BEGIN')
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(compound)')}
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        wanted = ['id', 'name', 'smiles', 'iteration', 'state', 'failed_stage',
+                  'docking_score', 'amber_gbsa_score', 'gbsa_score', 'fep_score',
+                  'sa_score', *RDK_DESCRIPTOR_TYPES]
+        fields = ','.join(f'c.{name}' if name in columns else f'NULL AS {name}' for name in wanted)
+        selected = 's.passed' if 'compound_druglike_selection' in tables else 'NULL'
+        join = ('LEFT JOIN compound_druglike_selection s ON s.compound_id=c.id'
+                if 'compound_druglike_selection' in tables else '')
+        rows = [dict(row) for row in conn.execute(
+            f'SELECT {fields}, {selected} AS druglike_selected FROM compound c {join} '
+            'WHERE c.iteration>=0 AND (? IS NULL OR c.iteration<=?) ORDER BY c.iteration,c.id',
+            (iteration, iteration))]
+        scaffolds = {}
+        if 'iteration_scaffold' in tables:
+            scaffolds = {row[0]: json.loads(row[1]) for row in conn.execute(
+                'SELECT iteration,snapshot FROM iteration_scaffold '
+                'WHERE ? IS NULL OR iteration<=? ORDER BY iteration', (iteration, iteration))}
+        return rows, scaffolds
+    finally:
+        conn.close()
+
+
 def lock_path(path: str | Path, suffix: str) -> Path:
     """Keep workflow locks beside the project SQLite file in its output folder."""
     db_path = Path(path).expanduser().resolve()

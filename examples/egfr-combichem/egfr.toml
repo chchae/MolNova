@@ -1,0 +1,94 @@
+# MolNova EGFR: Generate(DB) → Drug likeness → LigPrep → Glide
+# → Amber best 500 → Prime best 50 → FEP 후보 best 20 export
+# 로컬 상대 경로는 이 TOML의 위치를 기준으로 해석합니다.
+# 기존 iteration은 저장된 선별/작업/결과를 유지합니다. 아래 정책은 새 iteration에 적용합니다.
+
+# 실행 옵션: debug=true이면 화합물 수를 1/10로 축소(최소 1), 계산 조건·CPU 수 유지
+debug = false
+
+# 1. 프로젝트 입력과 생성 목표
+out-dir = "./output"
+reference-pose = "./input/egfr-ligands-docked.maegz"
+reference-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
+dock-grid = "./input/egfr-grid.zip"
+max-iteration = 100
+# 유효성·중복 제거 후 DB에 저장할 생성 화합물 수. Drug likeness 적용 전 수입니다.
+target-count = 10000
+sample-size = 100000              # 한 번의 생성/조합 batch 크기; DB 삽입은 남은 target으로 제한
+
+# 2. Generate: sidechain-library가 있으면 로컬 combichem, 없으면 REINVENT4
+sidechain-library = "./input/edges-50k.smi"
+sidechain-max-heavy-atoms = 8      # 각 입력 fragment의 non-H 원자 상한; 결합용 * 제외
+elite-mcs-fixed = false
+# elite-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
+# 첫 cycle은 reference-mcs, 이후는 직전 iteration의 Prime elite에서 generation core 결정
+# 다음 cycle도 Prime elite가 필요하며 FEP 후보 fallback이 이 조건을 대체하지 않습니다.
+gbsa-elite-count = 1
+
+# REINVENT4를 사용할 때만 적용; combichem은 prior/REINVENT runtime을 사용하지 않습니다.
+libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
+reinvent-ssh-host = "tensor"
+reinvent-remote-env = "/home1/astrazeneca/REINVENT/env"
+reinvent-remote-work-dir = "/home1/astrazeneca/REINVENT/molnova-runs"
+elite-tl-epochs = 5
+
+# 3. Drug likeness: 생성된 iteration 전체를 DB에서 평가하고 탈락 이유도 보존
+# RO5 violation <= 1, QED 내림차순·SA 오름차순으로 전체의 최대 절반 통과
+sa-score-cpus = 16
+sa-accepted-ratio = 1.0           # 별도 SA 비율 절삭 없음; <1이면 drug likeness 통과군에 추가 적용
+
+# 선택적 합성 가능성 평가: Drug likeness 이후, LigPrep 이전; 경로 평가 자체는 필터가 아님
+synthetic-feasibility-enabled = false
+aizynth-nproc = 8
+aizynth-ssh-host = "tensor"
+aizynth-remote-env = "/home1/astrazeneca/AiZynthFinder/env"
+aizynth-remote-work-dir = "/home1/astrazeneca/AiZynthFinder/molnova-runs"
+aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
+
+# 4. LigPrep → constrained Glide: Drug likeness 통과 화합물만 처리
+host = "t41-cpu:128"
+ligprep-cpus = 124
+ligprep-ph = 7.4
+ligprep-pht = 1.0
+ligprep-max-states = 2
+ligprep-max-stereo = 1
+glide-cpus = 124
+tail-timeout = 300                # 대기 제한; native job을 취소하지 않음
+glide-job-timeout = 1800          # 0이면 native Glide timeout 비활성화
+
+# 5. Amber GBSA: 모든 Glide 작업이 끝난 뒤 최종 Glide best 500 평가
+amber_gbsa = true
+amber-input-count = 500
+# true: Amber만 slurm:cpu로 제출. false 또는 생략: 아래 t41 설정 사용
+use-slurm = true
+amber-slurm-host = "slurm"
+amber-slurm-partition = "cpu"
+amber-slurm-time-limit = 600       # 초 단위; 화합물당 10분, 큐 대기 제외
+amber-slurm-cpus = 384           # 전체 Amber 작업 합계 상한; 각 단일 노드 작업은 최대 192
+amber-slurm-env = "/share/opt/amber26/envs/AmberTools26"
+# amber-slurm-work-dir = "/homes1/사용자명/molnova-amber-slurm-runs"  # 기본값: 현재 사용자별 디렉터리
+amber-cpus = 124
+amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
+amber-charge-method = "bcc"
+amber-ssh-host = "t41"
+amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
+amber-remote-env = "/home1/amber26/envs/AmberTools26"
+amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
+amber-ssh-config = "/home1/chchae/.ssh/config"
+
+# 6. Prime GBSA: 유효 Amber 결과 best 50; 유효 Amber 결과가 0개이면 Glide best 50
+# 진행 중·복구 대기·재시도 가능 작업은 기다립니다. 서로 다른 score를 섞어 순위를 만들지 않습니다.
+# 유효 결과가 일부만 있으면 그 집합에서 최대 50개만 선택하며 다른 tier로 보충하지 않습니다.
+gbsa-input-count = 100
+prime-flexdist = 6.0
+gbsa-license-retry-seconds = 300
+gbsa-license-retries = 3
+# Prime은 선택한 화합물 전체를 한 batch로 제출하고 JobDJ가 최대 7개 subjob을 동시에 실행합니다.
+# 유연한 receptor는 화합물별 complex 입력으로 처리하여 각 ligand 주변 6 Å 설정을 유지합니다.
+# Iteration 0은 입력 reference 전체를 평가하므로 500/50 제한을 적용하지 않습니다.
+
+# 7. FEP 후보 export / 결과 import; 실제 FEP 계산은 외부 protocol로 별도 수행
+# Prime 결과가 있으면 Prime best 20, 없으면 Amber best 20, 둘 다 없으면 Glide best 20
+# 한 score source만 사용하며 후보 ID·source·순위를 저장하여 restart/import 시 유지합니다.
+fep-enabled = true
+fep-input-count = 20

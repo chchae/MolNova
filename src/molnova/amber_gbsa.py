@@ -9,6 +9,7 @@ import subprocess
 import tarfile
 import uuid
 
+from molnova.paths import stage_directory
 from molnova import _core as c, database
 
 
@@ -24,14 +25,14 @@ def load_job(directory):
 
 
 def poses_path(args, iteration):
-    return args.reference_poses if iteration == 0 else args.output / f'iter{iteration}/glide/best_poses.maegz'
+    return args.reference_poses if iteration == 0 else stage_directory(args.output, iteration, 'glide') / 'best_poses.maegz'
 
 
 def prepare_reference_receptor(args):
     """Bootstrap the default receptor using the existing Prime grid extractor."""
     if args.amber_receptor.is_file():
         return
-    default = args.output / 'iter0/mmgbsa/receptor.maegz'
+    default = stage_directory(args.output, 0, 'mmgbsa') / 'receptor.maegz'
     if args.amber_receptor != default:
         raise FileNotFoundError(f'Amber receptor not found: {args.amber_receptor}')
     default.parent.mkdir(parents=True, exist_ok=True)

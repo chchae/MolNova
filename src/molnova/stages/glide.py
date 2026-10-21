@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from molnova.paths import stage_directory
 from molnova.stages._logging import detail, progress
 import sqlite3
 import time
@@ -191,11 +192,11 @@ def _run_stage(args, ns):
         return
 
     work_started(f"Iteration {iteration}: processing Glide for {len(groups)} reference groups.")
-    ligprep_file = args.output / f"iter{iteration}" / "ligprep" / "ligprep_all.maegz"
+    ligprep_file = stage_directory(args.output, iteration, 'ligprep') / "ligprep_all.maegz"
     if not ligprep_file.exists():
         raise FileNotFoundError(f"LigPrep output not found: {ligprep_file}")
 
-    glide_root = args.output / f"iter{iteration}" / "glide"
+    glide_root = stage_directory(args.output, iteration, 'glide')
     glide_root.mkdir(parents=True, exist_ok=True)
     live = active_jobs(args.schrodinger)
     prepare_glide_files(glide_root, ligprep_file, live, args.schrodinger)

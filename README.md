@@ -1,6 +1,56 @@
 # MolNova
 
+New outputs use `iter01`, `iter02`, …, `iter10` (references: `iter00`).
+Inside each iteration, folders sort in execution order: `01-scaffold`,
+`02-generate`, `03-druglike`, `04-synthetic_feasibility`, `05-ligprep`,
+`06-glide`, `07-amber_gbsa`, `08-mmgbsa`, `09-fep`.
+Stage numbers stay fixed when optional stages are disabled. Both generators
+write into `02-generate`. Existing legacy outputs keep their original paths
+for restart; historical path examples below refer to that layout.
+The new default Amber receptor path is `output/iter00/08-mmgbsa/receptor.maegz`.
+
+
 MolNova is a modular iterative lead-optimization pipeline integrating REINVENT4/LibInvent, Schrödinger LigPrep and Glide, Prime MM-GBSA, SQLite workflow state, and FEP staging.
+
+## Iteration landscape reports
+
+`molnova run project.toml` automatically refreshes chemical-space, substituent
+and property/score reports after completed stages and during pending calculations
+(default interval: 300 seconds). It also writes cumulative numerical summaries
+and text histograms to the run output and `output/analysis/distribution.log`.
+
+Open `output/analysis/index.html` in a browser for the latest interactive report.
+Use `iterNN.html` for an iteration's latest cumulative checkpoint; `summary.json`
+and `iterNN.json` contain its statistics/data. Copy the `molecules/` subfolder
+alongside the HTML when moving reports. All files work offline.
+
+Generate a report from an existing project without running any calculator:
+
+```bash
+molnova report project.toml
+molnova report project.toml --iteration 3
+```
+
+The report offers iteration/score coloring, molecule structures on click,
+Druglike-pass/Prime-scored cohort filters, nine property/score distribution
+panels, saved-scaffold attachment comparisons and sampled diversity measures.
+Distributions use all rows in the chosen cohort; the map uses a balanced sample
+of up to 2,000 molecules and diversity/fragment frequencies up to 200 per iteration.
+Missing values and sample coverage are explicit. PCA axes freeze after the first
+non-degenerate generated sample so later iterations share the same coordinate
+system. Different scaffolds' R labels are not directly comparable.
+
+Optional TOML settings:
+
+```toml
+distribution-report = true              # default; false disables automatic reports
+distribution-report-interval = 300      # seconds between pending-pass refreshes
+```
+
+Manual reporting only reads the existing SQLite database. It does not migrate
+schemas, recalculate missing properties, submit jobs or change compounds/scores.
+Report errors are logged and scientific supervision continues. Standalone stage
+commands can be followed by `molnova report` to refresh their results.
 
 ## Install for development
 
@@ -736,13 +786,22 @@ belong to t41. Optional `amber-ssh-config` points to a local SSH config.
 Set `use-slurm = true` to run **Amber only** on the `slurm` SSH host's `cpu`
 partition. Omission or false retains direct t41 execution. LigPrep, Glide and
 Prime keep their configured host. `amber-slurm-cpus` defaults to 384 (maximum
-384 total); the adapter splits work into at most two single-node allocations of
-up to 192 CPUs and never requests more workers than compounds. The shared Amber
+384 concurrent array tasks); each compound has its own one-CPU array task.
+The shared Amber
 environment defaults to `/share/opt/amber26/envs/AmberTools26`; override with
 `amber-slurm-env`. Runs use `/homes1/<current-user>/molnova-amber-slurm-runs` by default;
 `amber-slurm-work-dir` overrides it. `amber-slurm-host` and
 `amber-slurm-partition` override the submission host/partition. Saved uncertain
 submissions are reconciled through Slurm JobIds before any retry.
+
+Set `amber-slurm-time-limit = 600` in TOML to specify the per-compound
+Amber Slurm runtime limit in seconds (positive integer; default 600 = 10 minutes).
+MolNova converts seconds to Slurm `HH:MM:SS` when saving a new submission.
+New Amber Slurm array tasks have a **10-minute default runtime limit per compound**
+(`sbatch --time=00:10:00`), including preparation and calculation, excluding queue
+waiting. Existing saved/submitted work retains its original limit. Verified
+TIMEOUTs use the existing per-compound failure/recovery path, preserving scores
+and allowing later stages to proceed through their normal gates.
 
 Set `debug = true` to divide generation target, generation batch size, Amber
 input count, Prime input/elite counts and FEP candidate count by ten (integer

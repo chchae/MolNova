@@ -76,10 +76,34 @@ def test_slurm_budget_validation(tmp_path, cpus):
                         'amber-slurm-cpus': cpus}, tmp_path)
 
 
+@pytest.mark.parametrize('value', [True, False, 0, -1, 600.0, '', '600', '00:10:00', None])
+def test_slurm_time_limit_validation(tmp_path, value):
+    with pytest.raises(ValueError, match='amber-slurm-time-limit'):
+        amber_settings({'out-dir': 'output', 'amber-slurm-time-limit': value}, tmp_path)
+
+
+@pytest.mark.parametrize('seconds,limit', [(1, '00:00:01'), (61, '00:01:01'),
+                                        (600, '00:10:00'), (900, '00:15:00'),
+                                        (3600, '01:00:00'), (90061, '25:01:01')])
+def test_toml_time_limit_is_pinned_only_in_new_records(project, seconds, limit):
+    toml = project.output / 'project.toml'
+    toml.write_text(PROJECT + f'use-slurm = true\namber-slurm-time-limit = {seconds}\n')
+    loaded = _core.load_project_toml(toml)
+    assert loaded['amber_slurm_time_limit'] == limit
+    project.amber_slurm_time_limit = loaded['amber_slurm_time_limit']
+    record = slurm.new_record(project, 1, project.output, [1, 2, 3, 4])
+    assert record['slurm_time_limit'] == limit
+    assert 'time_limit' not in record['settings']
+    assert record['settings'] == project.amber_remote
+    project.amber_slurm_time_limit = '00:05:00'
+    assert amber.load_job(project.output)['slurm_time_limit'] == limit
+
+
 def test_slurm_configuration_and_shared_environment(tmp_path):
     settings = amber_settings({'out-dir': 'output', 'use-slurm': True,
                                'amber-ssh-host': 't41', 'amber-cpus': 124}, tmp_path)
     assert settings['amber_cpus'] == 384
+    assert settings['amber_slurm_time_limit'] == '00:10:00'
     remote = settings['amber_remote']
     assert remote['host'] == 'slurm' and remote['partition'] == 'cpu'
     assert remote['remote_work_dir'].startswith('/homes1/')
@@ -277,14 +301,16 @@ def test_other_queue_errors_never_establish_absence(monkeypatch, error):
 
 
 @pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
-@pytest.mark.parametrize('saved_array', [False, True])
-def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode, saved_array):
+@pytest.mark.parametrize('saved_limit', ['new', None, '00:30:00'])
+def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode, saved_limit):
     import tarfile
     record = child_record(project, mode)
     if mode == slurm.ARRAY:
-        assert record['slurm_time_limit'] == '00:30:00'
-        if saved_array:
+        assert record['slurm_time_limit'] == '00:10:00'
+        if saved_limit is None:
             del record['slurm_time_limit']
+        elif saved_limit != 'new':
+            record['slurm_time_limit'] = saved_limit
     record['prepared'] = False
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
@@ -302,8 +328,8 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     assert config['cpus'] == record['cpus']
     assert config['slurm']['partition'] == 'cpu'
     assert config['slurm']['job_name'].endswith(record['run_id'])
-    if mode == slurm.ARRAY and not saved_array:
-        assert config['slurm']['time_limit'] == '00:30:00'
+    if mode == slurm.ARRAY and saved_limit is not None:
+        assert config['slurm']['time_limit'] == ('00:10:00' if saved_limit == 'new' else saved_limit)
     else:
         assert 'time_limit' not in config['slurm']
     script = (folder / 'amber.sbatch').read_text()
@@ -346,7 +372,7 @@ def test_parent_collects_other_shard_even_when_one_is_uncertain(project, monkeyp
 
 
 @pytest.mark.parametrize('count,cpus,throttle', [(50, 384, 50), (500, 384, 384), (4, 2, 2), (1, 1, 1)])
-@pytest.mark.parametrize('time_limit', [None, '00:30:00'])
+@pytest.mark.parametrize('time_limit', [None, '00:10:00', '00:30:00'])
 def test_array_submission_requests_one_core_and_bounded_memory(tmp_path, monkeypatch, count, cpus, throttle, time_limit):
     options = {'partition': 'cpu', 'job_name': 'unique', 'array_count': count}
     if time_limit is not None:
@@ -364,7 +390,7 @@ def test_array_submission_requests_one_core_and_bounded_memory(tmp_path, monkeyp
     assert command[command.index('--array') + 1] == f'0-{count - 1}%{throttle}'
     assert '--mem=2G' in command and '--mem=0' not in command
     assert [value for value in command if value.startswith('--time=')] == (
-        [] if time_limit is None else ['--time=00:30:00'])
+        [] if time_limit is None else ['--time=' + time_limit])
     assert str(tmp_path / 'slurm-%A_%a.out') in command
     assert str(tmp_path / 'slurm-%A_%a.err') in command
     assert control.submit(tmp_path)['job_id'] == '123'

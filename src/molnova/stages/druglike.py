@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 
+from molnova.paths import stage_directory
 from molnova import _core as c, database
 from molnova.chemistry.druglike import filter_druglike
 from molnova.stages.generate import store_iteration_descriptors
@@ -29,7 +30,7 @@ def _run_stage(args, iteration):
         database.apply_druglike_selection(args.db_path, iteration, args.target_count,
                                           selections, getattr(args, 'sa_accepted_ratio', 1.0))
     rows = database.druglike_report(args.db_path, iteration)
-    folder = args.output / f'iter{iteration}/druglike'
+    folder = stage_directory(args.output, iteration, 'druglike')
     folder.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=folder, prefix='selection-')
     try:

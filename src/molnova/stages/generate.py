@@ -6,6 +6,7 @@ import csv
 import os
 import tempfile
 import time
+from molnova.paths import stage_directory
 from molnova import _core as c
 from molnova import database
 from molnova.chemistry.scaffold import prepare_iteration_scaffold, log_iteration_mcs
@@ -186,10 +187,10 @@ def _run_stage(args, requested_iteration):
         return
 
     combichem = getattr(args, 'sidechain_library', None) is not None
-    run_dir = args.output / f"iter{iteration}" / ('combichem' if combichem else 'reinvent')
 
     if iteration == 1:
         prepare_iteration_directory(args, iteration)
+        run_dir = stage_directory(args.output, iteration, 'combichem' if combichem else 'reinvent')
         database.validate_generation_population(args.db_path, iteration, args.target_count)
         run_dir.mkdir(parents=True, exist_ok=True)
         prepare_iteration_scaffold(args, iteration, create=True)
@@ -204,7 +205,7 @@ def _run_stage(args, requested_iteration):
         # early-generation policy. Explicit --iteration cannot bypass this gate.
         for completed_iteration in range(1, iteration):
             from molnova.amber_gbsa import load_job as load_amber
-            if (load_amber(args.output / f'iter{completed_iteration}/amber_gbsa') is not None
+            if (load_amber(stage_directory(args.output, completed_iteration, 'amber_gbsa')) is not None
                     or database.stage_is_running(args.db_path, 'amber_gbsa')):
                 print(f'Iteration {iteration} not ready: preceding Amber work still requires recovery.')
                 return
@@ -228,6 +229,7 @@ def _run_stage(args, requested_iteration):
                 f"Need {args.gbsa_elite_count} previous MM-GBSA elites; only {len(elites)} available."
             )
         prepare_iteration_directory(args, iteration)
+        run_dir = stage_directory(args.output, iteration, 'combichem' if combichem else 'reinvent')
         database.validate_generation_population(args.db_path, iteration, args.target_count)
         run_dir.mkdir(parents=True, exist_ok=True)
         prepare_iteration_scaffold(args, iteration, elites, create=True)

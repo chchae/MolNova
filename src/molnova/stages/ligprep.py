@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
+from molnova.paths import stage_directory
 from molnova.ligprep_recovery import load_job, job_file, prepare_new_calculation
 from molnova.states import CompoundState as State
 from molnova import _core as c
@@ -29,7 +30,7 @@ def _run_stage(args, requested_iteration):
         database.apply_sa_filter(args.db_path, iteration, args.target_count, args.sa_accepted_ratio)
 
     rows = database.ligprep_pending_rows(args.db_path, iteration, args.synthetic_feasibility_enabled)
-    outdir = args.output / f"iter{iteration}" / "ligprep"
+    outdir = stage_directory(args.output, iteration, 'ligprep')
     active = load_job(outdir)
     if not rows:
         # A crash may follow the state commit but precede record removal.

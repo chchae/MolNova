@@ -6,6 +6,7 @@ import time
 import csv
 from contextlib import ExitStack
 
+from molnova.paths import iteration_directory, stage_in_iteration
 from molnova import database
 from molnova import schrodinger_guard as guard
 
@@ -25,7 +26,7 @@ def prepare_iteration_directory(args, iteration):
 
 
 def _prepare(args, iteration, deleted):
-    root = Path(args.output) / f'iter{iteration}'
+    root = iteration_directory(Path(args.output), iteration)
     if root.is_symlink():
         raise RuntimeError(f'Iteration directory is a symlink; files retained: {root}')
     if not deleted and (not root.exists() or not any(root.iterdir())):
@@ -83,9 +84,9 @@ def _prepare(args, iteration, deleted):
     if archive_root.is_symlink():
         raise RuntimeError(f'Iteration archive is a symlink; files retained: {archive_root}')
     archive_root.mkdir(exist_ok=True)
-    archive = archive_root / f'iter{iteration}-{time.time_ns()}'
+    archive = archive_root / f'{root.name}-{time.time_ns()}'
     report_ids = []
-    report = root / 'druglike/druglike_selection.csv'
+    report = stage_in_iteration(root, 'druglike') / 'druglike_selection.csv'
     if deleted and report.exists():
         with report.open(newline='') as stream:
             report_ids = [int(row['id']) for row in csv.DictReader(stream)]

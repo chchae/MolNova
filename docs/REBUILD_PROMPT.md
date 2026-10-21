@@ -1,5 +1,28 @@
 # Independent MolNova reconstruction prompt
 
+## Confirmed numbered output layout (2026-10-21)
+
+For new iteration workspaces, format iteration numbers with a minimum of two
+digits: `iter00`, `iter01`, `iter02`, …, `iter10`, …, `iter100`.
+Use fixed stage directory names in execution order:
+`01-scaffold`, `02-generate` (both LibInvent and combichem), `03-druglike`,
+`04-synthetic_feasibility`, `05-ligprep`, `06-glide`, `07-amber_gbsa`,
+`08-mmgbsa`, `09-fep`. Optional stages retain their assigned numbers when skipped.
+These paths supersede unnumbered output examples elsewhere in this document for
+new work. The default Amber receptor is `<out-dir>/iter00/08-mmgbsa/receptor.maegz`.
+Explicit configured input paths retain their meaning.
+
+Preserve existing legacy iteration/stage paths for restart, saved JobIds, native
+launch directories and source fingerprints; do not rename production artifacts.
+For iterations >=10, existing unnumbered stage children identify legacy layout.
+New stages in a legacy iteration retain that layout. Mixed legacy/new iterations
+must both participate in resource admission, manifest recovery, readiness and
+completion checks. Duplicate old/new trees for the same iteration or stage must
+stop with a reconciliation error rather than silently ignoring saved work.
+Use the selected iteration basename for `.previous/<iteration>-<timestamp>`
+archives. Scientific calculations, SQLite states and scheduling do not change.
+
+
 Reimplement MolNova from the self-contained specification below. You are starting a new implementation; no prior conversation is required.
 
 Use the evidence labels carefully: explicitly confirmed constraints are binding; the documented baseline supplies compatibility behavior, but is not proof of historical user approval. Preserve that baseline unless the user changes it. Do not silently resolve listed conflicts, turn proposals into requirements, or treat arbitrary current implementation details as scientific truth.
@@ -54,7 +77,7 @@ Each target has separate TOML, DB, inputs, and outputs, sharing the installed pa
 ## 2. Environment and components — documented baseline
 
 - Package `molnova`, observed version `0.1.0`, Python >=3.11, setuptools>=70, `src/` layout, CLI entry point `molnova.cli:main`.
-- Normal Python dependency: RDKit. Standard-library SQLite, TOML, subprocess, CSV/JSON/gzip, and POSIX file locking support workflow management. Pytest supplies tests.
+- Normal Python dependencies: RDKit, NumPy, scikit-learn and threadpoolctl (the latter three support diagnostic projection/statistics). Standard-library SQLite, TOML, subprocess, CSV/JSON/gzip, and POSIX file locking support workflow management. Pytest supplies tests.
 - Production: Linux, Schrödinger Suite 2026-3, JobServer/observer, SLURM, CPU compute hosts. macOS development is mentioned; Windows support is not established.
 - REINVENT4/LibInvent and optional AiZynthFinder run in separately provisioned local or SSH environments. They and Schrödinger are external dependencies, not ordinary MolNova pip dependencies. REINVENT sampling/TL currently select `cuda:0`.
 - Exact RDKit, REINVENT4, AiZynthFinder, PyTorch/CUDA versions and environment locks are not pinned in the reviewed files.
@@ -1432,6 +1455,22 @@ or scientific ranking validation is claimed.
 
 ## 22. Confirmed Amber SLURM 30-minute limit (2026-10-20)
 
+**Superseding user change (2026-10-21):** newly created Amber Slurm array
+records now pin `slurm_time_limit="00:10:00"` and submit with
+`sbatch --time=00:10:00`, limiting each original-compound task to 10 minutes of
+allocation runtime including preparation/calculation and excluding queue waiting.
+Existing records keep their saved 30-minute or partition-default limits, including
+not-yet-prepared records. Do not update existing jobs or uploaded inputs/workers.
+The verified TIMEOUT recovery policy below remains unchanged: retain scores,
+record unscored timed-out compounds as terminal Amber failures, and proceed through
+the existing readiness/ranking gates without resubmission. Direct SSH is unchanged.
+The original 30-minute policy below is retained as historical context only.
+TOML now exposes `amber-slurm-time-limit = 600` (default), in seconds.
+Validate a positive integer (reject bool, float and strings), normalize to
+`HH:MM:SS` for Slurm, and pin it only when creating new array records.
+Keep it outside remote-environment settings so editing the TOML does not block
+recovery of an existing manifest, which retains its original time limit.
+
 New Amber Slurm array records pin `slurm_time_limit="00:30:00"` and copy it
 into the immutable remote input. Submit with `sbatch --time=00:30:00`: each
 original-compound task has 30 minutes of allocation runtime, including receptor
@@ -1466,3 +1505,61 @@ archive retries must be idempotent. This supersedes the timeout retention policy
 above and the blanket native-success/marker requirements in sections 19 and 21
 only for these verified array timeouts. Mock tests cover recovery and Prime
 readiness; no real cluster timeout or scientific calculation was exercised.
+
+## 23. Iteration distribution reporting (2026-10-21)
+
+**Confirmed user request:** provide a combined chemical-space map, substituent
+structure comparison and physicochemical/calculation-score distributions, and
+record the cumulative population status as each iteration progresses.
+
+**Implementation choices:** a separate read-only diagnostic subprocess, supervised
+by the driver, writes `output/analysis/index.html`, `summary.json`, the latest
+`iterNN.html`/`iterNN.json` cumulative checkpoint for each iteration, cached local
+SVG depictions under `molecules/`, and an append-only `distribution.log`. Console
+summaries also enter an existing redirected run log. These are diagnostics, not
+scientific selection inputs or additional completion gates.
+
+Refresh after verified Generate, Druglike, Glide, Amber, Prime and FEP-export
+completion, plus pending worker passes at most once per 300 seconds by default.
+A report failure is visible but does not stop scientific supervision. Unchanged
+snapshot/event/template combinations do not append duplicate log records.
+`distribution-report = false` disables automatic reports;
+`distribution-report-interval = 300` sets a positive pending-pass interval.
+Manual `molnova report project.toml [--iteration N]` reads existing DB data through
+N (including references), without project initialization, migrations, claims,
+external-program calls or descriptor backfills. Standalone scientific stage
+commands retain their existing behavior; use the manual command to refresh them.
+
+Use a single read-only SQLite transaction for compounds, saved scaffold snapshots
+and recorded Druglike memberships. Exclude nonfinite values from statistics and
+show valid/missing counts; do not replace missing scores with zero. Full-population
+20-bin histograms and min/quartile/median/max summaries support all DB rows,
+recorded Druglike passes and finite Prime-scored subsets separately. Property
+fields: MW, cLogP, TPSA, QED and SA; scores: Glide, Amber GBSA, Prime GBSA and FEP.
+Missing descriptor values remain missing until scientific workers persist them.
+Legacy cohorts without recorded Druglike membership remain explicitly unknown.
+
+For bounded diagnostic overhead, map at most 2,000 compounds in a deterministic,
+score-independent iteration-balanced sample. Morgan radius 2/2048-bit PCA uses a
+fixed seed and freezes the first non-degenerate generated sample's mean/components
+in `chemical_space_pca.json`; subsequent snapshots transform on those axes without
+refitting. Reference-only/degenerate previews do not freeze a model. PCA is the
+implemented projection, rather than the previously discussed UMAP option. Report
+training coverage/explained variance; a 2D projection does not prove structural
+identity, diversity or improved binding.
+
+For each iteration, estimate internal diversity as one minus mean pairwise
+Morgan/Tanimoto similarity on at most 200 deterministically sampled molecules.
+Also report the median maximum Tanimoto to the immediately preceding iteration's
+finite Prime top `gbsa-elite-count` compounds (ties by ID); this is not ancestry.
+Show sample, pair and elite counts; missing/insufficient populations give n/a.
+
+Use the exact saved generation scaffold and existing attachment-aware decomposition
+on at most 200 sampled original molecules. Show matched/total counts, scaffold
+identity and labelled attachment sites, and draw the top six fragments per site
+with frequencies among matched molecules. Do not infer new scaffolds, relax
+constraints, assign new parent relationships or compare R labels across different
+scaffolds. Existing symmetry matching is deterministic, not a unique chemical
+assignment. Clickable molecule structures, iteration/cohort/color filters and
+per-iteration boxplots/histograms work offline; copy HTML together with its
+`molecules/` folder. Computations and checks here do not validate target ranking.

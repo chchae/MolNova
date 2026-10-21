@@ -2,6 +2,7 @@
 import argparse
 from pathlib import Path
 
+from molnova.paths import stage_directory, stage_manifests
 from molnova import _core as c, amber_gbsa, database
 from molnova.prime_async import load_job as load_prime
 from molnova.stages._logging import timed_stage, work_started
@@ -14,7 +15,7 @@ def _run_stage(args, iteration):
         return
     if iteration < 0:
         raise ValueError('Amber GBSA requires iteration >= 0')
-    directory = args.output / f'iter{iteration}/amber_gbsa'
+    directory = stage_directory(args.output, iteration, 'amber_gbsa')
     directory.mkdir(parents=True, exist_ok=True)
     reason = database.docking_completion_reason(args.db_path, iteration, args.target_count) if iteration > 0 else None
     if reason or any(database.stage_is_running(args.db_path, stage) for stage in ('generate', 'synthetic_feasibility', 'ligprep', 'glide', 'mmgbsa')):
@@ -22,7 +23,7 @@ def _run_stage(args, iteration):
         return
     from molnova import schrodinger_guard as guard
     from molnova.glide_recovery import load_record
-    for path in (args.output / f'iter{iteration}/glide').glob('*/glide_job.json'):
+    for path in (stage_directory(args.output, iteration, 'glide')).glob('*/glide_job.json'):
         record = load_record(path.parent)
         if record.get('downloaded'):
             continue
@@ -33,7 +34,7 @@ def _run_stage(args, iteration):
         if not details or any(job.get('status') not in guard.TERMINAL for job in details):
             print(f'Amber GBSA waiting: saved Glide parent/children still active: {record["job_id"]}')
             return
-    if load_prime(args.output / f'iter{iteration}/mmgbsa') is not None or database.has_running_mmgbsa(args.db_path, iteration):
+    if load_prime(stage_directory(args.output, iteration, 'mmgbsa')) is not None or database.has_running_mmgbsa(args.db_path, iteration):
         print('Amber GBSA waiting for existing Prime claims/submissions. Recover them with molnova mmgbsa first.')
         return
     record = amber_gbsa.load_job(directory)
@@ -41,7 +42,7 @@ def _run_stage(args, iteration):
         import json
         for archived in directory.glob('run-*.completed.json'):
             amber_gbsa.verify_sources(args, iteration, json.loads(archived.read_text()))
-        other_records = [p for p in args.output.glob('iter*/amber_gbsa/amber_job.json') if p.parent != directory]
+        other_records = [p for p in stage_manifests(args.output, 'amber_gbsa', 'amber_job.json') if p.parent != directory]
         if other_records:
             print(f'Amber GBSA waiting for another saved iteration: {other_records[0]}')
             return

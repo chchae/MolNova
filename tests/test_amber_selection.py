@@ -131,7 +131,10 @@ def test_nonfinite_glide_scores_cannot_enter_amber_selection(population):
     assert database.claim_amber_candidates(db, 1, 1000, 2) == [997,996]
 
 
-def test_worker_honors_configured_glide_count_and_recovers_legacy_run(population, tmp_path, monkeypatch):
+@pytest.mark.parametrize('layout', ['iter1/amber_gbsa', 'iter01/07-amber_gbsa'])
+def test_worker_honors_configured_glide_count_and_recovers_legacy_run(population, tmp_path, monkeypatch, layout):
+    directory = tmp_path / layout
+    directory.mkdir(parents=True)
     args = SimpleNamespace(db_path=population, output=tmp_path, target_count=1000,
         amber_gbsa_enabled=True, amber_keep_count=500, gbsa_input_count=200,
         amber_receptor=tmp_path/'receptor.maegz', amber_charge_method='bcc',
@@ -148,7 +151,6 @@ def test_worker_honors_configured_glide_count_and_recovers_legacy_run(population
     # Recover a pre-change saved all-pose run intact, even with complete top-500 scores.
     old_ids = database.claim_amber_candidates(population,1,1000,1000)
     assert old_ids == list(range(500,0,-1))
-    directory = tmp_path/'iter1/amber_gbsa'
     amber_gbsa.new_record(args,1,directory,old_ids)
     def recover(args, iteration, directory, record):
         assert record['compound_ids'] == old_ids

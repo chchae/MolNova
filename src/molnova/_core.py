@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # LibInvent elite-guided iterative design with async Glide and SQLite.
 
+from molnova.paths import iteration_directory, stage_in_iteration
 import argparse
 import sqlite3
 import tomllib
@@ -155,8 +156,9 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_flexdist, fep_settings, debug_settings
+    from molnova.config import gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_flexdist, fep_settings, debug_settings, distribution_settings
     return debug_settings(config, {
+        **distribution_settings(config),
         **generation,
         **amber_settings(config, base),
         **gbsa_license_retry_settings(config),
@@ -4228,7 +4230,7 @@ def run_iteration_mmgbsa(
     compound_ids=None,
 ):
     from molnova.prime_async import load_job, submit_or_poll, job_file, persist_atomtyping_failures
-    mmgbsa_dir = iteration_dir / "mmgbsa"
+    mmgbsa_dir = stage_in_iteration(iteration_dir, 'mmgbsa')
     active = load_job(mmgbsa_dir)
     if active is not None and active.get("mode") == "compound_queue_v1":
         from molnova.gbsa_queue import poll_queue
@@ -4308,10 +4310,7 @@ def run_iteration_mmgbsa(
         )
         return 0
 
-    mmgbsa_dir = (
-        iteration_dir
-        / "mmgbsa"
-    )
+    mmgbsa_dir = stage_in_iteration(iteration_dir, 'mmgbsa')
 
     mmgbsa_dir.mkdir(
         parents=True,
@@ -4644,20 +4643,9 @@ def run_iteration(
     )
     print("=" * 70)
 
-    iteration_dir = (
-        args.output
-        / f"iter{iteration}"
-    )
-
-    reinvent_dir = (
-        iteration_dir
-        / "reinvent"
-    )
-
-    glide_dir = (
-        iteration_dir
-        / "glide"
-    )
+    iteration_dir = iteration_directory(args.output, iteration)
+    reinvent_dir = stage_in_iteration(iteration_dir, 'reinvent')
+    glide_dir = stage_in_iteration(iteration_dir, 'glide')
 
     reinvent_dir.mkdir(
         parents=True,

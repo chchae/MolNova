@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from molnova.paths import iteration_directory, stage_directory, stage_in_iteration
 from molnova import _core as c
 from molnova import database
 from molnova.stages._logging import WORK_STARTED, format_elapsed, progress
@@ -136,12 +137,12 @@ class StopFlag:
 
 def reference_work_pending(args):
     if (database.reference_mmgbsa_completion_reason(args.db_path) is not None
-            or (args.output / 'iter0/mmgbsa/prime_job.json').exists()):
+            or (stage_directory(args.output, 0, 'mmgbsa') / 'prime_job.json').exists()):
         return True
     if getattr(args, 'amber_gbsa_enabled', False):
         from molnova.amber_gbsa import load_job
         return (database.amber_completion_reason(args.db_path, 0, args.target_count) is not None
-                or load_job(args.output / 'iter0/amber_gbsa') is not None)
+                or load_job(stage_directory(args.output, 0, 'amber_gbsa')) is not None)
     return False
 
 
@@ -150,7 +151,7 @@ def reference_stages(args):
     if getattr(args, 'amber_gbsa_enabled', False):
         stages.insert(0, ('amber-gbsa', 'molnova.stages.amber_gbsa'))
         from molnova.prime_async import load_job
-        if (load_job(args.output / 'iter0/mmgbsa') is not None
+        if (load_job(stage_directory(args.output, 0, 'mmgbsa')) is not None
                 or database.has_running_mmgbsa(args.db_path, 0)):
             stages.insert(0, ('mmgbsa-recovery', 'molnova.stages.mmgbsa'))
     return stages
@@ -170,7 +171,7 @@ def choose_iteration(args, requested=None):
         )]
     for iteration in iterations:
         from molnova.amber_gbsa import load_job
-        if load_job(args.output / f'iter{iteration}/amber_gbsa') is not None:
+        if load_job(stage_directory(args.output, iteration, 'amber_gbsa')) is not None:
             return iteration
         if database.iteration_completion_reason(
             args.db_path, iteration, args.target_count, args.gbsa_input_count, 0, database.amber_keep_count(args)
@@ -186,7 +187,7 @@ def external_completion_reason(args, iteration, stage):
         stage = 'mmgbsa'
     if stage == 'amber-gbsa':
         from molnova.amber_gbsa import load_job
-        if load_job(args.output / f'iter{iteration}/amber_gbsa') is not None:
+        if load_job(stage_directory(args.output, iteration, 'amber_gbsa')) is not None:
             return 'Amber remote submission still requires recovery'
         return None
     if stage not in {"ligprep", "glide", "mmgbsa"}:
@@ -196,17 +197,17 @@ def external_completion_reason(args, iteration, stage):
     from molnova.prime_async import load_job as load_prime
     from molnova.amber_gbsa import load_job as load_amber
 
-    directory = args.output / f"iter{iteration}"
+    directory = iteration_directory(args.output, iteration)
     try:
-        if stage == 'mmgbsa' and load_amber(directory / 'amber_gbsa') is not None:
+        if stage == 'mmgbsa' and load_amber(stage_in_iteration(directory, 'amber_gbsa')) is not None:
             return 'Amber remote submission still requires recovery'
-        if stage == "ligprep" and load_ligprep(directory / "ligprep") is not None:
+        if stage == "ligprep" and load_ligprep(stage_in_iteration(directory, 'ligprep')) is not None:
             return "LigPrep submission still requires recovery"
-        if stage == "mmgbsa" and load_prime(directory / "mmgbsa") is not None:
+        if stage == "mmgbsa" and load_prime(stage_in_iteration(directory, 'mmgbsa')) is not None:
             return "MM-GBSA queue still requires recovery"
         if stage == "glide":
             from molnova.glide_recovery import load_record
-            for record_path in (directory / "glide").glob("*/glide_job.json"):
+            for record_path in (stage_in_iteration(directory, 'glide')).glob("*/glide_job.json"):
                 record = load_record(record_path.parent)
                 if not record.get("job_id"):
                     return "Glide launch identity remains uncertain"
@@ -229,8 +230,25 @@ def external_completion_reason(args, iteration, stage):
     return None
 
 
+def refresh_distribution_report(args, project_toml, iteration, event, stop):
+    """Supervise a diagnostic subprocess; report errors never gate calculations."""
+    if not getattr(args, 'distribution_report_enabled', False) or stop.is_set():
+        return
+    cmd = [sys.executable, '-m', 'molnova.distributions', str(project_toml),
+           '--iteration', str(iteration), '--event', event]
+    try:
+        rc = stream_process('report', cmd, project_toml.parent, stop)
+        if rc and not stop.is_set():
+            print(f'[report  ] distribution report failed (exit={rc}); previous report retained; '
+                  'calculation supervision continues.', flush=True)
+    except OSError as exc:
+        print(f'[report  ] cannot launch distribution report: {exc}; calculation supervision continues.', flush=True)
+
+
 def supervise_iteration(args, project_toml, iteration, stages, poll_interval, stop, once=False):
     """Run one worker at a time; exit only after this iteration's final stage."""
+    last_report = None
+    report_stages = {'generate', 'druglike', 'glide', 'amber-gbsa', 'mmgbsa', 'fep'}
     for stage, module in stages:
         if stop.is_set():
             return False
@@ -264,6 +282,9 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                     # Recovery alone does not finish the final Prime candidate set.
                     print(f"[driver  ] iteration {iteration}: {stage} complete "
                           f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
+                if stage in report_stages:
+                    refresh_distribution_report(args, project_toml, iteration, f'{stage}-complete', stop)
+                    last_report = time.monotonic()
                 break
             routine_gbsa_poll = (rc == 0 and stage in {'mmgbsa', 'mmgbsa-recovery'}
                                  and reason.startswith(('MM-GBSA still running for ',
@@ -271,6 +292,10 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                                                         'Existing Prime claims still running')))
             report = progress if routine_gbsa_poll else print
             report(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
+            if (last_report is None or time.monotonic() - last_report >=
+                    getattr(args, 'distribution_report_interval', 300)):
+                refresh_distribution_report(args, project_toml, iteration, f'{stage}-in-progress', stop)
+                last_report = time.monotonic()
             if once:
                 return False
             stop.wait(interval)
@@ -334,7 +359,7 @@ def main(argv=None):
                                getattr(args, 'amber_gbsa_enabled', False)))
         if iteration > 0 and getattr(args, 'amber_gbsa_enabled', False):
             from molnova.prime_async import load_job
-            if (load_job(args.output / f'iter{iteration}/mmgbsa') is not None
+            if (load_job(stage_directory(args.output, iteration, 'mmgbsa')) is not None
                     or database.has_running_mmgbsa(args.db_path, iteration)):
                 stages.insert(0, ('mmgbsa-recovery', 'molnova.stages.mmgbsa'))
         print("=" * 70)

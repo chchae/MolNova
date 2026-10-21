@@ -5,6 +5,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from molnova.paths import stage_manifests
 from molnova import _core as core, database, prime_async as prime
 from molnova.config import mmgbsa_job_options, prime_flexdist
 from molnova.gbsa_streaming import collect_completed_subjobs
@@ -15,7 +16,7 @@ MODE = 'native_batch_v1'
 
 
 def other_submission(args, directory):
-    return next((path for path in Path(args.output).glob('iter*/mmgbsa/prime_job.json')
+    return next((path for path in stage_manifests(args.output, 'mmgbsa', 'prime_job.json')
                  if path.parent.resolve() != Path(directory).resolve()), None)
 
 
