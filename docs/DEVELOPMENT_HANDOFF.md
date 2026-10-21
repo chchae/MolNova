@@ -21,6 +21,42 @@ limit, submission fencing, and completion/recovery checks remain in force.
 No existing results, jobs, or project directories were deleted by this change.
 
 
+## Two-attachment automatic MCS adjustment (2026-10-21)
+
+**Two-attachment automatic MCS adjustment (2026-10-21):** the user delegated
+selection of a safe policy for automatic MCS cores with more than two attachment
+boundaries. For new automatic LibInvent generation snapshots in N>1, count
+external bonds, including multiple bonds leaving the same core atom, before
+choosing attachments. Do not silently select two sites and leave other branches
+unrepresented. Validate exactly N-1's saved two-attachment scaffold against the
+fixed docking core and all selected elites; missing/incompatible history stops
+without saving a new snapshot.
+
+Implementation choice under that delegation: preserve the previous retained
+core and its two attachment labels. In the highest-ranked elite, consider
+inferred-MCS embeddings containing that retained core and extend each attachment
+along single-bond, acyclic, nonbranching common prefixes only. Stop before a
+branch, ring, multiple bond, the inferred-MCS boundary, or a terminal atom that
+would consume the entire decorator. Prefer the largest verified candidate,
+using canonical scaffold SMILES to break ties. This is a conservative linear
+extension rule, not a globally maximal two-boundary MCS search or a distance-only
+site selection. It never deletes a dummy while leaving an undeclared branch.
+
+Require exact canonical isomeric molecule recovery after decomposition and
+reassembly for every selected elite, including the previous scaffold used as
+fallback. Preserve the fixed docking core. If no extension passes, reuse the
+validated preceding scaffold with `fallback_reason=excess_attachment_sites`.
+Persist adjusted cores as `source=previous_attachment_guided_mcs`, with
+`attachment_from_iteration`, `attempted_mcs_smarts`, `attempted_attachment_count`
+and all current elite IDs. Fallbacks also record the attempted core/count.
+This policy supersedes the earlier no-shrink rule only for excessive boundaries
+in new automatic N>1 LibInvent cores. It does not change supplied cores,
+iteration 1, already pinned fixed cores, saved snapshots, combichem, elite
+selection, original-prior TL, vocabulary checks or completion gates. New fixed
+mode may pin the normally adjusted first choice; later resumes reuse it.
+Validation covers molecular graph decomposition/reassembly, not new target
+ranking, real TL/sampling or docking/GBSA calculations.
+
 ## Symmetric single-elite scaffold matching (2026-10-20)
 
 Iteration 7 rejected elite 62121 because the first symmetric atom embedding put
@@ -123,8 +159,14 @@ generation. Preserve zero-row preparation retries and all nonempty populations.
 Use `_workspace.py` for file/job/lock checks and `database.py` for transactional
 reset plus a full SQLite/WAL backup. Retain all original files and other iterations;
 never reset live/uncertain work. Druglike membership/cursor snapshots must be reset
-together, using attributable original IDs only. Corrupt partially deleted frozen
-populations fail before expensive sampling. The already running EGFR driver
+together, using attributable original IDs only. Each new druglike selection row
+now stores its iteration atomically, so deleting both compounds and output files
+still leaves membership evidence. Migration backfills only surviving compounds;
+legacy orphan rows remain unattributed. Reset accepts stored selection ownership,
+origins or the original report and rejects conflicting sources. Missing legacy
+ownership still blocks automatic cleanup; do not infer ID ranges or remove global
+orphans. Use the actual `synthetic_feasibility` stage lock alongside other locks.
+Corrupt partially deleted frozen populations fail before expensive sampling. The already running EGFR driver
 successfully recovered iteration 2 with this path; backup is in `.previous`.
 
 ## Native Prime batching (2026-10-20)

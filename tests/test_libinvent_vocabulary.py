@@ -100,9 +100,39 @@ def test_unsupported_pair_is_excluded_before_train_validation_split(tmp_path, mo
         skipped = list(csv.DictReader(stream, delimiter="\t"))
     assert skipped[0]["id"] == "1"
     assert json.loads(skipped[0]["unsupported_tokens"]) == ["[SH]"]
+    assert skipped[0]["reason"] == "unsupported_tokens"
     assert "id=1" in capsys.readouterr().out
     assert json.loads((tmp_path / "elite_vocabulary.json").read_text()) == VOCABULARY
     assert original[0] == (1, "ELITE_1", "C", 52, -8.0, -50.0)
+
+
+def test_unrepresented_scaffold_boundary_is_reported_for_each_elite(tmp_path):
+    # The MCS includes NC-C, leaving three sidechain boundaries. Selecting
+    # just two dummies leaves an unmarked branch on the terminal retained C.
+    scaffold = "[*:0]Cc1ccc(-c2cc3c(NC(C)[*:1])ncnc3[nH]2)cc1"
+    previous = "[*:0]Cc1ccc(-c2cc3c(N[*:1])ncnc3[nH]2)cc1"
+    smiles = [
+        "CCc1ccc(-c2cc3c(NC(CN4CCN(CC)CC4)c4ccncc4)ncnc3[nH]2)cc1",
+        "CCc1ccc(-c2cc3c(NC(CCN4CCN(C)CC4)c4cccnc4)ncnc3[nH]2)cc1",
+    ]
+    rows = [(i, f"ELITE_{i}", smi, 7, -9.0, -80.0) for i, smi in enumerate(smiles)]
+    assert all(_core.decompose_elite_for_libinvent(smi, previous) for smi in smiles)
+
+    metadata, train, valid, usable = _core.write_elite_libinvent_training_files(
+        rows, scaffold, tmp_path,
+    )
+
+    assert usable == 0 and train is None and valid is None
+    with (tmp_path / "elite_skipped.tsv").open() as stream:
+        skipped = list(csv.DictReader(stream, delimiter="\t"))
+    assert [row["id"] for row in skipped] == ["0", "1"]
+    assert all(row["reason"] == "cannot_decompose" for row in skipped)
+    assert all(json.loads(row["unsupported_tokens"]) == [] for row in skipped)
+    assert all(row["scaffold"] == _core._plain_libinvent_scaffold(scaffold) for row in skipped)
+    assert all(row["R-groups"] == "" for row in skipped)
+    with metadata.open() as stream:
+        assert list(csv.DictReader(stream, delimiter="\t")) == []
+    assert not (tmp_path / "elite_train.smi").exists()
 
 
 def test_too_few_compatible_pairs_are_not_split(tmp_path, monkeypatch):

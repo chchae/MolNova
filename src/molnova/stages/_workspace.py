@@ -20,7 +20,7 @@ def prepare_iteration_directory(args, iteration):
         return None  # Resume exactly the saved iteration, including zero-row plans.
     with ExitStack() as locks:
         if deleted:
-            for stage in ('druglike', 'synthetic', 'ligprep', 'glide', 'amber_gbsa', 'prime_gbsa', 'fep'):
+            for stage in ('druglike', 'synthetic_feasibility', 'ligprep', 'glide', 'amber_gbsa', 'prime_gbsa', 'fep'):
                 locks.enter_context(database.stage_lock(args.db_path, stage))
         return _prepare(args, iteration, deleted)
 

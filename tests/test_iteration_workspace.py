@@ -204,8 +204,9 @@ def test_deleted_population_is_not_reset_until_native_work_is_verified_terminal(
     assert not (deleted.output / '.previous').exists()
 
 
-def test_reset_refuses_another_active_stage(deleted):
-    with database.stage_lock(deleted.db_path, 'glide'):
+@pytest.mark.parametrize('stage', ['glide', 'synthetic_feasibility'])
+def test_reset_refuses_another_active_stage(deleted, stage):
+    with database.stage_lock(deleted.db_path, stage):
         with pytest.raises(RuntimeError, match='already running'):
             prepare_iteration_directory(deleted, 1)
     assert database.iteration_was_deleted(deleted.db_path, 1)
@@ -258,6 +259,8 @@ def test_partial_manual_deletion_fails_before_sampling_without_reset(deleted, mo
 @pytest.mark.parametrize('ownership', ['report', 'missing', 'disagree'])
 def test_reset_requires_proven_original_membership(deleted, ownership):
     with database.connect(deleted.db_path) as conn:
+        # Legacy populations deleted before migration have no saved owner.
+        conn.execute('UPDATE compound_druglike_selection SET iteration=NULL')
         ids = [row[0] for row in conn.execute('SELECT compound_id FROM combichem_compound_origin')]
         if ownership != 'disagree':
             conn.execute('DELETE FROM combichem_compound_origin')
@@ -275,6 +278,63 @@ def test_reset_requires_proven_original_membership(deleted, ownership):
             prepare_iteration_directory(deleted, 1)
         assert database.iteration_was_deleted(deleted.db_path, 1)
         assert (deleted.output / 'iter1/combichem/plan.json').read_text() == 'old plan'
+
+
+def test_deleted_libinvent_population_and_directory_reset_from_saved_selection_ownership(deleted):
+    import shutil
+    with database.connect(deleted.db_path) as conn:
+        conn.execute('DROP TABLE combichem_compound_origin')
+        conn.execute('DELETE FROM iteration_combichem')
+        expected = conn.execute('SELECT compound_id,iteration FROM compound_druglike_selection').fetchall()
+        assert len(expected) == 2 and all(row[1] == 1 for row in expected)
+    shutil.rmtree(deleted.output / 'iter1')
+    archive = prepare_iteration_directory(deleted, 1)
+    with sqlite3.connect(next(archive.glob('database-before-reset-*.sqlite'))) as backup:
+        assert backup.execute('SELECT compound_id,iteration FROM compound_druglike_selection').fetchall() == expected
+    with database.connect(deleted.db_path) as conn:
+        assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+        assert conn.execute('SELECT COUNT(*) FROM compound_druglike_selection').fetchone() == (0,)
+        assert conn.execute('SELECT COUNT(*) FROM compound WHERE iteration=0').fetchone() == (1,)
+    assert not database.iteration_was_deleted(deleted.db_path, 1)
+
+
+def test_deleted_population_reset_does_not_remove_another_iterations_selection(deleted):
+    with database.connect(deleted.db_path) as conn:
+        # Another deleted iteration has independent proven membership.
+        conn.execute('INSERT INTO iteration_druglike_selection VALUES (2,1,1,1.0)')
+        # Deliberately reproduce an existing FK orphan via an external client.
+    with sqlite3.connect(deleted.db_path) as conn:
+        conn.execute('INSERT INTO compound_druglike_selection VALUES (999,1,NULL,2)')
+    prepare_iteration_directory(deleted, 1)
+    with database.connect(deleted.db_path) as conn:
+        assert conn.execute('SELECT compound_id,iteration FROM compound_druglike_selection').fetchall() == [(999, 2)]
+        assert conn.execute('SELECT iteration FROM iteration_druglike_selection').fetchall() == [(2,)]
+
+
+def test_legacy_selection_migration_backfills_only_surviving_compounds(workspace):
+    with database.connect(workspace.db_path) as conn:
+        conn.execute('CREATE TABLE compound_druglike_selection ('
+                     'compound_id INTEGER PRIMARY KEY REFERENCES compound(id),passed INTEGER NOT NULL,reason TEXT)')
+        ref = conn.execute('SELECT id FROM compound').fetchone()[0]
+        conn.execute('INSERT INTO compound_druglike_selection VALUES (?,1,NULL)', (ref,))
+    with sqlite3.connect(workspace.db_path) as conn:
+        conn.execute("INSERT INTO compound_druglike_selection VALUES (999,0,'qed_rank')")
+    with database.connect(workspace.db_path) as conn:
+        _core.ensure_schema_columns(conn)
+        _core.ensure_schema_columns(conn)
+        assert conn.execute('SELECT compound_id,passed,reason,iteration FROM compound_druglike_selection '
+                            'ORDER BY compound_id').fetchall() == [(ref, 1, None, 0), (999, 0, 'qed_rank', None)]
+        assert conn.execute("SELECT name,state FROM compound").fetchall() == [('reference', 'reference')]
+
+
+def test_reset_rejects_conflicting_durable_selection_ownership(deleted):
+    with database.connect(deleted.db_path) as conn:
+        cid = conn.execute('SELECT MIN(compound_id) FROM compound_druglike_selection').fetchone()[0]
+        conn.execute('UPDATE compound_druglike_selection SET iteration=2 WHERE compound_id=?', (cid,))
+    with pytest.raises(RuntimeError, match='ownership and compound origins disagree'):
+        prepare_iteration_directory(deleted, 1)
+    assert database.iteration_was_deleted(deleted.db_path, 1)
+    assert (deleted.output / 'iter1/combichem/plan.json').is_file()
 
 
 def test_backup_contains_committed_wal_frames(deleted):

@@ -37,6 +37,24 @@ def ensure_rdkit_descriptor_columns(conn):
                      'WHERE sa_score IS NULL AND rdk_sa_score BETWEEN 1 AND 10')
 
 
+def ensure_druglike_selection_ownership(conn):
+    """Retain iteration ownership after manual deletion of compound rows.
+
+    Backfill only from surviving compounds during the non-destructive schema
+    migration. Already orphaned legacy rows remain unattributed, never guessed.
+    """
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='compound_druglike_selection'").fetchone():
+        return
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(compound_druglike_selection)')}
+    if 'iteration' in columns:
+        return
+    conn.execute('ALTER TABLE compound_druglike_selection ADD COLUMN iteration INTEGER')
+    conn.execute('UPDATE compound_druglike_selection SET iteration='
+                 '(SELECT c.iteration FROM compound c WHERE c.id=compound_id) '
+                 'WHERE EXISTS (SELECT 1 FROM compound c WHERE c.id=compound_id)')
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     return _core.open_sqlite(Path(path))
 
@@ -618,8 +636,8 @@ def reset_deleted_iteration(path, iteration, backup, report_ids=()):
     """Under all stage locks, back up SQLite/WAL and reset only a deleted iteration.
 
     The caller verifies native jobs and archives working files. Membership IDs
-    must come from saved combichem origins or the original druglike report, never
-    from guessed SQLite ID ranges. Existing compound rows are never removed.
+    must come from saved selection ownership, combichem origins or the original
+    druglike report, never guessed ID ranges. Existing compounds are never removed.
     """
     if iteration < 1:
         raise ValueError('Cannot reset iteration zero')
@@ -633,6 +651,13 @@ def reset_deleted_iteration(path, iteration, backup, report_ids=()):
         ids = {row[0] for row in conn.execute(
             'SELECT compound_id FROM combichem_compound_origin WHERE iteration=?', (iteration,))
                } if 'combichem_compound_origin' in tables else set()
+        if ('compound_druglike_selection' in tables and 'iteration' in
+                {row[1] for row in conn.execute('PRAGMA table_info(compound_druglike_selection)')}):
+            selected = {row[0] for row in conn.execute(
+                'SELECT compound_id FROM compound_druglike_selection WHERE iteration=?', (iteration,))}
+            if ids and selected and ids != selected:
+                raise RuntimeError('Saved selection ownership and compound origins disagree; reset blocked')
+            ids = ids or selected
         reported = set(report_ids)
         if reported:
             if ids and reported != ids:
@@ -641,8 +666,8 @@ def reset_deleted_iteration(path, iteration, backup, report_ids=()):
         saved = conn.execute('SELECT population_count FROM iteration_druglike_selection WHERE iteration=?',
                              (iteration,)).fetchone() if 'iteration_druglike_selection' in tables else None
         if saved and len(ids) != saved[0]:
-            raise RuntimeError('Cannot identify deleted selection members; original druglike report '
-                               'or compound origins required before reset')
+            raise RuntimeError('Cannot identify deleted selection members; original druglike report, '
+                               'saved selection ownership or compound origins required before reset')
         conn.execute('CREATE TEMP TABLE reset_compound_ids(id INTEGER PRIMARY KEY)')
         conn.executemany('INSERT INTO reset_compound_ids VALUES (?)', ((cid,) for cid in ids))
         if conn.execute('SELECT 1 FROM compound WHERE id IN (SELECT id FROM reset_compound_ids) '
@@ -774,7 +799,8 @@ def apply_druglike_selection(path, iteration, target_count, selections, sa_ratio
                      'accepted_count INTEGER NOT NULL,sa_ratio REAL NOT NULL)')
         conn.execute('CREATE TABLE IF NOT EXISTS compound_druglike_selection ('
                      'compound_id INTEGER PRIMARY KEY REFERENCES compound(id),'
-                     'passed INTEGER NOT NULL CHECK(passed IN (0,1)),reason TEXT)')
+                     'passed INTEGER NOT NULL CHECK(passed IN (0,1)),reason TEXT,iteration INTEGER)')
+        ensure_druglike_selection_ownership(conn)
         saved = conn.execute('SELECT population_count,accepted_count,sa_ratio '
                              'FROM iteration_druglike_selection WHERE iteration=?', (iteration,)).fetchone()
         if saved:
@@ -795,7 +821,9 @@ def apply_druglike_selection(path, iteration, target_count, selections, sa_ratio
         for row in selections:
             passed = row['druglike_selected'] and row['id'] in sa_ids
             reason = row['druglike_reject_reason'] if not row['druglike_selected'] else (None if passed else 'sa_rank')
-            conn.execute('INSERT INTO compound_druglike_selection VALUES (?,?,?)', (row['id'], int(passed), reason))
+            conn.execute('INSERT INTO compound_druglike_selection '
+                         '(compound_id,passed,reason,iteration) VALUES (?,?,?,?)',
+                         (row['id'], int(passed), reason, iteration))
             if not passed:
                 conn.execute('UPDATE compound SET state=?,modified_at=CURRENT_TIMESTAMP WHERE id=?',
                              (State.DRUGLIKE_REJECTED, row['id']))

@@ -246,8 +246,9 @@ def create_sqlite_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_compound_similar_to "
         "ON compound(similar_to)"
     )
-    from molnova.database import ensure_rdkit_descriptor_columns
+    from molnova.database import ensure_rdkit_descriptor_columns, ensure_druglike_selection_ownership
     ensure_rdkit_descriptor_columns(conn)
+    ensure_druglike_selection_ownership(conn)
 
 
 
@@ -281,8 +282,9 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
                 f"ALTER TABLE compound ADD COLUMN {name} {sql_type}"
             )
 
-    from molnova.database import ensure_rdkit_descriptor_columns
+    from molnova.database import ensure_rdkit_descriptor_columns, ensure_druglike_selection_ownership
     ensure_rdkit_descriptor_columns(conn)
+    ensure_druglike_selection_ownership(conn)
 
     # Refresh columns after migration so legacy status columns can be used once
     # to infer the new single state.
@@ -1074,12 +1076,22 @@ class InsufficientAttachmentSitesError(RuntimeError):
         self.mcs_smarts = mcs_smarts
 
 
+class ExcessAttachmentSitesError(RuntimeError):
+    """An automatic LibInvent core needs more than two external bonds."""
+
+    def __init__(self, mcs_smarts, count):
+        super().__init__(f'Automatic MCS needs {count} attachment boundaries; LibInvent supports two.')
+        self.mcs_smarts = mcs_smarts
+        self.count = count
+
+
 def determine_libinvent_attachment_sites(
     references,
     mcs_smarts,
     override=None,
     *,
     all_sites=False,
+    reject_excess=False,
 ):
     """
     Identify the two MCS atoms most frequently connected to substituents
@@ -1160,6 +1172,10 @@ def determine_libinvent_attachment_sites(
     candidates.sort(
         key=lambda x: (-x[0], -x[1], x[2])
     )
+
+    boundary_count = sum(max_external[qidx] for _, _, qidx in candidates)
+    if reject_excess and boundary_count > 2:
+        raise ExcessAttachmentSitesError(mcs_smarts, boundary_count)
 
     if all_sites and not candidates:
         raise InsufficientAttachmentSitesError(
@@ -1321,6 +1337,8 @@ def prepare_libinvent_scaffold(
     output_root,
     mcs_timeout=60,
     attachment_override=None,
+    *,
+    reject_excess_attachments=False,
 ):
     """
     Resolve the common core and prepare the LibInvent scaffold.
@@ -1425,6 +1443,7 @@ def prepare_libinvent_scaffold(
             matched_references,
             mcs_smarts,
             override=attachment_override,
+            reject_excess=reject_excess_attachments,
         )
 
         scaffold_smiles = build_libinvent_scaffold(
@@ -1934,6 +1953,9 @@ def write_elite_libinvent_training_files(
                 f"id={compound_id}, name={name}, "
                 f"docking={docking_score}, prime_gbsa={prime_gbsa_score}"
             )
+            skipped.append((compound_id, name, "[]",
+                            _plain_libinvent_scaffold(scaffold_smiles), "",
+                            "cannot_decompose"))
             continue
 
         scaffold, decorators = pair
@@ -1943,7 +1965,8 @@ def write_elite_libinvent_training_files(
             if invalid_tokens:
                 tokens = sorted(invalid_tokens)
                 print(f"Skipping TL elite: id={compound_id}, unsupported tokens={tokens}")
-                skipped.append((compound_id, name, json.dumps(tokens), scaffold, decorators))
+                skipped.append((compound_id, name, json.dumps(tokens), scaffold, decorators,
+                                "unsupported_tokens"))
                 continue
 
         mol = Chem.MolFromSmiles(smiles)
@@ -1980,7 +2003,7 @@ def write_elite_libinvent_training_files(
 
     with (run_dir / "elite_skipped.tsv").open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter="\t")
-        writer.writerow(["id", "name", "unsupported_tokens", "scaffold", "R-groups"])
+        writer.writerow(["id", "name", "unsupported_tokens", "scaffold", "R-groups", "reason"])
         writer.writerows(skipped)
 
     with metadata.open(

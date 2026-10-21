@@ -81,7 +81,8 @@ def mcs_display_summary(smarts):
     return smarts
 
 
-def _previous_scaffold_fallback(args, iteration, inputs, docking_smarts, error):
+def _previous_scaffold_fallback(args, iteration, inputs, docking_smarts, error, *,
+                                reason='insufficient_attachment_sites'):
     """Reuse only N-1's saved scaffold, after checking every selected elite."""
     previous = database.iteration_scaffold(args.db_path, iteration - 1)
     try:
@@ -118,7 +119,7 @@ def _previous_scaffold_fallback(args, iteration, inputs, docking_smarts, error):
         'source': 'previous_iteration_scaffold_fallback',
         'source_ids': [ref['id'] for ref in inputs],
         'fallback_from_iteration': iteration - 1,
-        'fallback_reason': 'insufficient_attachment_sites',
+        'fallback_reason': reason,
         'attempted_mcs_smarts': error.mcs_smarts,
     }
 
@@ -163,10 +164,15 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
             source = f"single elite sidechain C-H expansion from iteration {snapshot['expansion_from_iteration']}"
         elif source == 'single_elite_sidechain_replacement':
             source = f"single elite terminal sidechain replacement from iteration {snapshot['replacement_from_iteration']}"
+        elif source == 'previous_attachment_guided_mcs':
+            source = f"two-site MCS adjustment from iteration {snapshot['attachment_from_iteration']}"
         if snapshot.get('fallback_reason') == 'insufficient_attachment_sites':
             problem = ('no attachment sites' if snapshot.get('generation_method') == 'combichem' else
                        'fewer than two attachment sites')
             print(f"[MCS] Iteration {iteration}: automatic MCS had {problem}; "
+                  f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
+        elif snapshot.get('fallback_reason') == 'excess_attachment_sites':
+            print(f"[MCS] Iteration {iteration}: automatic MCS exceeded two attachment boundaries; "
                   f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
         summary = mcs_display_summary(snapshot['mcs_smarts'])
         label = 'generation core summary' if summary != snapshot['mcs_smarts'] else 'generation core'
@@ -256,7 +262,25 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
                     else:
                         info = _core.prepare_libinvent_scaffold(
                             inputs, supplied if use_supplied else None, Path(temporary), mcs_timeout=args.mcs_timeout,
+                            reject_excess_attachments=iteration > 1 and not use_supplied,
                         )
+            except _core.ExcessAttachmentSitesError as error:
+                # Only new, automatic LibInvent cores use attachment-guided reduction.
+                from molnova.chemistry.libinvent_scaffold import reduce_to_two_attachments
+                snapshot = _previous_scaffold_fallback(
+                    args, iteration, inputs, initial['mcs_smarts'], error,
+                    reason='excess_attachment_sites',
+                )
+                snapshot['attempted_attachment_count'] = error.count
+                adjusted = reduce_to_two_attachments(
+                    inputs, error.mcs_smarts, snapshot, initial['mcs_smarts'],
+                )
+                if adjusted is not None:
+                    snapshot = dict(adjusted, source='previous_attachment_guided_mcs',
+                                    source_ids=[ref['id'] for ref in inputs],
+                                    attachment_from_iteration=iteration - 1,
+                                    attempted_mcs_smarts=error.mcs_smarts,
+                                    attempted_attachment_count=error.count)
             except _core.InsufficientAttachmentSitesError as error:
                 if use_supplied or iteration == 1:
                     raise

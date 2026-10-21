@@ -243,7 +243,8 @@ def _run_stage(args, requested_iteration):
         if usable < 2:
             raise RuntimeError(
                 f"Too few usable GBSA elites for LibInvent TL ({usable}; need at least 2). "
-                f"See {run_dir / 'elite_skipped.tsv'} for unsupported-token exclusions."
+                f"See {run_dir / 'elite_skipped.tsv'} for decomposition failures "
+                "and unsupported-token exclusions."
             )
         model = c.run_libinvent_elite_transfer_learning(
             run_dir=run_dir,

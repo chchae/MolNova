@@ -502,6 +502,40 @@ Log the fallback on creation/resume; resumes reuse the saved choice without
 recomputing. Preserve completion gates, fixed-core pinning, original-prior TL,
 prior-vocabulary preflight, docking constraints and all existing snapshots/results/jobs.
 
+**Two-attachment automatic MCS adjustment (2026-10-21):** the user delegated
+selection of a safe policy for automatic MCS cores with more than two attachment
+boundaries. For new automatic LibInvent generation snapshots in N>1, count
+external bonds, including multiple bonds leaving the same core atom, before
+choosing attachments. Do not silently select two sites and leave other branches
+unrepresented. Validate exactly N-1's saved two-attachment scaffold against the
+fixed docking core and all selected elites; missing/incompatible history stops
+without saving a new snapshot.
+
+Implementation choice under that delegation: preserve the previous retained
+core and its two attachment labels. In the highest-ranked elite, consider
+inferred-MCS embeddings containing that retained core and extend each attachment
+along single-bond, acyclic, nonbranching common prefixes only. Stop before a
+branch, ring, multiple bond, the inferred-MCS boundary, or a terminal atom that
+would consume the entire decorator. Prefer the largest verified candidate,
+using canonical scaffold SMILES to break ties. This is a conservative linear
+extension rule, not a globally maximal two-boundary MCS search or a distance-only
+site selection. It never deletes a dummy while leaving an undeclared branch.
+
+Require exact canonical isomeric molecule recovery after decomposition and
+reassembly for every selected elite, including the previous scaffold used as
+fallback. Preserve the fixed docking core. If no extension passes, reuse the
+validated preceding scaffold with `fallback_reason=excess_attachment_sites`.
+Persist adjusted cores as `source=previous_attachment_guided_mcs`, with
+`attachment_from_iteration`, `attempted_mcs_smarts`, `attempted_attachment_count`
+and all current elite IDs. Fallbacks also record the attempted core/count.
+This policy supersedes the earlier no-shrink rule only for excessive boundaries
+in new automatic N>1 LibInvent cores. It does not change supplied cores,
+iteration 1, already pinned fixed cores, saved snapshots, combichem, elite
+selection, original-prior TL, vocabulary checks or completion gates. New fixed
+mode may pin the normally adjusted first choice; later resumes reuse it.
+Validation covers molecular graph decomposition/reassembly, not new target
+ranking, real TL/sampling or docking/GBSA calculations.
+
 Persist the effective supplied value as `supplied_elite_mcs` in the immutable
 SQLite generation snapshot. Resumes, failed TL/sampling and replenishment reuse
 that snapshot; unchanged TOML values do not reapply the input each cycle. A new
@@ -1339,9 +1373,17 @@ Keep reference/other-iteration compound rows and the AUTOINCREMENT sequence.
 
 In one transaction clear only the deleted iteration's scaffold, pools/cursors,
 combichem history/origins/batches, frozen druglike/SA/FEP selections and associated
-orphan selection/failure rows. Attribute orphan IDs through saved origins or the
-original druglike report; never guess ID ranges or delete all global orphans.
-Missing/contradictory ownership evidence blocks reset. Later dependent iteration
+orphan selection/failure rows. New frozen druglike rows persist their iteration
+in `compound_druglike_selection`, in the same transaction as the selection.
+Non-destructive migration backfills that column only from surviving compounds;
+already orphaned legacy rows remain NULL rather than receiving guessed owners.
+Attribute orphan IDs through this saved selection ownership, saved origins or
+the original druglike report; independent nonempty sources must agree. This
+supports deletion of both compound rows and output folders when ownership was
+stored beforehand. Never guess ID ranges or delete all global orphans.
+Missing/contradictory ownership evidence still blocks automatic reset; legacy
+populations deleted before migration require original evidence or an explicitly
+authorized, separately backed-up repair. Later dependent iteration
 compounds also block reset. Restart timing and pin a fresh raw_v1 workspace in
 the same transaction. Roll back and restore the files on reset failure; retained
 backups permit retry. Never overwrite a previous backup.
