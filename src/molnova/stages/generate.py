@@ -214,6 +214,8 @@ def _run_stage(args, requested_iteration):
                 args.prime_gbsa_input_count, args.prime_gbsa_elite_count,
                 database.amber_keep_count(args),
             )
+            if reason is None and database.md_gbsa_selection(args.db_path,completed_iteration) is not None:
+                reason = database.md_gbsa_completion_reason(args.db_path,completed_iteration)
             if reason is not None:
                 print(f"Iteration {iteration} not ready: iteration "
                       f"{completed_iteration}: {reason}.")
@@ -221,12 +223,19 @@ def _run_stage(args, requested_iteration):
 
         work_started(f"Iteration {iteration}: starting " + (
             'elite-guided combichem generation.' if combichem else 'elite transfer learning and sampling.'))
-        elites = database.iteration_prime_gbsa_elites(
+        use_md = (getattr(args,'md_gbsa_enabled',False) or
+                  database.md_gbsa_selection(args.db_path,previous) is not None)
+        if use_md:
+            reason = database.md_gbsa_completion_reason(args.db_path,previous,args.prime_gbsa_elite_count)
+            if reason:
+                print(f"Iteration {iteration} not ready: {reason}.")
+                return
+        elites = (database.iteration_md_gbsa_elites if use_md else database.iteration_prime_gbsa_elites)(
             args.db_path, previous, args.prime_gbsa_elite_count,
         )
         if len(elites) < args.prime_gbsa_elite_count:
             raise RuntimeError(
-                f"Need {args.prime_gbsa_elite_count} previous prime_gbsa elites; only {len(elites)} available."
+                f"Need {args.prime_gbsa_elite_count} previous GBSA elites; only {len(elites)} available."
             )
         prepare_iteration_directory(args, iteration)
         run_dir = stage_directory(args.output, iteration, 'combichem' if combichem else 'reinvent')
@@ -239,6 +248,7 @@ def _run_stage(args, requested_iteration):
             elites, args.libinvent_scaffold_smiles, run_dir,
             prior_file=args.libinvent_prior,
             remote=getattr(args, "remote_reinvent", None),
+            **({"score_source":"md_gbsa"} if use_md else {}),
         )
         if usable < 2:
             raise RuntimeError(

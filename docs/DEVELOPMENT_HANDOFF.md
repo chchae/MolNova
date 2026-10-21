@@ -1,5 +1,117 @@
 # MolNova Development Handoff
 
+## Optional Desmond / Prime MD-GBSA (2026-10-21)
+
+**Confirmed user requirements, implemented:** strict boolean TOML `md-gbsa`
+(default `false`) enables `prime_gbsa -> md-gbsa -> FEP` for generated iterations.
+Without this flag, legacy scheduling/ranking remains unchanged. Saved MD work is
+recovered even if the flag is subsequently disabled; an existing frozen MD
+policy continues to govern that iteration's downstream selection.
+
+After the final Prime candidate set and all saved upstream jobs retire, freeze
+finite completed Prime results in ascending score/ID order: the best half
+(rounded up), or `md-gbsa-input-count` when supplied. Freeze ownership, protocol,
+remote paths, source/helper hashes and candidate IDs in one SQLite transaction.
+Do not refill failures or change this selection when TOML/ranking changes.
+Use the published final optimized per-ligand Prime receptor/ligand pair, preserving
+`CMPID_<id>` and original atom IDs, bonds, ligand identity and ions/metals/cofactors.
+Unsupported parameters or identity changes fail that compound; no silent removal.
+
+**Implemented scientific protocol, not a user-validated accuracy claim:**
+OPLS4, SPC water, orthorhombic 10 Å buffer, neutralization and 0.15 M NaCl;
+installed Desmond standard NPT relaxation (160 ps in the verified installation),
+then configurable additional equilibration (default 1 ns), then separate
+unrestrained NPT production (300 K, 1.01325 bar; default 5 ns, configurable to
+20 ns or other positive durations). One replica by default; replicas use distinct
+seeds. Select 20–100 distinct, evenly spaced frames (default 20) from the final
+80% of production, excluding equilibration. Retain original receptor components
+and remove only solvent/ions added by the builder. Record ligand RMSD after
+receptor-backbone alignment; do not invent a convergence claim or independence
+of correlated frames. Prime uses verified native `-job_type ENERGY -frozen`
+single-point calculations with explicit ligand identity and no minimization.
+Store every frame score/time/RMSD, native journals, replica means, ensemble mean,
+sample standard deviation (not SEM) and snapshot count. Publish only a complete,
+finite ensemble across every requested replica.
+
+SQLite stores `md_gbsa_score`, `md_gbsa_std`, `md_gbsa_snapshots`, immutable
+`iteration_md_gbsa_selection` and `compound_md_gbsa_result`; preserve Prime scores.
+The immediately preceding iteration's MD mean exclusively ranks elites and FEP
+when that iteration has an MD policy (or MD is enabled). No Prime fallback for
+missing MD results. Old frozen FEP selections are preserved; exporting them under
+a newly added MD policy requires explicit reconciliation. Imports still honor the
+original frozen FEP selection. Enough finite MD elites remain mandatory for TL,
+which still starts from the original LibInvent prior.
+
+Desmond runs through native `slurm-gpu`, one GPU per umbrella workflow, up to
+`md-gbsa-gpus` (default/cap 20) active tasks in this project. Prime snapshot batches
+run through `slurm-cpu` with at most `min(7, md-gbsa-cpus)` concurrent native jobs
+(default CPU budget 384, existing seven-job ceiling retained). Ensembles queue
+behind other active Prime work. A shared local submission mutex and durable SSH
+registry extend Glide/Prime fencing across the local and Slurm JobServers.
+Unknown launches and unavailable JobServers block resubmission/advancement.
+Persist intent before submission, recover exact JobIds, require terminal native
+parent/children and validated output before publishing; a zero launcher exit or
+cached file alone never proves completion. Native checkpoints/output remain in
+the frozen remote workspace; restart reconnects, never blindly restarts dynamics.
+Confirmed native failure preserves checkpoints for operator-directed recovery.
+
+Use `molnova md-gbsa project.toml --iteration N` or the normal supervisor. Local
+artifacts use `09-md_gbsa`; new FEP artifacts following it use `10-fep`. Preserve
+existing `09-fep`/legacy directories and all saved job paths. Enabling MD for an
+existing project backfills the latest completed generated iteration before the
+next generation; it does not schedule MD for every historical iteration.
+
+**External evidence (isolated smoke, not production or 5 ns validation):**
+on 2026-10-21, an optimized EGFR pair completed 160 ps standard relaxation,
+2 ps extra equilibration and 2 ps production using GPU Desmond on Slurm `gpu56`,
+Slurm job `99331`; the native log identifies `gdesmond`, GPU device 0 and CUDA.
+Twenty distinct production snapshots passed atom/connectivity validation.
+Prime snapshot scoring completed through `slurm-cpu` on `cpu2`, Slurm parent
+`99332`, with 20 finite energies: mean −86.16107092256735 kcal/mol and sample
+standard deviation 2.526891884724623 kcal/mol. Both native parents and all returned
+children were verified terminal; both parents were DONE. The real ensemble was
+stored in a separate validation SQLite DB and selected through the MD elite/FEP
+APIs while preserving the copied Prime score (−83.11457050598983). Production DB
+was opened read-only. Evidence: `examples/egfr-mol2mol/output/analysis/`
+`md-gbsa-smoke-20261021T121655Z/validated-slurm-2026-1/verification.json`, with
+snapshot TSV, terminal JobServer records and logs; native data remain in a
+dedicated remote workspace. These numbers validate execution/collection, not
+a converged affinity estimate.
+The site JobServer is **2026-1, API v1.19.4**; installed 2026-3 client API v1.21.2
+(and 2026-2 v1.20.5) cannot launch against it. Smoke execution explicitly used
+`/share/opt/schrodinger/2026-1`. Default configured suite remains 2026-3; preflight
+rejects this mismatch before claiming compounds. Set an explicitly compatible
+`md-gbsa-schrodinger` or upgrade the site server; never silently downgrade or
+restart a production JobServer. Full 5/20 ns accuracy/convergence remains unverified.
+
+**Regression evidence:** 1,184 full-suite tests passed; an additional deleted-MD
+recovery regression was subsequently included in a 74-test targeted pass.
+Editable installation, syntax/import checks and diff whitespace checks passed.
+An intermittent concurrent first-open WAL transition observed during testing was
+fixed with bounded BUSY/LOCKED retries within the existing 30-second limit; other
+SQLite errors propagate and close the connection.
+
+Configuration example (remote paths remain remote):
+
+```toml
+md-gbsa = true
+md-gbsa-production-ns = 5.0
+md-gbsa-equilibration-ns = 1.0
+md-gbsa-snapshots = 20
+md-gbsa-analysis-start-fraction = 0.2
+md-gbsa-input-ratio = 0.5
+# md-gbsa-input-count = 10  # overrides ratio
+md-gbsa-replicates = 1
+md-gbsa-seed = 20261021
+md-gbsa-gpus = 20
+md-gbsa-cpus = 384
+md-gbsa-ssh-host = "slurm"
+md-gbsa-gpu-host = "slurm-gpu"
+md-gbsa-cpu-host = "slurm-cpu"
+md-gbsa-schrodinger = "/share/opt/schrodinger/2026-1" # explicitly tested site version
+md-gbsa-remote-work-dir = "/homes1/chchae/molnova-md-gbsa-runs"
+```
+
 ## Confirmed calculation naming (2026-10-21)
 
 The user requested fresh projects and waived compatibility with prior work for

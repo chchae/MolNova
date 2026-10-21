@@ -88,6 +88,13 @@ prime-gbsa-license-retries = 3
 # 유연한 receptor는 화합물별 complex 입력으로 처리하여 각 ligand 주변 6 Å 설정을 유지합니다.
 # Iteration 0은 입력 reference 전체를 평가하므로 500/50 제한을 적용하지 않습니다.
 
+
+md-gbsa = true
+md-gbsa-snapshots = 20
+md-gbsa-production-ns = 5.0
+md-gbsa-schrodinger = "/share/opt/schrodinger/2026-1"
+
+
 # 7. FEP 후보 export / 결과 import; 실제 FEP 계산은 외부 protocol로 별도 수행
 # Prime 결과가 있으면 Prime best 20, 없으면 Amber best 20, 둘 다 없으면 Glide best 20
 # 한 score source만 사용하며 후보 ID·source·순위를 저장하여 restart/import 시 유지합니다.

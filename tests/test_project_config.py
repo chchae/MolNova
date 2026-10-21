@@ -25,6 +25,32 @@ aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 '''
 
 
+@pytest.mark.parametrize('extra, enabled', [('', False), ('md-gbsa = false\n', False),
+                                            ('md-gbsa = true\n', True)])
+def test_md_gbsa_flag_defaults_to_false_and_loads_boolean(tmp_path, extra, enabled):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + extra)
+    assert _core.load_project_toml(project)['md_gbsa_enabled'] is enabled
+
+
+@pytest.mark.parametrize('value', ['"true"', '"false"', '1', '0', '1.0', '[]'])
+def test_md_gbsa_flag_rejects_non_booleans(tmp_path, value):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + f'md-gbsa = {value}\n')
+    with pytest.raises(ValueError, match='md-gbsa must be a boolean'):
+        _core.load_project_toml(project)
+
+
+def test_md_gbsa_protocol_defaults_are_configurable():
+    from molnova.config import md_gbsa_settings
+    settings=md_gbsa_settings({'md-gbsa': True, 'md-gbsa-production-ns':20})
+    assert settings['md_gbsa_enabled'] is True
+    assert settings['md_gbsa_production_ns']==20
+    assert settings['md_gbsa_snapshots']==20
+    assert settings['md_gbsa_gpu_host']=='slurm-gpu'
+    assert settings['md_gbsa_cpu_host']=='slurm-cpu'
+
+
 def test_prime_gbsa_toml_keys_reach_worker_settings(tmp_path):
     project = tmp_path / 'project.toml'
     project.write_text(PROJECT_TOML + '''

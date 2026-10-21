@@ -278,3 +278,40 @@ def test_stage_lock_rejects_overlapping_invocation(tmp_path):
         with pytest.raises(RuntimeError, match="already running"):
             with database.stage_lock(db, "prime_gbsa"):
                 pass
+
+
+def test_wal_initialization_retries_only_sqlite_lock_errors(monkeypatch):
+    import sqlite3
+    from molnova import _core
+    calls=[]
+    class Connection:
+        attempts=0
+        def execute(self,sql):
+            calls.append(sql)
+            if sql=='PRAGMA journal_mode=WAL':
+                self.attempts+=1
+                if self.attempts==1:
+                    error=sqlite3.OperationalError('database is locked')
+                    error.sqlite_errorcode=sqlite3.SQLITE_BUSY
+                    raise error
+        def close(self):
+            calls.append('closed')
+    connection=Connection()
+    monkeypatch.setattr(_core.sqlite3,'connect',lambda *a,**kw:connection)
+    monkeypatch.setattr(_core.time,'sleep',lambda seconds:None)
+    assert _core.open_sqlite('unused') is connection
+    assert calls==['PRAGMA busy_timeout=30000','PRAGMA journal_mode=WAL','PRAGMA journal_mode=WAL','PRAGMA foreign_keys=ON']
+
+
+def test_non_lock_wal_error_closes_connection_without_retry(monkeypatch):
+    import sqlite3
+    from molnova import _core
+    from unittest.mock import Mock
+    connection=Mock()
+    error=sqlite3.OperationalError('not a database')
+    error.sqlite_errorcode=sqlite3.SQLITE_NOTADB
+    connection.execute.side_effect=error
+    monkeypatch.setattr(_core.sqlite3,'connect',lambda *a,**kw:connection)
+    with pytest.raises(sqlite3.OperationalError,match='not a database'):
+        _core.open_sqlite('unused')
+    connection.close.assert_called_once()

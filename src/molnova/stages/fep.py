@@ -28,7 +28,7 @@ def export_candidates(args, iteration):
     outdir.mkdir(parents=True, exist_ok=True)
     outfile = outdir / 'fep_candidates.tsv'
     fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'prime_gbsa_score',
-              'fep_score', 'state', 'ranking_source', 'ranking_score']
+              'fep_score', 'state', 'md_gbsa_score', 'ranking_source', 'ranking_score']
     fd, temporary = tempfile.mkstemp(dir=outdir, prefix='candidates-')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8', newline='') as stream:
@@ -88,7 +88,7 @@ def _run_stage(args, ns):
     if iteration is None:
         print("No scored compounds currently require FEP staging.")
         return
-    for stage in ('generate', 'druglike', 'synthetic_feasibility', 'ligprep', 'glide', 'amber_gbsa', 'prime_gbsa'):
+    for stage in ('generate', 'druglike', 'synthetic_feasibility', 'ligprep', 'glide', 'amber_gbsa', 'prime_gbsa', 'md_gbsa'):
         if database.stage_is_running(args.db_path, stage):
             raise RuntimeError(f'FEP waiting for {stage} worker')
     from molnova import amber_gbsa, prime_gbsa_async, ligprep_recovery
@@ -101,6 +101,10 @@ def _run_stage(args, ns):
     reason = external_completion_reason(args, iteration, 'glide')
     if reason:
         raise RuntimeError(f'FEP waiting: {reason}')
+    if (getattr(args,'md_gbsa_enabled',False) or database.md_gbsa_selection(args.db_path,iteration) is not None):
+        reason = database.md_gbsa_completion_reason(args.db_path,iteration)
+        if reason:
+            raise RuntimeError('FEP waiting: '+reason)
     work_started(f"Iteration {iteration}: exporting FEP candidates.")
     export_candidates(args, iteration)
     print("FEP+ execution is intentionally not automated yet; configure the FEP protocol first.")

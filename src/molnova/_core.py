@@ -26,10 +26,26 @@ from rdkit.Chem import rdFingerprintGenerator, rdFMCS
 def open_sqlite(path):
     """Open SQLite for concurrent stage workers."""
     conn = sqlite3.connect(path, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        # Concurrent first connections can race the rollback-to-WAL change;
+        # SQLite may return BUSY here without invoking its busy handler.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if (getattr(exc, 'sqlite_errorcode', 0) & 255 not in
+                        {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(0.05)
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+    except BaseException:
+        conn.close()
+        raise
 
 
 class SQLiteCursor:
@@ -156,9 +172,10 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import prime_gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_gbsa_flexdist, fep_settings, debug_settings, distribution_settings
+    from molnova.config import prime_gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_gbsa_flexdist, fep_settings, debug_settings, distribution_settings, md_gbsa_settings
     return debug_settings(config, {
         **distribution_settings(config),
+        **md_gbsa_settings(config),
         **generation,
         **amber_settings(config, base),
         **prime_gbsa_license_retry_settings(config),
@@ -249,6 +266,8 @@ def create_sqlite_schema(conn: sqlite3.Connection) -> None:
     from molnova.database import ensure_rdkit_descriptor_columns, ensure_druglike_selection_ownership
     ensure_rdkit_descriptor_columns(conn)
     ensure_druglike_selection_ownership(conn)
+    from molnova.database import ensure_md_gbsa_schema
+    ensure_md_gbsa_schema(conn)
 
 
 
@@ -285,6 +304,8 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
     from molnova.database import ensure_rdkit_descriptor_columns, ensure_druglike_selection_ownership
     ensure_rdkit_descriptor_columns(conn)
     ensure_druglike_selection_ownership(conn)
+    from molnova.database import ensure_md_gbsa_schema
+    ensure_md_gbsa_schema(conn)
 
     # Refresh columns after migration so legacy status columns can be used once
     # to infer the new single state.
@@ -1911,6 +1932,7 @@ def write_elite_libinvent_training_files(
     *,
     prior_file=None,
     remote=None,
+    score_source="prime_gbsa",
 ):
     from molnova.libinvent_vocabulary import load_prior_vocabulary, unsupported_pair_tokens
 
@@ -1951,7 +1973,7 @@ def write_elite_libinvent_training_files(
             print(
                 "WARNING: elite cannot be decomposed for LibInvent TL: "
                 f"id={compound_id}, name={name}, "
-                f"docking={docking_score}, prime_gbsa={prime_gbsa_score}"
+                f"docking={docking_score}, {score_source}={prime_gbsa_score}"
             )
             skipped.append((compound_id, name, "[]",
                             _plain_libinvent_scaffold(scaffold_smiles), "",
@@ -2023,7 +2045,7 @@ def write_elite_libinvent_training_files(
                 "smiles",
                 "iteration",
                 "docking_score",
-                "prime_gbsa_score",
+                score_source + "_score",
                 "heavy_atoms",
                 "ligand_efficiency",
                 "scaffold",

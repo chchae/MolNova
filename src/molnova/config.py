@@ -15,6 +15,50 @@ def distribution_settings(config):
     return {'distribution_report_enabled': enabled}
 
 
+def md_gbsa_settings(config: dict[str, Any]) -> dict[str, Any]:
+    """Validate the optional, separate Desmond/Prime protocol and remote paths."""
+    import getpass
+    enabled = config.get('md-gbsa', False)
+    if not isinstance(enabled, bool):
+        raise ValueError('md-gbsa must be a boolean')
+    result = {'md_gbsa_enabled': enabled}
+    for suffix, default, minimum, maximum in [
+        ('snapshots', 20, 20, 100), ('replicates', 1, 1, 100),
+        ('gpus', 20, 1, 20), ('cpus', 384, 1, 384), ('seed', 20261021, 1, 2147483647),
+    ]:
+        key = 'md-gbsa-' + suffix
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise ValueError(f'{key} must be an integer between {minimum} and {maximum}')
+        result['md_gbsa_' + suffix] = value
+    for suffix, default, upper in [('production-ns', 5.0, None), ('equilibration-ns', 1.0, None),
+                                   ('input-ratio', .5, 1.0), ('analysis-start-fraction', .2, 1.0)]:
+        key = 'md-gbsa-' + suffix
+        value = config.get(key, default)
+        if (isinstance(value, bool) or not isinstance(value, (float, int))
+                or not math.isfinite(value) or value <= 0 or (upper is not None and value > upper)
+                or (suffix == 'analysis-start-fraction' and value == 1)):
+            raise ValueError(f'{key} must be a finite positive number' + (' below 1' if suffix == 'analysis-start-fraction' else ''))
+        result['md_gbsa_' + suffix.replace('-', '_')] = float(value)
+    count = config.get('md-gbsa-input-count')
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 1):
+        raise ValueError('md-gbsa-input-count must be a positive integer')
+    result['md_gbsa_input_count'] = count
+    for suffix, default in [('ssh-host', 'slurm'), ('gpu-host', 'slurm-gpu'), ('cpu-host', 'slurm-cpu')]:
+        value = config.get('md-gbsa-' + suffix, default)
+        if (not isinstance(value, str) or not value or value.startswith('-')
+                or any(c.isspace() for c in value) or ':' in value):
+            raise ValueError(f'Invalid md-gbsa-{suffix}')
+        result['md_gbsa_' + suffix.replace('-', '_')] = value
+    for suffix, default in [('schrodinger', '/share/opt/schrodinger/2026-3'),
+                            ('remote-work-dir', f'/homes1/{getpass.getuser()}/molnova-md-gbsa-runs')]:
+        value = config.get('md-gbsa-' + suffix, default)
+        if not isinstance(value, str) or not value.startswith('/') or any(c in value for c in '\n\r'):
+            raise ValueError(f'md-gbsa-{suffix} must be an absolute remote path')
+        result['md_gbsa_' + suffix.replace('-', '_')] = value
+    return result
+
+
 def distribution_project(path):
     """Resolve report inputs without initializing a project or external programs."""
     import tomllib

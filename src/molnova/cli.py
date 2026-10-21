@@ -5,7 +5,7 @@ from pathlib import Path
 from molnova import _core
 from molnova.driver import main as driver_main
 from molnova.stages import fep, generate, glide, ligprep, prime_gbsa, druglike
-from molnova.stages import synthetic_feasibility, amber_gbsa
+from molnova.stages import synthetic_feasibility, amber_gbsa, md_gbsa
 
 
 def _project_args(ns):
@@ -35,7 +35,8 @@ def _status(project_toml):
             SELECT iteration,
                    COUNT(docking_score), COUNT(prime_gbsa_score), COUNT(fep_score), COUNT(amber_gbsa_score),
                    COUNT(synthetic_feasibility), SUM(synthetic_feasibility),
-                   MIN(docking_score), MIN(prime_gbsa_score), MIN(fep_score), MIN(amber_gbsa_score)
+                   MIN(docking_score), MIN(prime_gbsa_score), MIN(fep_score), MIN(amber_gbsa_score),
+                   COUNT(md_gbsa_score), MIN(md_gbsa_score)
             FROM compound
             GROUP BY iteration
             ORDER BY iteration
@@ -53,7 +54,7 @@ def _status(project_toml):
 
     print()
     print("Scores")
-    print("iteration docked prime_gbsa fep amber synth synth_yes  best_dock best_prime_gbsa best_fep best_amber")
+    print("iteration docked prime_gbsa fep amber synth synth_yes  best_dock best_prime_gbsa best_fep best_amber  md_gbsa best_md_gbsa")
     print("--------- ------ ---- --- ----- ----- ---------  --------- --------- -------- ----------")
     for (
         iteration,
@@ -67,11 +68,14 @@ def _status(project_toml):
         best_prime_gbsa,
         best_fep,
         best_amber,
+        n_md,
+        best_md,
     ) in scores:
         print(
             f"{iteration:9d} {n_dock:6d} {n_prime_gbsa:4d} {n_fep:3d} {n_amber:5d} "
             f"{n_synth:5d} {str(n_synth_yes or 0):>9}  "
-            f"{str(best_dock):>9} {str(best_prime_gbsa):>9} {str(best_fep):>8} {str(best_amber):>10}"
+            f"{str(best_dock):>9} {str(best_prime_gbsa):>9} {str(best_fep):>8} {str(best_amber):>10} "
+            f"{n_md:8d} {str(best_md):>12}"
         )
 
 
@@ -93,10 +97,10 @@ def main(argv=None):
     run.add_argument("--iteration", type=int)
     run.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
 
-    for name in ("generate", "druglike", "ligprep", "glide", "amber-gbsa", "prime_gbsa"):
+    for name in ("generate", "druglike", "ligprep", "glide", "amber-gbsa", "prime_gbsa", "md-gbsa"):
         stage = sub.add_parser(name, help=f"Run {name} stage")
         stage.add_argument("project_toml", type=Path)
-        stage.add_argument("--iteration", type=int, required=name in {"amber-gbsa", "druglike"})
+        stage.add_argument("--iteration", type=int, required=name in {"amber-gbsa", "druglike", "md-gbsa"})
         stage.add_argument("--schrodinger", type=Path)
         if name == "generate":
             stage.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
@@ -146,6 +150,9 @@ def main(argv=None):
 
     if ns.command == "status":
         return _status(ns.project_toml)
+
+    if ns.command == "md-gbsa":
+        return md_gbsa.main(_project_args(ns))
 
     if ns.command == "generate":
         return generate.main(_project_args(ns))

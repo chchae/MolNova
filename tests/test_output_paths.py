@@ -16,7 +16,8 @@ def test_new_iteration_and_all_stages_use_stable_numbers(tmp_path, iteration, na
     assert iteration_directory(tmp_path, iteration) == tmp_path / name
     for stage, folder in STAGE_DIRECTORIES.items():
         path = stage_directory(tmp_path, iteration, stage)
-        assert path == tmp_path / name / folder
+        expected = "10-fep" if stage == "fep" else folder
+        assert path == tmp_path / name / expected
         path.mkdir(parents=True, exist_ok=True)
     assert stage_directory(tmp_path, iteration, 'combichem') == stage_directory(tmp_path, iteration, 'reinvent')
 

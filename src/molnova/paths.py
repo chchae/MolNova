@@ -13,6 +13,7 @@ STAGE_DIRECTORIES = {
     'glide': '06-glide',
     'amber_gbsa': '07-amber_gbsa',
     'prime_gbsa': '08-prime_gbsa',
+    'md_gbsa': '09-md_gbsa',
     'fep': '09-fep',
 }
 
@@ -45,6 +46,12 @@ def stage_in_iteration(directory, stage):
                for name in set(STAGE_DIRECTORIES.values())):
             raise RuntimeError(f'Ambiguous stage directories; reconcile layouts in {directory}')
         return legacy
+    if stage == 'fep':
+        following_md = directory / '10-fep'
+        if following_md.exists() and numbered.exists():
+            raise RuntimeError(f'Ambiguous FEP directories; reconcile layouts in {directory}')
+        if following_md.exists() or (not numbered.exists() and (directory / '09-md_gbsa').exists()):
+            return following_md
     return numbered
 
 

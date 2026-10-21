@@ -14,6 +14,8 @@ class CompoundState(StrEnum):
     AMBER_RUNNING = "amber_running"
     PRIME_GBSA_RUNNING = "prime_gbsa_running"
     PRIME_GBSA_DONE = "prime_gbsa_done"
+    MD_GBSA_RUNNING = "md_gbsa_running"
+    MD_GBSA_DONE = "md_gbsa_done"
     FEP_RUNNING = "fep_running"
     FEP_DONE = "fep_done"
     FAILED = "failed"
