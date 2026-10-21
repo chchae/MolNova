@@ -61,6 +61,17 @@ existing `09-fep`/legacy directories and all saved job paths. Enabling MD for an
 existing project backfills the latest completed generated iteration before the
 next generation; it does not schedule MD for every historical iteration.
 
+
+**Runtime opt-in repair (2026-10-21):** workers reload TOML independently. A
+driver launched with MD disabled can otherwise reach FEP after MD is enabled,
+then retry FEP forever because its original stage list omits MD. The supervisor
+now rereads the MD flag at stage boundaries and before retrying blocked FEP,
+inserts an independent MD worker after Prime/before FEP when needed, and waits
+for persisted MD completion. Saved MD selections still recover when disabled;
+no worker invokes another worker, no scores/jobs are reset, and frozen protocols
+remain unchanged. A driver already running older code requires one graceful
+restart; changing files cannot replace functions already loaded in that process.
+
 **External evidence (isolated smoke, not production or 5 ns validation):**
 on 2026-10-21, an optimized EGFR pair completed 160 ps standard relaxation,
 2 ps extra equilibration and 2 ps production using GPU Desmond on Slurm `gpu56`,

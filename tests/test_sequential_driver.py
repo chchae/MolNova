@@ -285,3 +285,65 @@ def test_driver_reports_total_time_only_after_verified_completion(tmp_path, monk
         assert 'paused; restart to resume' in output
         assert 'total elapsed=' not in output
         assert finished is None
+
+
+@pytest.mark.parametrize('initial_stages', ['prime-fep', 'prime', 'fep'])
+def test_enabling_md_at_runtime_supervises_it_before_fep_or_exit(tmp_path, monkeypatch, initial_stages):
+    args = project(tmp_path, state=State.PRIME_GBSA_DONE)
+    args.md_gbsa_enabled = False
+    config = tmp_path/'project.toml'
+    config.write_text('md-gbsa = '+('true' if initial_stages=='fep' else 'false')+'\n')
+    stages = []
+    if initial_stages.startswith('prime'):
+        stages.append(('prime_gbsa','molnova.stages.prime_gbsa'))
+    if 'fep' in initial_stages:
+        stages.append(('fep','molnova.stages.fep'))
+    calls=[]
+    class Stop(driver.StopFlag):
+        def wait(self, seconds):
+            pass
+    def process(stage, cmd, cwd, stop):
+        calls.append(stage)
+        if stage=='prime_gbsa':
+            config.write_text('md-gbsa = true\n')
+        elif stage=='md-gbsa' and calls.count('md-gbsa')==2:
+            database.freeze_md_gbsa_selection(args.db_path,3,
+                dict(protocol=dict(snapshots=20),replicates=1),count=1,target_count=1,prime_count=1)
+            database.store_md_gbsa_result(args.db_path,3,1,dict(id=1,mean=-40.,std=0.,
+                snapshots=[dict(frame=i,score=-40.) for i in range(20)]))
+        elif stage=='fep':
+            assert database.md_gbsa_completion_reason(args.db_path,3) is None
+        return 0
+    monkeypatch.setattr(driver,'stream_process',process)
+    monkeypatch.setattr(guard,'active_jobs',lambda suite:[])
+    assert driver.supervise_iteration(args,config,3,stages,30,Stop())
+    assert calls==(['prime_gbsa'] if initial_stages.startswith('prime') else [])+['md-gbsa','md-gbsa']+(['fep'] if 'fep' in initial_stages else [])
+
+
+def test_disabling_unsubmitted_md_skips_stage_but_keeps_saved_ownership(tmp_path):
+    args=project(tmp_path,state=State.PRIME_GBSA_DONE)
+    args.md_gbsa_enabled=True
+    config=tmp_path/'project.toml';config.write_text('md-gbsa = false\n')
+    assert not driver.md_stage_required(args,config,3)
+    database.freeze_md_gbsa_selection(args.db_path,3,
+        dict(protocol=dict(snapshots=20),replicates=1),count=1,target_count=1,prime_count=1)
+    assert driver.md_stage_required(args,config,3)
+
+
+def test_md_enabled_during_fep_poll_returns_to_prerequisite(tmp_path, monkeypatch):
+    args=project(tmp_path,state=State.PRIME_GBSA_DONE)
+    config=tmp_path/'project.toml';config.write_text('md-gbsa = false\n')
+    calls=[]
+    def process(stage,*unused):
+        calls.append(stage)
+        if stage=='fep':
+            config.write_text('md-gbsa = true\n')
+            return 1
+        # Stop at the MD prerequisite without submitting scientific work.
+        return 0
+    monkeypatch.setattr(driver,'stream_process',process)
+    class Stop(driver.StopFlag):
+        def wait(self,seconds):
+            self.set()
+    assert not driver.supervise_iteration(args,config,3,[('fep','molnova.stages.fep')],30,Stop())
+    assert calls==['fep','md-gbsa']

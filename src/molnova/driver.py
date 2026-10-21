@@ -254,11 +254,34 @@ def refresh_distribution_report(args, project_toml, iteration, event, stop):
         print(f'[report  ] cannot launch distribution report: {exc}; calculation supervision continues.', flush=True)
 
 
+
+def md_stage_required(args, project_toml, iteration):
+    """Read opt-in at stage boundaries; saved ownership always requires recovery."""
+    if iteration <= 0:
+        return False
+    if Path(project_toml).is_file():
+        import tomllib
+        from molnova.config import md_gbsa_settings
+        with Path(project_toml).open('rb') as stream:
+            args.md_gbsa_enabled = md_gbsa_settings(tomllib.load(stream))['md_gbsa_enabled']
+    return (getattr(args, 'md_gbsa_enabled', False) or
+            database.md_gbsa_selection(args.db_path, iteration) is not None)
+
 def supervise_iteration(args, project_toml, iteration, stages, poll_interval, stop, once=False):
     """Run one worker at a time; exit only after this iteration's final stage."""
-    for stage, module in stages:
+    pending_stages = list(stages)
+    md_stage = ('md-gbsa', 'molnova.stages.md_gbsa')
+    while pending_stages:
         if stop.is_set():
             return False
+        stage, module = pending_stages.pop(0)
+        if stage == 'md-gbsa' and not md_stage_required(args, project_toml, iteration):
+            continue  # Disabled before submission; saved selections still recover.
+        if (stage == 'fep' and md_stage_required(args, project_toml, iteration)
+                and database.md_gbsa_completion_reason(args.db_path, iteration) is not None):
+            pending_stages.insert(0, (stage, module))
+            stage, module = md_stage
+            print(f"[driver  ] iteration {iteration}: MD-GBSA required before FEP; supervising MD first.", flush=True)
         started = time.monotonic()
         timed_stage = 'prime_gbsa' if stage == 'prime_gbsa-recovery' else stage
         if timed_stage in CALCULATION_LABELS:
@@ -278,6 +301,11 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
             if reason is None:
                 reason = external_completion_reason(args, iteration, stage)
             if reason is None:
+                if (stage == 'prime_gbsa' and md_stage_required(args, project_toml, iteration)
+                        and md_stage not in pending_stages
+                        and database.md_gbsa_completion_reason(args.db_path, iteration) is not None):
+                    pending_stages.insert(0, md_stage)
+                    print(f"[driver  ] iteration {iteration}: MD-GBSA enabled; adding the stage after Prime.", flush=True)
                 if stage in CALCULATION_LABELS:
                     from molnova.stages._summary import completion_summary
                     elapsed = database.finish_stage_timer(args.db_path, iteration, stage)
@@ -301,6 +329,12 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
             report(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
             if once:
                 return False
+            if (stage == 'fep' and md_stage_required(args, project_toml, iteration)
+                    and database.md_gbsa_completion_reason(args.db_path, iteration) is not None):
+                pending_stages.insert(0, (stage, module))
+                pending_stages.insert(0, md_stage)
+                print(f"[driver  ] iteration {iteration}: returning to MD-GBSA before retrying FEP.", flush=True)
+                break
             stop.wait(interval)
     return not stop.is_set()
 
