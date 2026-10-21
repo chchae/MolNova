@@ -67,7 +67,7 @@ def test_resuming_saved_iteration_never_clears_its_files(workspace, monkeypatch,
 def test_cleanup_checks_saved_native_parent_and_children_before_moving_anything(workspace, monkeypatch, status):
     folder = workspace.output / 'iter1/glide/ref_1'
     (folder / 'glide_job.json').write_text(json.dumps({'job_id': 'old'}))
-    (folder / 'glide_constrained.log').write_text('completed calculation')
+    (folder / 'glide.log').write_text('completed calculation')
     def details(*a):
         if status == 'lookup_failed':
             raise OSError('JobServer unavailable')
@@ -105,12 +105,12 @@ def test_jobserver_lookup_failure_retains_every_file(workspace, monkeypatch):
 
 
 @pytest.mark.parametrize('filename, contents', [
-    ('prime_job.json', '{"mode":"compound_queue_v1"}'),
+    ('primg_gbsa_job.json', '{"mode":"compound_queue_v1"}'),
     ('ligprep_job.json', '{"job_id":null,"launching":true}'),
     ('glide_job.tmp', '{"job_id":null}'),
     ('amber_job.json', '{}'),
     ('sampling.remote-dir.txt', 'tensor:/old/run'),
-    ('ligprep_all.log', 'uncertain legacy calculation'),
+    ('ligprep.log', 'uncertain legacy calculation'),
 ])
 def test_unresolved_submissions_preserve_entire_iteration(workspace, filename, contents):
     root = workspace.output / 'iter1'
@@ -133,7 +133,7 @@ def test_cleanup_preserves_configuration_inputs_and_iteration_zero(workspace):
 
 def test_legacy_jobid_in_log_is_checked_before_cleanup(workspace, monkeypatch):
     folder = workspace.output / 'iter1/glide/ref_1'
-    (folder / 'glide_constrained.log').write_text('JobId: legacy\n')
+    (folder / 'glide.log').write_text('JobId: legacy\n')
     checked = []
     def details(suite, job_id, directory):
         checked.append((job_id, directory))

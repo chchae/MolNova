@@ -113,8 +113,8 @@ def test_generated_element_filter_precedes_target_and_preserves_existing_rows(tm
     database.mark_iteration_workspace_prepared(args.db_path, 1)
     with database.connect(args.db_path) as conn:
         conn.execute('UPDATE iteration_workspace SET generation_policy=? WHERE iteration=1', (policy,))
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,gbsa_score) "
-                     "VALUES ('old_boron','B(O)O',0,'gbsa_done',-40)")
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score) "
+                     "VALUES ('old_boron','B(O)O',0,'primg_gbsa_done',-40)")
         before = conn.execute('SELECT * FROM compound').fetchall()
     generated = tmp_path / 'generated.csv'
     generated.write_text('SMILES\nB(O)O\nC[Si](C)(C)C\n[Zn+2]\nCCO\nCCN\nCC\nCCC\n')

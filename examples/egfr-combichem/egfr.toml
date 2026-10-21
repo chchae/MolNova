@@ -23,7 +23,7 @@ elite-mcs-fixed = false
 # elite-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
 # 첫 cycle은 reference-mcs, 이후는 직전 iteration의 Prime elite에서 generation core 결정
 # 다음 cycle도 Prime elite가 필요하며 FEP 후보 fallback이 이 조건을 대체하지 않습니다.
-gbsa-elite-count = 1
+primg-gbsa-elite-count = 1
 
 # REINVENT4를 사용할 때만 적용; combichem은 prior/REINVENT runtime을 사용하지 않습니다.
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
@@ -68,7 +68,7 @@ amber-slurm-cpus = 384           # 전체 Amber 작업 합계 상한; 각 단일
 amber-slurm-env = "/share/opt/amber26/envs/AmberTools26"
 # amber-slurm-work-dir = "/homes1/사용자명/molnova-amber-slurm-runs"  # 기본값: 현재 사용자별 디렉터리
 amber-cpus = 124
-amber-receptor = "./output/iter0/mmgbsa/receptor.maegz"
+amber-receptor = "./output/iter00/08-primg_gbsa/receptor.maegz"
 amber-charge-method = "bcc"
 amber-ssh-host = "t41"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
@@ -79,10 +79,10 @@ amber-ssh-config = "/home1/chchae/.ssh/config"
 # 6. Prime GBSA: 유효 Amber 결과 best 50; 유효 Amber 결과가 0개이면 Glide best 50
 # 진행 중·복구 대기·재시도 가능 작업은 기다립니다. 서로 다른 score를 섞어 순위를 만들지 않습니다.
 # 유효 결과가 일부만 있으면 그 집합에서 최대 50개만 선택하며 다른 tier로 보충하지 않습니다.
-gbsa-input-count = 100
-prime-flexdist = 6.0
-gbsa-license-retry-seconds = 300
-gbsa-license-retries = 3
+prime-gbsa-input-count = 100
+prime-gbsa-flexdist = 6.0
+prime-gbsa-license-retry-seconds = 300
+prime-gbsa-license-retries = 3
 # Prime은 선택한 화합물 전체를 한 batch로 제출하고 JobDJ가 최대 7개 subjob을 동시에 실행합니다.
 # 유연한 receptor는 화합물별 complex 입력으로 처리하여 각 ligand 주변 6 Å 설정을 유지합니다.
 # Iteration 0은 입력 reference 전체를 평가하므로 500/50 제한을 적용하지 않습니다.

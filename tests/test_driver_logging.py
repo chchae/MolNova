@@ -40,8 +40,8 @@ def test_supervisor_summarizes_idle_work_and_preserves_errors(tmp_path, capsys, 
 
 def test_standalone_work_message_has_no_protocol_marker(monkeypatch, capsys):
     monkeypatch.delenv("MOLNOVA_SUPERVISED", raising=False)
-    work_started("Starting MM-GBSA")
-    assert capsys.readouterr().out == "Starting MM-GBSA\n"
+    work_started("Starting primg_gbsa")
+    assert capsys.readouterr().out == "Starting primg_gbsa\n"
 
 
 @pytest.mark.parametrize('active', [False, True])
@@ -65,7 +65,7 @@ def test_mcs_summaries_survive_supervisor_setup_filter(tmp_path, capsys, active)
     assert ('skip: Generation already complete.' in output) == (not active)
 
 
-@pytest.mark.parametrize("stage", ["generate", "synthetic", "ligprep", "glide", "mmgbsa", "fep"])
+@pytest.mark.parametrize("stage", ["generate", "synthetic", "ligprep", "glide", "primg_gbsa", "fep"])
 @pytest.mark.parametrize("silent", [False, True])
 def test_each_idle_stage_emits_one_skip_line(tmp_path, capsys, stage, silent):
     script = "pass" if silent else "print('setup message'); print('No eligible work.'); print()"
@@ -80,17 +80,17 @@ def test_shutdown_does_not_report_skip(tmp_path, capsys):
     assert "skip:" not in capsys.readouterr().out
 
 
-def test_mmgbsa_idle_poll_has_explicit_reason(tmp_path, monkeypatch, capsys):
+def test_primg_gbsa_idle_poll_has_explicit_reason(tmp_path, monkeypatch, capsys):
     import sqlite3
     from types import SimpleNamespace
     from molnova import _core
-    from molnova.stages import mmgbsa
+    from molnova.stages import primg_gbsa
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-    args = SimpleNamespace(db_path=db, output=tmp_path, gbsa_input_count=100)
-    mmgbsa._run_stage(args, None)
-    assert capsys.readouterr().out == "No completed docking iteration requires MM-GBSA.\n"
+    args = SimpleNamespace(db_path=db, output=tmp_path, primg_gbsa_input_count=100)
+    primg_gbsa._run_stage(args, None)
+    assert capsys.readouterr().out == "No completed docking iteration requires primg_gbsa.\n"
 
 
 @pytest.fixture
@@ -170,13 +170,13 @@ def test_amber_download_preserves_artifacts_and_filters_console(tmp_path, monkey
 
 def test_quiet_work_start_keeps_supervisor_protocol_and_queue_summary(tmp_path, capsys):
     script = "from molnova.stages._logging import work_started\n"
-    script += "work_started('recovering saved MM-GBSA job', level=2)\n"
-    script += "print('Iteration 1: MM-GBSA running=186, saved=14, queue active=7, waiting=179, limit=7, scores updated=0.')\n"
+    script += "work_started('recovering saved primg_gbsa job', level=2)\n"
+    script += "print('Iteration 1: primg_gbsa running=186, saved=14, queue active=7, waiting=179, limit=7, scores updated=0.')\n"
     from pathlib import Path
     # The subprocess must import the current source checkout.
     root = Path(__file__).resolve().parents[1]
     script = f'import sys; sys.path.insert(0, {str(root / "src")!r})\n' + script
-    assert stream_process('mmgbsa', [sys.executable, '-c', script], root, threading.Event()) == 0
+    assert stream_process('primg_gbsa', [sys.executable, '-c', script], root, threading.Event()) == 0
     output = capsys.readouterr().out
-    assert output == ('[mmgbsa  ] Iteration 1: MM-GBSA running=186, saved=14, queue active=7, '
+    assert output == ('[primg_gbsa] Iteration 1: primg_gbsa running=186, saved=14, queue active=7, '
                       'waiting=179, limit=7, scores updated=0.\n')

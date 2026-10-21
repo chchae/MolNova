@@ -10,12 +10,9 @@ from molnova import _core
 
 def distribution_settings(config):
     enabled = config.get('distribution-report', True)
-    interval = config.get('distribution-report-interval', 300)
     if not isinstance(enabled, bool):
         raise ValueError('distribution-report must be a boolean')
-    if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
-        raise ValueError('distribution-report-interval must be a positive integer in seconds')
-    return {'distribution_report_enabled': enabled, 'distribution_report_interval': interval}
+    return {'distribution_report_enabled': enabled}
 
 
 def distribution_project(path):
@@ -35,15 +32,15 @@ def distribution_project(path):
             raise FileNotFoundError(f'Project database not found: {db_path}')
         db_path = legacy  # Read in place; reporting never migrates a database.
     return SimpleNamespace(output=output, db_path=db_path, project=project,
-                           gbsa_elite_count=int(config.get('gbsa-elite-count', 10)))
+                           primg_gbsa_elite_count=int(config.get('primg-gbsa-elite-count', 10)))
 
 
-def prime_flexdist(config: dict[str, Any]) -> float:
+def primg_gbsa_flexdist(config: dict[str, Any]) -> float:
     """Zero preserves the frozen-receptor default; positive values are Angstroms."""
-    value = config.get('prime-flexdist', 0.0)
+    value = config.get('prime-gbsa-flexdist', 0.0)
     if (isinstance(value, bool) or not isinstance(value, (int, float))
             or not math.isfinite(value) or value < 0):
-        raise ValueError('prime-flexdist must be a finite non-negative number in Angstroms')
+        raise ValueError('prime-gbsa-flexdist must be a finite non-negative number in Angstroms')
     return float(value)
 
 
@@ -88,10 +85,10 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
             and config['amber_gbsa'] != config['amber-gbsa-enabled']):
         raise ValueError('amber_gbsa and amber-gbsa-enabled must agree')
     enabled = config.get('amber_gbsa', config.get('amber-gbsa-enabled', False))
-    prime_count = config.get('gbsa-input-count', 50)
+    prime_count = config.get('prime-gbsa-input-count', 50)
     if isinstance(prime_count, bool) or not isinstance(prime_count, int) or prime_count < 1:
-        raise ValueError('gbsa-input-count must be a positive integer')
-    settings = {'amber_gbsa_enabled': enabled, 'gbsa_input_count': prime_count,
+        raise ValueError('prime-gbsa-input-count must be a positive integer')
+    settings = {'amber_gbsa_enabled': enabled, 'primg_gbsa_input_count': prime_count,
                 'use_slurm': use_slurm}
     time_limit = config.get('amber-slurm-time-limit', 600)
     if isinstance(time_limit, bool) or not isinstance(time_limit, int) or time_limit < 1:
@@ -115,7 +112,7 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     # Retain the internal attribute for existing workers and API callers.
     settings['amber_keep_count'] = config.get('amber-input-count', config.get('amber-keep-count', 500))
     if enabled and settings['amber_keep_count'] < prime_count:
-        raise ValueError('amber-input-count must be >= gbsa-input-count')
+        raise ValueError('amber-input-count must be >= prime-gbsa-input-count')
     host = str(config.get('amber-ssh-host', 'tensor'))
     if not host or host.startswith('-') or any(c.isspace() for c in host):
         raise ValueError('Invalid amber-ssh-host')
@@ -164,7 +161,7 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
         receptor = Path(config['amber-receptor']).expanduser()
     else:
         output = (base / Path(config['out-dir']).expanduser()).resolve()
-        receptor = stage_directory(output, 0, 'mmgbsa') / 'receptor.maegz'
+        receptor = stage_directory(output, 0, 'primg_gbsa') / 'receptor.maegz'
     settings['amber_receptor'] = (base / receptor).resolve()
     charge = config.get('amber-charge-method', 'bcc')
     if charge not in ('bcc', 'abcg2'):
@@ -181,7 +178,7 @@ def debug_settings(config: dict[str, Any], settings: dict[str, Any]) -> dict[str
     settings['debug'] = enabled
     if enabled:
         for key in ('sample_size', 'target_count', 'amber_keep_count',
-                    'gbsa_input_count', 'gbsa_elite_count', 'fep_input_count'):
+                    'primg_gbsa_input_count', 'primg_gbsa_elite_count', 'fep_input_count'):
             value = settings[key]
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f'{key.replace("_", "-")} must be a positive integer')
@@ -198,8 +195,8 @@ def glide_job_timeout(config: dict[str, Any]) -> int:
 
 def schrodinger_cpu_settings(config: dict[str, Any]) -> dict[str, int | None]:
     settings = {}
-    for stage in ("ligprep", "glide", "mmgbsa"):
-        key = f"{stage}-cpus"
+    for stage in ("ligprep", "glide", "primg_gbsa"):
+        key = f"{stage.replace('_', '-')}-cpus"
         value = config.get(key)
         if value is not None:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -233,13 +230,13 @@ def schrodinger_job_options(host: str, cpus: int | None = None,
     return options
 
 
-def mmgbsa_job_options(host: str, ligand_count: int) -> list[str]:
+def primg_gbsa_job_options(host: str, ligand_count: int) -> list[str]:
     """Queue one ligand per subjob; host slots bound concurrent execution."""
     if isinstance(ligand_count, bool) or not isinstance(ligand_count, int) or ligand_count < 1:
-        raise ValueError("MM-GBSA ligand_count must be a positive integer")
+        raise ValueError("primg_gbsa ligand_count must be a positive integer")
     names = list(dict.fromkeys(entry.split(':', 1)[0] for entry in host.split()))
     if not names:
-        raise ValueError("MM-GBSA requires a configured host")
+        raise ValueError("primg_gbsa requires a configured host")
     # HOST limits are per host, not a shared limit. Divide seven slots across
     # hosts rather than accidentally allowing seven on every host.
     slots = [0] * len(names)
@@ -366,14 +363,14 @@ def elite_mcs_fixed(config: dict[str, Any]) -> bool:
     return value
 
 
-def gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
+def primg_gbsa_license_retry_settings(config: dict[str, Any]) -> dict[str, int]:
     settings = {}
-    for key, default, minimum in (("gbsa-license-retry-seconds", 300, 1),
-                                  ("gbsa-license-retries", 3, 0)):
+    for key, default, minimum in (("prime-gbsa-license-retry-seconds", 300, 1),
+                                  ("prime-gbsa-license-retries", 3, 0)):
         value = config.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"{key} must be an integer >= {minimum}")
-        settings[key.replace("-", "_")] = value
+        settings["primg_gbsa_" + key.removeprefix("prime-gbsa-").replace("-", "_")] = value
     return settings
 
 

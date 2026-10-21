@@ -27,8 +27,9 @@ def job_kind(job):
     name = job.get('jobName', '').lower()
     command = job.get('commandLine', '').lower()
     program = job.get('spec', {}).get('taskSpec', {}).get('programName', '').lower()
-    if 'mmgbsa' in name or 'prime_mmgbsa' in command or 'mmgbsa' in program:
-        return 'mmgbsa'
+    if ('primg_gbsa' in name or 'mmgbsa' in name or 'prime_mmgbsa' in command
+            or 'primg_gbsa' in program or 'mmgbsa' in program):
+        return 'primg_gbsa'
     if name.startswith('glide') or '/glide ' in command or 'glide_wrap.py' in command or program == 'glide':
         return 'glide'
     return None
@@ -72,7 +73,7 @@ def submission_guard(suite, stage):
         except BlockingIOError as exc:
             raise SubmissionBlocked('Another Schrödinger submission check is in progress') from exc
         try:
-            opposite = 'glide' if stage == 'mmgbsa' else 'mmgbsa'
+            opposite = 'glide' if stage == 'primg_gbsa' else 'primg_gbsa'
             try:
                 jobs = active_jobs(suite)
             except Exception as exc:

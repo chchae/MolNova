@@ -1,10 +1,10 @@
-"""Independent Amber screening stage; Prime keeps its existing MM-GBSA worker."""
+"""Independent Amber screening stage; Prime keeps its existing PRIMG_GBSA worker."""
 import argparse
 from pathlib import Path
 
 from molnova.paths import stage_directory, stage_manifests
 from molnova import _core as c, amber_gbsa, database
-from molnova.prime_async import load_job as load_prime
+from molnova.primg_gbsa_async import load_job as load_prime
 from molnova.stages._logging import timed_stage, work_started
 
 
@@ -18,7 +18,7 @@ def _run_stage(args, iteration):
     directory = stage_directory(args.output, iteration, 'amber_gbsa')
     directory.mkdir(parents=True, exist_ok=True)
     reason = database.docking_completion_reason(args.db_path, iteration, args.target_count) if iteration > 0 else None
-    if reason or any(database.stage_is_running(args.db_path, stage) for stage in ('generate', 'synthetic_feasibility', 'ligprep', 'glide', 'mmgbsa')):
+    if reason or any(database.stage_is_running(args.db_path, stage) for stage in ('generate', 'synthetic_feasibility', 'ligprep', 'glide', 'primg_gbsa')):
         print(f'Amber GBSA waiting: {reason or "upstream/Prime worker still running"}.')
         return
     from molnova import schrodinger_guard as guard
@@ -34,8 +34,8 @@ def _run_stage(args, iteration):
         if not details or any(job.get('status') not in guard.TERMINAL for job in details):
             print(f'Amber GBSA waiting: saved Glide parent/children still active: {record["job_id"]}')
             return
-    if load_prime(stage_directory(args.output, iteration, 'mmgbsa')) is not None or database.has_running_mmgbsa(args.db_path, iteration):
-        print('Amber GBSA waiting for existing Prime claims/submissions. Recover them with molnova mmgbsa first.')
+    if load_prime(stage_directory(args.output, iteration, 'primg_gbsa')) is not None or database.has_running_primg_gbsa(args.db_path, iteration):
+        print('Amber GBSA waiting for existing Prime claims/submissions. Recover them with molnova primg_gbsa first.')
         return
     record = amber_gbsa.load_job(directory)
     if record is None:

@@ -33,7 +33,7 @@ def test_final_selection_and_iteration_gates(project):
     assert database.stage_completion_reason(project.db_path, 1, 'ligprep', 4, 3, True) is None
     assert database.upstream_completion_reason(project.db_path, 1, 4, 'glide', True) is None
     assert database.docking_completion_reason(project.db_path, 1, 4) is None
-    assert len(database.claim_mmgbsa_candidates(project.db_path, 1, 3, 4)) == 3
+    assert len(database.claim_primg_gbsa_candidates(project.db_path, 1, 3, 4)) == 3
 
 
 def test_boundary_ties_rounding_and_reference_exemption(project):
@@ -68,7 +68,7 @@ def test_invalid_scores_block_selection_atomically(project, score):
     assert len(database.ligprep_pending_rows(project.db_path, 1, False)) == 4
 
 
-@pytest.mark.parametrize('state', ['ligprep_running', 'synthetic_running', 'docked', 'gbsa_done', 'failed'])
+@pytest.mark.parametrize('state', ['ligprep_running', 'synthetic_running', 'docked', 'primg_gbsa_done', 'failed'])
 def test_existing_downstream_work_and_results_are_preserved(project, state):
     with database.connect(project.db_path) as conn:
         conn.execute("UPDATE compound SET state=?,failed_stage='glide',failure_message='old' WHERE name='high'", (state,))

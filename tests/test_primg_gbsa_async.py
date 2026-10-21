@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from molnova import _core, prime_async as prime
-from molnova.stages import mmgbsa
+from molnova import _core, primg_gbsa_async as prime
+from molnova.stages import primg_gbsa
 
 
 def test_submit_then_poll_without_resubmission_or_early_result_read(tmp_path, monkeypatch):
@@ -62,30 +62,30 @@ def test_worker_submits_multiple_iterations_and_preserves_running_states(tmp_pat
         _core.create_sqlite_schema(conn)
         conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
                          "VALUES (?,'C',?,-9,'docked')", [("A", 1), ("B", 2)])
-    args = SimpleNamespace(db_path=db, gbsa_input_count=2, output=tmp_path)
+    args = SimpleNamespace(db_path=db, primg_gbsa_input_count=2, output=tmp_path)
     calls = []
     def submit(**kw):
         calls.append(kw["iteration"])
         return None
-    monkeypatch.setattr(_core, "run_iteration_mmgbsa", submit)
-    mmgbsa._run_stage(args, None)
+    monkeypatch.setattr(_core, "run_iteration_primg_gbsa", submit)
+    primg_gbsa._run_stage(args, None)
     assert calls == [1, 2]
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT state,failed_stage FROM compound").fetchall() == [
-            ("gbsa_running", None), ("gbsa_running", None)]
+            ("primg_gbsa_running", None), ("primg_gbsa_running", None)]
 
 
 def test_recovery_uses_submitted_ids_even_after_top_n_changes(tmp_path, monkeypatch):
-    directory = tmp_path / "iter1/mmgbsa"
+    directory = tmp_path / "iter1/primg_gbsa"
     directory.mkdir(parents=True)
-    (directory / 'mmgbsa_input-out.maegz').write_text('completed native output')
+    (directory / 'primg_gbsa_input-out.maegz').write_text('completed native output')
     prime._save(directory, {"command": ["/suite/prime_mmgbsa"], "compound_ids": [5]})
     args = SimpleNamespace(db_path=tmp_path / "project.sqlite")
     monkeypatch.setattr(prime, "submit_or_poll", lambda *a, **kw: True)
     calls = []
-    monkeypatch.setattr(_core, "finish_iteration_mmgbsa",
+    monkeypatch.setattr(_core, "finish_iteration_primg_gbsa",
                         lambda iteration, args, directory, ids: calls.append(ids) or 1)
-    assert _core.run_iteration_mmgbsa(1, args, tmp_path / "iter1", tmp_path / "glide") == 1
+    assert _core.run_iteration_primg_gbsa(1, args, tmp_path / "iter1", tmp_path / "glide") == 1
     assert calls == [[5]]
     assert not prime.job_file(directory).exists()
 
@@ -95,20 +95,20 @@ def test_status_lookup_failure_keeps_job_and_running_compound(tmp_path, monkeypa
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         conn.execute("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
-                     "VALUES ('A','C',1,-9,'gbsa_running')")
-    directory = tmp_path / "iter1/mmgbsa"
+                     "VALUES ('A','C',1,-9,'primg_gbsa_running')")
+    directory = tmp_path / "iter1/primg_gbsa"
     directory.mkdir(parents=True)
     prime._save(directory, {"command": ["/suite/prime_mmgbsa"], "compound_ids": [1],
                             "job_id": "job-1"})
     def offline(*a, **kw):
         raise subprocess.CalledProcessError(1, "jsc")
     monkeypatch.setattr(prime.subprocess, "run", offline)
-    args = SimpleNamespace(db_path=db, gbsa_input_count=2, output=tmp_path)
+    args = SimpleNamespace(db_path=db, primg_gbsa_input_count=2, output=tmp_path)
     with pytest.raises(subprocess.CalledProcessError):
-        mmgbsa._run_stage(args, 1)
+        primg_gbsa._run_stage(args, 1)
     assert prime.load_job(directory)["job_id"] == "job-1"
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT state FROM compound").fetchone() == ("gbsa_running",)
+        assert conn.execute("SELECT state FROM compound").fetchone() == ("primg_gbsa_running",)
 
 
 def test_interrupted_submission_does_not_launch_duplicate(tmp_path, monkeypatch):
@@ -161,30 +161,30 @@ def test_atomtyping_failure_stops_retries_and_allows_next_iteration(tmp_path, mo
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,gbsa_score,state) "
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) "
                          "VALUES (?,'C',?,?,?,?)", [
                              ("bad", 1, -9, None, State.DOCKED),
-                             ("done", 1, -10, -40, State.GBSA_DONE),
+                             ("done", 1, -10, -40, State.PRIMG_GBSA_DONE),
                              ("next", 2, -8, None, State.DOCKED)])
-    args = SimpleNamespace(db_path=db, gbsa_input_count=2, output=tmp_path)
+    args = SimpleNamespace(db_path=db, primg_gbsa_input_count=2, output=tmp_path)
     calls = []
     def calculate(**kw):
         calls.append(kw["iteration"])
         if kw["iteration"] == 1:
             raise prime.PrimeAtomTypingError(1)
         return None
-    monkeypatch.setattr(_core, "run_iteration_mmgbsa", calculate)
-    mmgbsa._run_stage(args, None)
-    mmgbsa._run_stage(args, None)
+    monkeypatch.setattr(_core, "run_iteration_primg_gbsa", calculate)
+    primg_gbsa._run_stage(args, None)
+    primg_gbsa._run_stage(args, None)
     assert calls == [1, 2, 2]
-    assert database.mmgbsa_candidates(db, 1, 2) == []
+    assert database.primg_gbsa_candidates(db, 1, 2) == []
     with sqlite3.connect(db) as conn:
-        rows = conn.execute("SELECT state,docking_score,gbsa_score,failed_stage,failure_message "
+        rows = conn.execute("SELECT state,docking_score,primg_gbsa_score,failed_stage,failure_message "
                             "FROM compound ORDER BY id").fetchall()
-    assert rows[0][:4] == (State.FAILED, -9, None, "gbsa")
+    assert rows[0][:4] == (State.FAILED, -9, None, "primg_gbsa")
     assert "atom typing failed" in rows[0][4]
-    assert rows[1] == (State.GBSA_DONE, -10, -40, None, None)
-    assert rows[2][:4] == (State.GBSA_RUNNING, -8, None, None)
+    assert rows[1] == (State.PRIMG_GBSA_DONE, -10, -40, None, None)
+    assert rows[2][:4] == (State.PRIMG_GBSA_RUNNING, -8, None, None)
 
 
 def test_old_atomtyping_log_does_not_classify_new_job(tmp_path, monkeypatch):
@@ -205,7 +205,7 @@ def test_old_atomtyping_log_does_not_classify_new_job(tmp_path, monkeypatch):
 
 
 def _component_log(cid, fail=True):
-    return (f"  Prime-MMGBSA: mmgbsa_input.00001-FreeLigand-CMPID_{cid}\n"
+    return (f"  Prime-MMGBSA: primg_gbsa_input.00001-FreeLigand-CMPID_{cid}\n"
             + ("Cannot atom type structure\n" if fail else "Post-processing complete.\n"))
 
 
@@ -261,19 +261,19 @@ def test_batch_worker_failure_excludes_bad_compounds_preserving_other_results(tm
     db=tmp_path/'project.sqlite'
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,gbsa_score,state) "
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) "
                          "VALUES (?,'C',1,-9,?,?)",[
                              ('bad1',None,'docked'),('bad2',None,'docked'),
-                             ('unknown',None,'docked'),('done',-40,'gbsa_done')])
-    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=4)
-    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw: (_ for _ in ()).throw(
+                             ('unknown',None,'docked'),('done',-40,'primg_gbsa_done')])
+    args=SimpleNamespace(db_path=db,output=tmp_path,primg_gbsa_input_count=4)
+    monkeypatch.setattr(_core,'run_iteration_primg_gbsa',lambda **kw: (_ for _ in ()).throw(
         prime.PrimeAtomTypingError([1,2])))
-    mmgbsa._run_stage(args,1)
-    assert database.mmgbsa_candidates(db,1,4)==[3]
+    primg_gbsa._run_stage(args,1)
+    assert database.primg_gbsa_candidates(db,1,4)==[3]
     with sqlite3.connect(db) as conn:
-        rows=conn.execute('SELECT state,docking_score,gbsa_score,failed_stage FROM compound ORDER BY id').fetchall()
-    assert rows==[('failed',-9,None,'gbsa'),('failed',-9,None,'gbsa'),
-                  ('docked',-9,None,'gbsa'),('gbsa_done',-9,-40,None)]
+        rows=conn.execute('SELECT state,docking_score,primg_gbsa_score,failed_stage FROM compound ORDER BY id').fetchall()
+    assert rows==[('failed',-9,None,'primg_gbsa'),('failed',-9,None,'primg_gbsa'),
+                  ('docked',-9,None,'primg_gbsa'),('primg_gbsa_done',-9,-40,None)]
 
 
 def test_partial_batch_scores_import_before_permanent_failures(tmp_path,monkeypatch):
@@ -281,21 +281,21 @@ def test_partial_batch_scores_import_before_permanent_failures(tmp_path,monkeypa
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
-                         "VALUES (?,'C',1,-9,'gbsa_running')", [('good',),('bad',)])
-    directory=tmp_path/'iter1/mmgbsa';directory.mkdir(parents=True)
-    (directory / 'mmgbsa_input-out.maegz').write_text('completed native output')
+                         "VALUES (?,'C',1,-9,'primg_gbsa_running')", [('good',),('bad',)])
+    directory=tmp_path/'iter1/primg_gbsa';directory.mkdir(parents=True)
+    (directory / 'primg_gbsa_input-out.maegz').write_text('completed native output')
     prime._save(directory,{'command':['/suite/prime_mmgbsa'],'compound_ids':[1,2],
                            'atomtyping_failed_ids':[2]})
     monkeypatch.setattr(prime,'submit_or_poll',lambda *a,**kw:True)
     def finish(iteration,args,directory,ids):
-        scores=directory/'scores.tsv';scores.write_text('id\tgbsa_score\n1\t-40\n')
-        return _core.update_gbsa_scores(scores,args.db_path,allowed_ids=ids)
-    monkeypatch.setattr(_core,'finish_iteration_mmgbsa',finish)
-    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=2)
-    mmgbsa._run_stage(args,1)
+        scores=directory/'scores.tsv';scores.write_text('id\tprimg_gbsa_score\n1\t-40\n')
+        return _core.update_primg_gbsa_scores(scores,args.db_path,allowed_ids=ids)
+    monkeypatch.setattr(_core,'finish_iteration_primg_gbsa',finish)
+    args=SimpleNamespace(db_path=db,output=tmp_path,primg_gbsa_input_count=2)
+    primg_gbsa._run_stage(args,1)
     with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT state,gbsa_score FROM compound ORDER BY id').fetchall()==[
-            ('gbsa_done',-40),('failed',None)]
+        assert conn.execute('SELECT state,primg_gbsa_score FROM compound ORDER BY id').fetchall()==[
+            ('primg_gbsa_done',-40),('failed',None)]
     assert prime.load_job(directory) is None
 
 
@@ -304,11 +304,11 @@ def test_permanent_failure_recording_preserves_existing_scores(tmp_path):
     db=tmp_path/'project.sqlite'
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,gbsa_score,fep_score) "
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score,fep_score) "
                      "VALUES ('done','C',1,'fep_done',-40,-5)")
-    assert database.mark_gbsa_atomtyping_failures(db,[1],'error')==0
+    assert database.mark_primg_gbsa_atomtyping_failures(db,[1],'error')==0
     with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT state,gbsa_score,fep_score FROM compound').fetchone()==('fep_done',-40,-5)
+        assert conn.execute('SELECT state,primg_gbsa_score,fep_score FROM compound').fetchone()==('fep_done',-40,-5)
 
 
 def _reconcile_project(tmp_path, ids=(99,), job_id='old-job', launching=False):
@@ -317,11 +317,11 @@ def _reconcile_project(tmp_path, ids=(99,), job_id='old-job', launching=False):
         _core.create_sqlite_schema(conn)
         conn.execute("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
                      "VALUES ('current','C',13,-9,'docked')")
-    directory=tmp_path/'iter13/mmgbsa';directory.mkdir(parents=True)
+    directory=tmp_path/'iter13/primg_gbsa';directory.mkdir(parents=True)
     prime._save(directory,{'command':['/suite/prime_mmgbsa'], 'compound_ids':list(ids),
                           'job_id':job_id, 'launching':launching})
-    (directory/'mmgbsa_input-out.maegz').write_text('old output')
-    (directory/'mmgbsa_input.log').write_text('old log')
+    (directory/'primg_gbsa_input-out.maegz').write_text('old output')
+    (directory/'primg_gbsa_input.log').write_text('old log')
     return db,directory
 
 
@@ -335,18 +335,18 @@ def test_orphaned_terminal_job_is_archived_before_claiming_current_compounds(tmp
                                json.dumps({'jobId':'old-job','status':status}))
     monkeypatch.setattr(prime.subprocess,'run',query)
     calls=[]
-    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw: calls.append(kw['compound_ids']) or None)
-    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=100)
-    mmgbsa._run_stage(args,None)
+    monkeypatch.setattr(_core,'run_iteration_primg_gbsa',lambda **kw: calls.append(kw['compound_ids']) or None)
+    args=SimpleNamespace(db_path=db,output=tmp_path,primg_gbsa_input_count=100)
+    primg_gbsa._run_stage(args,None)
     assert calls==[[1]]
     assert prime.load_job(directory) is None
-    assert not (directory/'mmgbsa_input-out.maegz').exists()
-    archives=list(directory.parent.glob('mmgbsa.stale-*'))
+    assert not (directory/'primg_gbsa_input-out.maegz').exists()
+    archives=list(directory.parent.glob('primg_gbsa.stale-*'))
     assert len(archives)==1
-    assert (archives[0]/'mmgbsa_input-out.maegz').read_text()=='old output'
+    assert (archives[0]/'primg_gbsa_input-out.maegz').read_text()=='old output'
     assert prime.load_job(archives[0])['compound_ids']==[99]
     with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT state,docking_score FROM compound').fetchone()==('gbsa_running',-9)
+        assert conn.execute('SELECT state,docking_score FROM compound').fetchone()==('primg_gbsa_running',-9)
 
 
 @pytest.mark.parametrize('status',['RUNNING','WAITING'])
@@ -354,12 +354,12 @@ def test_orphaned_live_job_is_preserved_without_new_submission(tmp_path,monkeypa
     db,directory=_reconcile_project(tmp_path)
     monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw:
                         SimpleNamespace(stdout=json.dumps({'jobId':'old-job','status':status})))
-    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw: pytest.fail('duplicate submission'))
-    args=SimpleNamespace(db_path=db,output=tmp_path,gbsa_input_count=100)
-    mmgbsa._run_stage(args,13)
+    monkeypatch.setattr(_core,'run_iteration_primg_gbsa',lambda **kw: pytest.fail('duplicate submission'))
+    args=SimpleNamespace(db_path=db,output=tmp_path,primg_gbsa_input_count=100)
+    primg_gbsa._run_stage(args,13)
     assert status in capsys.readouterr().out
     assert prime.load_job(directory)['job_id']=='old-job'
-    assert (directory/'mmgbsa_input-out.maegz').read_text()=='old output'
+    assert (directory/'primg_gbsa_input-out.maegz').read_text()=='old output'
     with sqlite3.connect(db) as conn:
         assert conn.execute('SELECT state FROM compound').fetchone()==('docked',)
 
@@ -368,7 +368,7 @@ def test_current_saved_job_is_kept_without_cleanup_or_status_query(tmp_path,monk
     db,directory=_reconcile_project(tmp_path,ids=(1,))
     monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw: pytest.fail('unneeded query'))
     assert prime.reconcile_saved_job(directory,db,13)['compound_ids']==[1]
-    assert (directory/'mmgbsa_input-out.maegz').read_text()=='old output'
+    assert (directory/'primg_gbsa_input-out.maegz').read_text()=='old output'
 
 
 @pytest.mark.parametrize('ids,launching,job_id',[( (1,99),False,'old-job'),((99,),True,None)])
@@ -384,7 +384,7 @@ def test_orphaned_unsubmitted_job_is_archived_without_status_query(tmp_path,monk
     db,directory=_reconcile_project(tmp_path,job_id=None)
     monkeypatch.setattr(prime.subprocess,'run',lambda *a,**kw: pytest.fail('no JobId'))
     assert prime.reconcile_saved_job(directory,db,13) is None
-    assert list(directory.parent.glob('mmgbsa.stale-*'))
+    assert list(directory.parent.glob('primg_gbsa.stale-*'))
 
 
 def test_status_lookup_failure_prevents_cleanup(tmp_path,monkeypatch):
@@ -395,4 +395,4 @@ def test_status_lookup_failure_prevents_cleanup(tmp_path,monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         prime.reconcile_saved_job(directory,db,13)
     assert prime.load_job(directory)['compound_ids']==[99]
-    assert not list(directory.parent.glob('mmgbsa.stale-*'))
+    assert not list(directory.parent.glob('primg_gbsa.stale-*'))

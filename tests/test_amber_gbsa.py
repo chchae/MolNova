@@ -11,7 +11,7 @@ import pytest
 
 from molnova import _core, amber_gbsa, amber_runner, cli, database, driver
 from molnova.config import amber_settings
-from molnova.stages import amber_gbsa as stage, generate, mmgbsa
+from molnova.stages import amber_gbsa as stage, generate, primg_gbsa
 from molnova.states import CompoundState as State
 
 
@@ -25,11 +25,11 @@ def project(tmp_path):
             [(f'GEN_I01_{i:06d}', 'CCO', -i, State.DOCKED) for i in range(1, 5)])
     receptor = tmp_path / 'receptor.maegz'
     receptor.touch()
-    return SimpleNamespace(db_path=db, output=tmp_path, target_count=4, gbsa_input_count=2,
+    return SimpleNamespace(db_path=db, output=tmp_path, target_count=4, primg_gbsa_input_count=2,
                            amber_gbsa_enabled=True, amber_keep_count=3, amber_cpus=128,
                            amber_receptor=receptor, amber_charge_method='bcc',
                            amber_remote={'host':'tensor', 'remote_env':'/env', 'conda_init':'/conda.sh',
-                                         'remote_work_dir':'/runs'}, gbsa_elite_count=1,
+                                         'remote_work_dir':'/runs'}, primg_gbsa_elite_count=1,
                            max_iteration=3, synthetic_feasibility_enabled=False)
 
 
@@ -41,11 +41,11 @@ def scores(project):
 
 def test_non_destructive_amber_migration(project):
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='gbsa_running',gbsa_score=-31 WHERE id=1")
+        conn.execute("UPDATE compound SET state='primg_gbsa_running',primg_gbsa_score=-31 WHERE id=1")
         conn.execute('ALTER TABLE compound DROP COLUMN amber_gbsa_score')
         _core.ensure_schema_columns(conn)
         _core.ensure_schema_columns(conn)
-        assert conn.execute('SELECT state,gbsa_score,amber_gbsa_score FROM compound WHERE id=1').fetchone() == ('gbsa_running',-31,None)
+        assert conn.execute('SELECT state,primg_gbsa_score,amber_gbsa_score FROM compound WHERE id=1').fetchone() == ('primg_gbsa_running',-31,None)
 
 
 def test_atomic_amber_claims_do_not_overlap(project):
@@ -57,24 +57,24 @@ def test_atomic_amber_claims_do_not_overlap(project):
 
 def test_all_amber_work_precedes_prime_and_generation(project):
     assert 'Amber' in database.iteration_completion_reason(project.db_path, 1, 4, 2, 1, 3)
-    assert database.claim_mmgbsa_candidates(project.db_path, 1, 2, 4, 3) == []
+    assert database.claim_primg_gbsa_candidates(project.db_path, 1, 2, 4, 3) == []
     ids = database.claim_amber_candidates(project.db_path, 1, 4)
     database.store_amber_results(project.db_path, 1, [{'id':4,'score':-80}], ids)
-    assert database.claim_mmgbsa_candidates(project.db_path, 1, 2, 4, 3) == []
+    assert database.claim_primg_gbsa_candidates(project.db_path, 1, 2, 4, 3) == []
     database.store_amber_results(project.db_path, 1,
         [{'id':i,'score':-i*10} for i in (1,2,3)], ids)
-    assert database.claim_mmgbsa_candidates(project.db_path, 1, 2, 4, 3) == [4,3]
+    assert database.claim_primg_gbsa_candidates(project.db_path, 1, 2, 4, 3) == [4,3]
 
 
 def test_prime_uses_amber_order_keeps_scored_positions_and_ties(project):
     scores(project)
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET gbsa_score=-50,state='gbsa_done' WHERE id=4")
+        conn.execute("UPDATE compound SET primg_gbsa_score=-50,state='primg_gbsa_done' WHERE id=4")
         conn.execute('UPDATE compound SET amber_gbsa_score=-30,docking_score=-3 WHERE id=2')
-    assert database.mmgbsa_candidates(project.db_path, 1, 2, 4, 3) == [2]
+    assert database.primg_gbsa_candidates(project.db_path, 1, 2, 4, 3) == [2]
     assert [r[0] for r in database.prime_selection_rows(project.db_path,1,2,3)] == [4,2]
     # Legacy disabled projects retain Glide ranking.
-    assert database.mmgbsa_candidates(project.db_path, 1, 2, 4) == [2]
+    assert database.primg_gbsa_candidates(project.db_path, 1, 2, 4) == [2]
 
 
 def test_1000_to_500_to_200(project):
@@ -84,7 +84,7 @@ def test_1000_to_500_to_200(project):
             "INSERT INTO compound(id,name,smiles,iteration,state,docking_score,amber_gbsa_score) "
             "VALUES (?,?,'C',1,'docked',?,?)",
             [(i,f'GEN_I01_{i:06d}',-i,-(1001-i)) for i in range(1,1001)])
-    assert database.claim_mmgbsa_candidates(project.db_path,1,200,1000,500) == list(range(501,701))
+    assert database.claim_primg_gbsa_candidates(project.db_path,1,200,1000,500) == list(range(501,701))
 
 
 @pytest.mark.parametrize('bad', [{'id':99,'score':-5}, {'id':2,'score':float('inf')},
@@ -100,13 +100,13 @@ def test_invalid_batch_rolls_back_all_results(project, bad):
 
 def test_import_preserves_prime_fep_and_replays_idempotently(project):
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='fep_done',gbsa_score=-40,fep_score=-9 WHERE id=1")
+        conn.execute("UPDATE compound SET state='fep_done',primg_gbsa_score=-40,fep_score=-9 WHERE id=1")
     ids=database.claim_amber_candidates(project.db_path,1,4)
     results=[{'id':1,'score':-25},{'id':2,'error':'parameterization failed'}]
     assert database.store_amber_results(project.db_path,1,results,ids) == 1
     assert database.store_amber_results(project.db_path,1,results,ids) == 0
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT state,amber_gbsa_score,gbsa_score,fep_score FROM compound WHERE id=1').fetchone() == ('fep_done',-25,-40,-9)
+        assert conn.execute('SELECT state,amber_gbsa_score,primg_gbsa_score,fep_score FROM compound WHERE id=1').fetchone() == ('fep_done',-25,-40,-9)
         assert conn.execute('SELECT state,failed_stage,failure_message FROM compound WHERE id=2').fetchone() == ('failed','amber_gbsa','parameterization failed')
 
 
@@ -115,16 +115,16 @@ def test_amber_failures_are_terminal_but_cannot_rank(project):
     database.store_amber_results(project.db_path,1,
         [{'id':cid,'error':'unsupported atom'} if cid==4 else {'id':cid,'score':-cid*10} for cid in ids],ids)
     assert database.amber_completion_reason(project.db_path,1,4) is None
-    assert database.mmgbsa_candidates(project.db_path,1,2,4,3) == [3,2]
+    assert database.primg_gbsa_candidates(project.db_path,1,2,4,3) == [3,2]
 
 
 def test_orphan_claim_recovery_restores_scored_state(project):
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET gbsa_score=-40,state='gbsa_done' WHERE id=1")
+        conn.execute("UPDATE compound SET primg_gbsa_score=-40,state='primg_gbsa_done' WHERE id=1")
     database.claim_amber_candidates(project.db_path,1,4)
     database.reset_unsubmitted_amber(project.db_path,1)
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT state FROM compound WHERE id=1').fetchone()[0] == 'gbsa_done'
+        assert conn.execute('SELECT state FROM compound WHERE id=1').fetchone()[0] == 'primg_gbsa_done'
 
 
 def make_record(project):
@@ -157,7 +157,7 @@ def test_driver_recovers_saved_amber_even_with_complete_scores(project):
     make_record(project)
     database.store_amber_results(project.db_path,1,[{'id':i,'score':-i} for i in range(1,5)],range(1,5))
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='gbsa_done',gbsa_score=-40")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40")
     assert driver.choose_iteration(project) == 1
 
 
@@ -201,9 +201,9 @@ def test_saved_run_rejects_changed_identity(project,monkeypatch):
 def test_direct_prime_and_generation_cannot_bypass_saved_amber_run(project,monkeypatch,capsys):
     directory,record=make_record(project)
     database.store_amber_results(project.db_path,1,[{'id':cid,'score':-cid} for cid in range(1,5)],range(1,5))
-    monkeypatch.setattr(mmgbsa,'reconcile_saved_job',lambda *a:None)
-    monkeypatch.setattr(_core,'run_iteration_mmgbsa',lambda **kw:pytest.fail('Prime started'))
-    mmgbsa._run_stage(project,1)
+    monkeypatch.setattr(primg_gbsa,'reconcile_saved_job',lambda *a:None)
+    monkeypatch.setattr(_core,'run_iteration_primg_gbsa',lambda **kw:pytest.fail('Prime started'))
+    primg_gbsa._run_stage(project,1)
     assert 'Amber remote work' in capsys.readouterr().out
     generate._run_stage(project,2)
     assert 'Amber work still requires recovery' in capsys.readouterr().out
@@ -227,15 +227,15 @@ def test_environment_activates_conda_and_limits_native_threads():
 @pytest.mark.parametrize('key,value',[('amber-cpus',True),('amber-cpus',0),('amber-keep-count',100),
                                      ('amber-remote-env','env'),('amber-ssh-host','-bad')])
 def test_config_validation(tmp_path,key,value):
-    config={'out-dir':'output','amber-gbsa-enabled':True,'gbsa-input-count':200,key:value}
+    config={'out-dir':'output','amber-gbsa-enabled':True,'prime-gbsa-input-count':200,key:value}
     with pytest.raises(ValueError):amber_settings(config,tmp_path)
 
 
 def test_config_paths_and_stage_order(tmp_path):
     settings=amber_settings({'out-dir':'output'},tmp_path)
-    assert settings['amber_receptor']==tmp_path/'output/iter00/08-mmgbsa/receptor.maegz'
+    assert settings['amber_receptor']==tmp_path/'output/iter00/08-primg_gbsa/receptor.maegz'
     assert settings['amber_remote']['remote_env']=='/home1/amber26/envs/AmberTools26'
-    assert [s for s,_ in driver.build_stages(False,False,True)]==['generate','druglike','ligprep','glide','amber-gbsa','mmgbsa']
+    assert [s for s,_ in driver.build_stages(False,False,True)]==['generate','druglike','ligprep','glide','amber-gbsa','primg_gbsa']
 
 
 def test_cli_dispatch(tmp_path,monkeypatch):
@@ -288,7 +288,7 @@ os._exit(0)
 def references(project):
     with database.connect(project.db_path) as conn:
         conn.execute("UPDATE compound SET iteration=0,state='reference',docking_score=NULL")
-        conn.execute("UPDATE compound SET state='gbsa_done',gbsa_score=-40 WHERE id=4")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40 WHERE id=4")
     project.reference_poses = project.output / 'references.maegz'
     project.reference_poses.write_bytes(b'reference poses')
     return project
@@ -296,18 +296,18 @@ def references(project):
 
 def test_reference_amber_precedes_prime_without_counts_or_docking(references):
     args = references
-    assert database.mmgbsa_candidates(args.db_path, 0, 1, 1000, 1) == []
+    assert database.primg_gbsa_candidates(args.db_path, 0, 1, 1000, 1) == []
     assert database.claim_amber_candidates(args.db_path, 0, 1000) == [1, 2, 3, 4]
     assert database.claim_amber_candidates(args.db_path, 0, 1000) == []
     database.store_amber_results(args.db_path, 0, [{'id':1,'score':-10}], range(1,5))
-    assert database.claim_mmgbsa_candidates(args.db_path, 0, 1, 1000, 1) == []
+    assert database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000, 1) == []
     database.store_amber_results(args.db_path, 0,
         [{'id':i,'score':-i} for i in (2,3,4)], range(1,5))
     assert database.amber_completion_reason(args.db_path, 0, 1000) is None
     with database.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,gbsa_score FROM compound ORDER BY id').fetchall() == [
-            ('reference',None), ('reference',None), ('reference',None), ('gbsa_done',-40)]
-    assert database.claim_mmgbsa_candidates(args.db_path, 0, 1, 1000, 1) == [1,2,3]
+        assert conn.execute('SELECT state,primg_gbsa_score FROM compound ORDER BY id').fetchall() == [
+            ('reference',None), ('reference',None), ('reference',None), ('primg_gbsa_done',-40)]
+    assert database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000, 1) == [1,2,3]
 
 
 def test_reference_orphan_claims_and_terminal_failures(references):
@@ -316,25 +316,25 @@ def test_reference_orphan_claims_and_terminal_failures(references):
     database.reset_unsubmitted_amber(args.db_path, 0)
     with database.connect(args.db_path) as conn:
         assert conn.execute('SELECT state FROM compound ORDER BY id').fetchall() == [
-            ('reference',), ('reference',), ('reference',), ('gbsa_done',)]
+            ('reference',), ('reference',), ('reference',), ('primg_gbsa_done',)]
     ids = database.claim_amber_candidates(args.db_path, 0, 1000)
     database.store_amber_results(args.db_path, 0,
         [{'id':i,'error':'unsupported atom'} for i in ids], ids)
     assert database.amber_completion_reason(args.db_path, 0, 1000) is None
-    assert database.reference_mmgbsa_completion_reason(args.db_path) is None
+    assert database.reference_primg_gbsa_completion_reason(args.db_path) is None
     assert database.claim_amber_candidates(args.db_path, 0, 1000) == []
 
 
 def test_reference_driver_selects_missing_amber_and_recovers_prime_first(references):
     args = references
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET gbsa_score=-40,state='gbsa_done'")
+        conn.execute("UPDATE compound SET primg_gbsa_score=-40,state='primg_gbsa_done'")
     assert driver.choose_iteration(args) == 0
-    assert [s for s,_ in driver.reference_stages(args)] == ['amber-gbsa','mmgbsa']
-    directory = args.output / 'iter0/mmgbsa'
+    assert [s for s,_ in driver.reference_stages(args)] == ['amber-gbsa','primg_gbsa']
+    directory = args.output / 'iter0/primg_gbsa'
     directory.mkdir(parents=True)
-    (directory / 'prime_job.json').write_text(json.dumps({'compound_ids':[1]}))
-    assert [s for s,_ in driver.reference_stages(args)] == ['mmgbsa-recovery','amber-gbsa','mmgbsa']
+    (directory / 'primg_gbsa_job.json').write_text(json.dumps({'compound_ids':[1]}))
+    assert [s for s,_ in driver.reference_stages(args)] == ['primg_gbsa-recovery','amber-gbsa','primg_gbsa']
 
 
 @pytest.mark.parametrize('enabled', [False, True])
@@ -346,9 +346,9 @@ def test_reference_prime_waits_for_saved_amber_after_score_commit(references, mo
     amber_gbsa.new_record(args, 0, directory, ids)
     database.store_amber_results(args.db_path, 0, [{'id':i,'score':-i} for i in ids], ids)
     args.amber_gbsa_enabled = enabled
-    monkeypatch.setattr(mmgbsa, 'reconcile_saved_job', lambda *a:None)
-    monkeypatch.setattr(_core, 'run_iteration_mmgbsa', lambda **kw:pytest.fail('Prime started'))
-    mmgbsa._run_stage(args, 0)
+    monkeypatch.setattr(primg_gbsa, 'reconcile_saved_job', lambda *a:None)
+    monkeypatch.setattr(_core, 'run_iteration_primg_gbsa', lambda **kw:pytest.fail('Prime started'))
+    primg_gbsa._run_stage(args, 0)
     assert 'Amber remote work' in capsys.readouterr().out
     assert driver.choose_iteration(args) == 0
 
@@ -356,7 +356,7 @@ def test_reference_prime_waits_for_saved_amber_after_score_commit(references, mo
 def test_reference_worker_and_rankings_use_all_references(references, monkeypatch):
     args = references
     args.target_count = 1000
-    args.amber_keep_count = args.gbsa_input_count = 1
+    args.amber_keep_count = args.primg_gbsa_input_count = 1
     def poll(args, iteration, directory, record):
         assert iteration == 0 and record['compound_ids'] == [1,2,3,4]
         database.store_amber_results(args.db_path, 0,
@@ -371,7 +371,7 @@ def test_reference_worker_and_rankings_use_all_references(references, monkeypatc
 
 def test_reference_receptor_bootstrap_uses_existing_grid_extractor(references, monkeypatch):
     args = references
-    args.amber_receptor = args.output / 'iter00/08-mmgbsa/receptor.maegz'
+    args.amber_receptor = args.output / 'iter00/08-primg_gbsa/receptor.maegz'
     args.schrodinger = Path('/suite')
     args.grid = args.output / 'grid.zip'
     calls = []

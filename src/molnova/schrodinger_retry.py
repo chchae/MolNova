@@ -17,7 +17,7 @@ def license_unavailable(text):
 
 def _logs(directory):
     return {path: (path.read_text(errors="replace"), path.stat().st_mtime_ns)
-            for path in directory.rglob("*.log") if path.name != "prime_license_retry.log"}
+            for path in directory.rglob("*.log") if path.name != "primg_gbsa_license_retry.log"}
 
 
 def _run_attempt(command, cwd, on_line=None):
@@ -67,6 +67,6 @@ def run_prime(command, cwd, *, wait_seconds=300, retries=3):
             f"retry {attempt + 1}/{retries}."
         )
         print(message, flush=True)
-        with (cwd / "prime_license_retry.log").open("a") as stream:
+        with (cwd / "primg_gbsa_license_retry.log").open("a") as stream:
             stream.write(message + "\n")
         time.sleep(wait_seconds)

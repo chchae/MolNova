@@ -12,7 +12,7 @@ STAGE_DIRECTORIES = {
     'ligprep': '05-ligprep',
     'glide': '06-glide',
     'amber_gbsa': '07-amber_gbsa',
-    'mmgbsa': '08-mmgbsa',
+    'primg_gbsa': '08-primg_gbsa',
     'fep': '09-fep',
 }
 

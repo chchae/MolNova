@@ -36,7 +36,7 @@ def test_debug_population_limits_and_unchanged_scientific_resources(tmp_path, ex
     toml.write_text(PROJECT + extra)
     args = _core.load_project_toml(toml)
     assert [args[k] for k in ('target_count', 'sample_size', 'amber_keep_count',
-                              'gbsa_input_count', 'gbsa_elite_count', 'fep_input_count')] == (
+                              'primg_gbsa_input_count', 'primg_gbsa_elite_count', 'fep_input_count')] == (
         [1000, 10000, 50, 5, 1, 2] if debug else [10000, 100000, 500, 50, 10, 20])
     assert args['debug'] is debug
     assert args['amber_remote']['host'] == 't41'
@@ -50,10 +50,10 @@ def test_debug_population_limits_and_unchanged_scientific_resources(tmp_path, ex
 def test_debug_explicit_counts_alias_and_floor_minimum(tmp_path):
     toml = tmp_path / 'test.toml'
     toml.write_text(PROJECT + 'debug = true\namber-keep-count = 123\n'
-                    'gbsa-input-count = 19\ngbsa-elite-count = 1\nuse-slurm = true\n')
+                    'prime-gbsa-input-count = 19\nprimg-gbsa-elite-count = 1\nuse-slurm = true\n')
     args = _core.load_project_toml(toml)
     assert args['amber_keep_count'] == 12
-    assert args['gbsa_input_count'] == args['gbsa_elite_count'] == 1
+    assert args['primg_gbsa_input_count'] == args['primg_gbsa_elite_count'] == 1
     assert args['amber_cpus'] == 384
     assert args['host'] == 't41-cpu:128'
     # File remains unmodified, so a separate stage scales exactly once.
@@ -139,6 +139,7 @@ def test_array_record_preserves_task_order_and_cpu_limit(project, count, budget)
     project.amber_cpus = budget
     record = amber.new_record(project, 1, project.output, list(range(1, count + 1)))
     assert record['mode'] == slurm.ARRAY
+    assert record['slurm_job_name'] == 'amber-' + record['run_id'].removeprefix('run-')
     assert record['cpus'] == budget
     assert record['compound_ids'] == list(range(1, count + 1))
     assert not record['prepared']
@@ -311,6 +312,10 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
             del record['slurm_time_limit']
         elif saved_limit != 'new':
             record['slurm_time_limit'] = saved_limit
+        if saved_limit is None:
+            record.pop('slurm_job_name')  # Existing arrays retain their original names.
+        elif saved_limit != 'new':
+            record['slurm_job_name'] = 'amber-' + record['run_id']  # Previous pinned name.
     record['prepared'] = False
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
@@ -327,7 +332,10 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     config = json.loads((folder / 'input.json').read_text())
     assert config['cpus'] == record['cpus']
     assert config['slurm']['partition'] == 'cpu'
-    assert config['slurm']['job_name'].endswith(record['run_id'])
+    assert config['slurm']['job_name'] == (
+        'amber-' + record['run_id'].removeprefix('run-') if mode == slurm.ARRAY and saved_limit == 'new'
+        else 'amber-' + record['run_id'] if mode == slurm.ARRAY and saved_limit is not None
+        else 'molnova-amber-' + record['run_id'])
     if mode == slurm.ARRAY and saved_limit is not None:
         assert config['slurm']['time_limit'] == ('00:10:00' if saved_limit == 'new' else saved_limit)
     else:
@@ -515,7 +523,7 @@ def test_timeout_fails_only_mapped_compound_and_unblocks_prime(project, monkeypa
             'failed', 'amber_gbsa', 'Amber Slurm task 123_1 reached its time limit (TIMEOUT)')
         assert conn.execute('SELECT COUNT(amber_gbsa_score) FROM compound').fetchone()[0] == 3
     assert database.amber_completion_reason(project.db_path, 1, 4, 4) is None
-    assert database.claim_mmgbsa_candidates(project.db_path, 1, 2, 4, 4) == [4, 3]
+    assert database.claim_primg_gbsa_candidates(project.db_path, 1, 2, 4, 4) == [4, 3]
     archived = json.loads((project.output / f'{record["run_id"]}.completed.json').read_text())
     assert archived['timeout_compound_ids'] == [1]
     assert archived['slurm_terminal_state'] == native['state']
@@ -575,14 +583,14 @@ def test_reference_timeout_recovery_preserves_existing_prime_and_fep(project, mo
     record, native, snapshot = timeout_run(project, monkeypatch)
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=0,docking_score=NULL')
-        conn.execute('UPDATE compound SET gbsa_score=-20,fep_score=-30 WHERE id=1')
+        conn.execute('UPDATE compound SET primg_gbsa_score=-20,fep_score=-30 WHERE id=1')
     project.reference_poses = project.output / 'iter1/glide/best_poses.maegz'
     record['iteration'] = 0
     record['source_fingerprints'] = amber.source_fingerprints(project, 0)
     amber.save(project.output / 'amber_job.json', record)
     assert amber.poll(project, 0, project.output, record)
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT state,gbsa_score,fep_score,failed_stage FROM compound WHERE id=1').fetchone() == (
+        assert conn.execute('SELECT state,primg_gbsa_score,fep_score,failed_stage FROM compound WHERE id=1').fetchone() == (
             'fep_done', -20, -30, 'amber_gbsa')
     assert database.amber_completion_reason(project.db_path, 0, 10000) is None
-    assert database.claim_mmgbsa_candidates(project.db_path, 0, 50, 10000, 500) == [2, 3, 4]
+    assert database.claim_primg_gbsa_candidates(project.db_path, 0, 50, 10000, 500) == [2, 3, 4]

@@ -4,24 +4,24 @@ from types import SimpleNamespace
 import pytest
 
 from molnova import _core
-from molnova.config import mmgbsa_job_options, schrodinger_cpu_settings, schrodinger_job_options
+from molnova.config import primg_gbsa_job_options, schrodinger_cpu_settings, schrodinger_job_options
 
 
-@pytest.mark.parametrize("stage", ["ligprep", "glide", "mmgbsa"])
+@pytest.mark.parametrize("stage", ["ligprep", "glide", "primg_gbsa"])
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "8"])
 def test_invalid_cpu_settings(stage, value):
-    with pytest.raises(ValueError, match=f"{stage}-cpus"):
-        schrodinger_cpu_settings({"host": "compute:128", f"{stage}-cpus": value})
+    with pytest.raises(ValueError, match=f"{stage.replace('_', '-')}-cpus"):
+        schrodinger_cpu_settings({"host": "compute:128", f"{stage.replace('_', '-')}-cpus": value})
 
 
 def test_config_loads_cpu_overrides(tmp_path):
     from test_project_config import PROJECT_TOML
     path = tmp_path / "project.toml"
-    path.write_text(PROJECT_TOML + '\nligprep-cpus = 8\nglide-cpus = 16\nmmgbsa-cpus = 4\n')
+    path.write_text(PROJECT_TOML + '\nligprep-cpus = 8\nglide-cpus = 16\nprimg-gbsa-cpus = 4\n')
     settings = _core.load_project_toml(path)
-    assert [settings[f"{s}_cpus"] for s in ("ligprep", "glide", "mmgbsa")] == [8, 16, 4]
+    assert [settings[f"{s}_cpus"] for s in ("ligprep", "glide", "primg_gbsa")] == [8, 16, 4]
     assert schrodinger_cpu_settings({"host": "localhost"}) == {
-        "ligprep_cpus": None, "glide_cpus": None, "mmgbsa_cpus": None,
+        "ligprep_cpus": None, "glide_cpus": None, "primg_gbsa_cpus": None,
     }
 
 
@@ -32,8 +32,8 @@ def test_config_loads_cpu_overrides(tmp_path):
     ("a:4 b:8", "a:4 b:3"),
 ])
 @pytest.mark.parametrize("ligand_count", [1, 7, 8, 200])
-def test_mmgbsa_queues_each_ligand_with_fixed_host_slots(host, expected, ligand_count):
-    assert mmgbsa_job_options(host, ligand_count) == ["-HOST", expected, "-NJOBS", str(ligand_count)]
+def test_primg_gbsa_queues_each_ligand_with_fixed_host_slots(host, expected, ligand_count):
+    assert primg_gbsa_job_options(host, ligand_count) == ["-HOST", expected, "-NJOBS", str(ligand_count)]
 
 
 def test_host_defaults_and_multiple_hosts():
@@ -51,7 +51,7 @@ def test_ligprep_splits_jobs_preserving_scientific_options(monkeypatch, tmp_path
 
     def run(command, cwd):
         calls.append(command)
-        (cwd / "ligprep_all.maegz").write_text("prepared")
+        (cwd / "ligprep.maegz").write_text("prepared")
 
     monkeypatch.setattr(_core, "run_command", run)
     _core.run_ligprep_once(Path("/suite"), tmp_path / "input.smi", tmp_path,

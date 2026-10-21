@@ -4,11 +4,11 @@ from types import SimpleNamespace
 import pytest
 from molnova import glide_recovery as recovery, schrodinger_guard as guard
 from molnova.stages import glide
-from molnova import prime_async as prime
+from molnova import primg_gbsa_async as prime
 
 
 def files(tmp_path):
-    log=tmp_path/'glide_constrained.log';out=tmp_path/'glide_constrained_lib.maegz'
+    log=tmp_path/'glide.log';out=tmp_path/'glide_lib.maegz'
     log.write_text('JobId: old\nExitStatus: failed\nFinished at: previous job\n')
     out.write_text('previous poses')
     return log,out
@@ -16,8 +16,8 @@ def files(tmp_path):
 
 def test_new_live_job_overrides_old_finished_log_and_output(tmp_path,monkeypatch):
     log,out=files(tmp_path)
-    live=[{'jobId':'new','jobName':'glide_constrained','status':'RUNNING',
-           'commandLine':f'/suite/glide {tmp_path}/glide_constrained.in','timeCreated':'new'}]
+    live=[{'jobId':'new','jobName':'glide','status':'RUNNING',
+           'commandLine':f'/suite/glide {tmp_path}/glide.in','timeCreated':'new'}]
     assert recovery.group_status('/suite',tmp_path,log,out,live)=='RUNNING'
     assert recovery.load_record(tmp_path)['job_id']=='new'
     assert out.read_text()=='previous poses'
@@ -70,13 +70,13 @@ def test_launch_record_exists_before_native_submit_and_retains_identity(tmp_path
     monkeypatch.setattr(recovery.subprocess,'run',launch)
     assert recovery.submit('/suite',['/suite/glide','input.in'],tmp_path)=='new'
     assert recovery.load_record(tmp_path)['job_id']=='new'
-    assert len(list(tmp_path.glob('previous-*/glide_constrained_lib.maegz')))==1
+    assert len(list(tmp_path.glob('previous-*/glide_lib.maegz')))==1
 
 
 def test_opposite_stage_fences_glide_before_files_are_archived(tmp_path,monkeypatch):
     log,out=files(tmp_path)
     monkeypatch.setattr(guard,'active_jobs',lambda *a:[
-        {'jobId':'prime','jobName':'mmgbsa_input','status':'RUNNING'}])
+        {'jobId':'prime','jobName':'primg_gbsa_input','status':'RUNNING'}])
     with pytest.raises(guard.SubmissionBlocked):
         recovery.submit('/suite',['/suite/glide','input.in'],tmp_path)
     assert recovery.load_record(tmp_path) is None
@@ -107,11 +107,11 @@ def test_stage_does_not_import_partial_output_or_mark_failed_from_child_log(tmp_
         conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('REF','C',0,'reference')")
         conn.execute("INSERT INTO compound(name,smiles,iteration,state,similar_to) VALUES ('NEW','C',1,'glide_running',1)")
     args=SimpleNamespace(db_path=db,output=tmp_path,schrodinger=Path('/suite'),glide_job_timeout=timeout)
-    prepared=tmp_path/'iter1/ligprep/ligprep_all.maegz';prepared.parent.mkdir(parents=True);prepared.write_text('input')
+    prepared=tmp_path/'iter1/ligprep/ligprep.maegz';prepared.parent.mkdir(parents=True);prepared.write_text('input')
     group=tmp_path/'iter1/glide/ref_1';group.mkdir(parents=True)
     glide.prepare_glide_files(group.parent,prepared)
     log,out=files(group);ligand=group/'ligprep_group.maegz';ligand.write_text('ligand')
-    live=[{'jobId':'new','jobName':'glide_constrained','status':'RUNNING','commandLine':f'/suite/glide {group}/glide_constrained.in'}]
+    live=[{'jobId':'new','jobName':'glide','status':'RUNNING','commandLine':f'/suite/glide {group}/glide.in'}]
     monkeypatch.setattr(glide,'active_jobs',lambda *a:live)
     stopped = []
     monkeypatch.setattr(recovery, 'job_details', lambda *a: [
@@ -137,10 +137,10 @@ def test_stage_does_not_import_partial_output_or_mark_failed_from_child_log(tmp_
 
 
 def test_legacy_prime_retry_fenced_before_launch_marker(tmp_path,monkeypatch):
-    monkeypatch.setattr(guard,'active_jobs',lambda *a:[{'jobId':'g','jobName':'glide_constrained','status':'RUNNING'}])
+    monkeypatch.setattr(guard,'active_jobs',lambda *a:[{'jobId':'g','jobName':'glide','status':'RUNNING'}])
     monkeypatch.setattr(prime,'_run_attempt',lambda *a:pytest.fail('Prime submitted while Glide active'))
     cmd=['/suite/prime_mmgbsa','input.maegz']
-    assert prime.submit_or_poll(cmd,tmp_path,[1],submission_fence=lambda:guard.submission_guard('/suite','mmgbsa')) is False
+    assert prime.submit_or_poll(cmd,tmp_path,[1],submission_fence=lambda:guard.submission_guard('/suite','primg_gbsa')) is False
     assert prime.load_job(tmp_path) is None  # No launch marker for a blocked submission.
 
 

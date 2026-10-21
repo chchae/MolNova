@@ -222,7 +222,7 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
         if iteration == 1:
             inputs = _core.get_reference_compounds(args.db_path)
         else:
-            if elites is None or len(elites) != args.gbsa_elite_count:
+            if elites is None or len(elites) != args.primg_gbsa_elite_count:
                 raise RuntimeError('Automatic MCS requires the selected preceding-iteration elites.')
             if any(row[3] != iteration - 1 for row in elites):
                 raise RuntimeError('Automatic MCS inputs must belong to the preceding iteration.')

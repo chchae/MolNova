@@ -16,7 +16,9 @@ def new_record(args, iteration, directory, ids):
     if not ids or not 1 <= args.amber_cpus <= 384:
         raise ValueError('Slurm Amber requires compounds and 1..384 CPUs')
     run_id = 'run-' + uuid.uuid4().hex
-    record = {'mode': ARRAY, 'run_id': run_id, 'iteration': iteration,
+    record = {'mode': ARRAY, 'run_id': run_id,
+              'slurm_job_name': 'amber-' + run_id.removeprefix('run-'),
+              'iteration': iteration,
               'db_path': str(args.db_path.resolve()), 'settings': dict(args.amber_remote),
               'charge_method': args.amber_charge_method, 'compound_ids': ids,
               'source_fingerprints': amber.source_fingerprints(args, iteration),

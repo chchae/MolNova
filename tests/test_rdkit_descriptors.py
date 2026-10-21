@@ -52,31 +52,31 @@ def test_migration_preserves_legacy_results_claims_and_scores(tmp_path):
     db = tmp_path / 'legacy.sqlite'
     with database.connect(db) as conn:
         conn.execute('CREATE TABLE compound(id INTEGER PRIMARY KEY, name TEXT, smiles TEXT, '
-                     'iteration INTEGER, state TEXT, sa_score REAL, docking_score REAL, gbsa_score REAL)')
-        conn.execute("INSERT INTO compound VALUES (1,'a','CCO',1,'gbsa_running',3.25,-8,NULL)")
+                     'iteration INTEGER, state TEXT, sa_score REAL, docking_score REAL, primg_gbsa_score REAL)')
+        conn.execute("INSERT INTO compound VALUES (1,'a','CCO',1,'primg_gbsa_running',3.25,-8,NULL)")
         original = conn.execute('SELECT * FROM compound').fetchone()
         _core.ensure_schema_columns(conn)
-        assert conn.execute('SELECT id,name,smiles,iteration,state,sa_score,docking_score,gbsa_score FROM compound').fetchone() == original
+        assert conn.execute('SELECT id,name,smiles,iteration,state,sa_score,docking_score,primg_gbsa_score FROM compound').fetchone() == original
         assert conn.execute('SELECT rdk_sa_score,rdk_qed FROM compound').fetchone() == (3.25, None)
         conn.execute('UPDATE compound SET rdk_qed=.1')
         _core.ensure_schema_columns(conn)
-        assert conn.execute('SELECT rdk_sa_score,rdk_qed,state FROM compound').fetchone() == (3.25, .1, 'gbsa_running')
+        assert conn.execute('SELECT rdk_sa_score,rdk_qed,state FROM compound').fetchone() == (3.25, .1, 'primg_gbsa_running')
 
 
 def test_completed_generation_backfills_properties_preserving_every_other_result(project, monkeypatch):
     with database.connect(project.db_path) as conn:
         conn.executemany(
-            "INSERT INTO compound(name,smiles,iteration,state,sa_score,docking_score,gbsa_score,failed_stage,failure_message) "
-            "VALUES (?, ?, 1, ?, ?, -8,-40,'gbsa','keep')",
-            [('a', 'CCO', 'gbsa_done', 3.25), ('b', 'c1ccc(O)c(O)c1', 'failed', None)],
+            "INSERT INTO compound(name,smiles,iteration,state,sa_score,docking_score,primg_gbsa_score,failed_stage,failure_message) "
+            "VALUES (?, ?, 1, ?, ?, -8,-40,'primg_gbsa','keep')",
+            [('a', 'CCO', 'primg_gbsa_done', 3.25), ('b', 'c1ccc(O)c(O)c1', 'failed', None)],
         )
         conn.execute("UPDATE compound SET rdk_qed=.123 WHERE name='a'")
         conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('ref','C',0,'reference')")
-        original = conn.execute('SELECT id,state,docking_score,gbsa_score,failed_stage,failure_message FROM compound').fetchall()
+        original = conn.execute('SELECT id,state,docking_score,primg_gbsa_score,failed_stage,failure_message FROM compound').fetchall()
     monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: pytest.fail('resampled'))
     generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT id,state,docking_score,gbsa_score,failed_stage,failure_message FROM compound').fetchall() == original
+        assert conn.execute('SELECT id,state,docking_score,primg_gbsa_score,failed_stage,failure_message FROM compound').fetchall() == original
         assert conn.execute("SELECT sa_score,rdk_sa_score,rdk_qed FROM compound WHERE name='a'").fetchone() == (3.25, 3.25, .123)
         assert conn.execute("SELECT rdk_mw,rdk_pains_alerts,rdk_brenk_alerts FROM compound WHERE name='b'").fetchone() == (pytest.approx(110.112), 1, 1)
         assert conn.execute('SELECT rdk_mw FROM compound WHERE iteration=0').fetchone() == (None,)
@@ -96,22 +96,22 @@ def test_existing_references_backfill_without_filtering_or_result_changes(projec
     with database.connect(project.db_path) as conn:
         conn.executemany(
             'INSERT INTO compound(name,smiles,iteration,state,sa_score,rdk_qed,'
-            'dG_exp,docking_score,gbsa_score,failed_stage,failure_message) '
+            'dG_exp,docking_score,primg_gbsa_score,failed_stage,failure_message) '
             'VALUES (?, ?, 0, ?, ?, ?, -10,-8,-40,?,?)',
-            [('a', 'CCO', 'gbsa_running', 3.25, .123, None, None),
-             ('b', 'C' * 36, 'failed', None, None, 'gbsa', 'keep'),
-             ('c', 'c1ccc(O)c(O)c1', 'gbsa_done', None, None, None, None)],
+            [('a', 'CCO', 'primg_gbsa_running', 3.25, .123, None, None),
+             ('b', 'C' * 36, 'failed', None, None, 'primg_gbsa', 'keep'),
+             ('c', 'c1ccc(O)c(O)c1', 'primg_gbsa_done', None, None, None, None)],
         )
         conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('gen','C',1,'generated')")
         original = conn.execute('SELECT id,name,smiles,iteration,state,dG_exp,docking_score,'
-                                'gbsa_score,failed_stage,failure_message FROM compound ORDER BY id').fetchall()
+                                'primg_gbsa_score,failed_stage,failure_message FROM compound ORDER BY id').fetchall()
     # Existing DB must work without reopening the original MAEGZ or Schrödinger.
     _core.initialize_project_database(project.db_path, project.output / 'missing.maegz',
                                       project.output / 'missing-suite')
     assert database.missing_rdkit_descriptors(project.db_path, 0) == []
     with database.connect(project.db_path) as conn:
         assert conn.execute('SELECT id,name,smiles,iteration,state,dG_exp,docking_score,'
-                            'gbsa_score,failed_stage,failure_message FROM compound ORDER BY id').fetchall() == original
+                            'primg_gbsa_score,failed_stage,failure_message FROM compound ORDER BY id').fetchall() == original
         assert conn.execute("SELECT rdk_sa_score,sa_score,rdk_qed FROM compound WHERE name='a'").fetchone() == (3.25, 3.25, .123)
         assert conn.execute("SELECT rdk_ro5_violations FROM compound WHERE name='b'").fetchone() == (2,)
         assert conn.execute('SELECT rdk_mw FROM compound WHERE iteration=1').fetchone() == (None,)

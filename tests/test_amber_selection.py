@@ -33,13 +33,13 @@ def test_mode_defaults_select_prime_50_or_amber_500_then_prime_50(population, tm
     if enabled:
         ids = database.claim_amber_candidates(population, 1, 1000, keep)
         assert ids == list(range(1000, 500, -1))
-        assert database.claim_mmgbsa_candidates(population, 1, args.gbsa_input_count, 1000, keep) == []
+        assert database.claim_primg_gbsa_candidates(population, 1, args.primg_gbsa_input_count, 1000, keep) == []
         finish(population, ids)
         expected = list(range(501, 551))
     else:
         expected = list(range(1000, 950, -1))
-    assert database.claim_mmgbsa_candidates(
-        population, 1, args.gbsa_input_count, 1000, keep
+    assert database.claim_primg_gbsa_candidates(
+        population, 1, args.primg_gbsa_input_count, 1000, keep
     ) == expected
     with database.connect(population) as conn:
         assert conn.execute('SELECT COUNT(amber_gbsa_score) FROM compound').fetchone()[0] == (500 if enabled else 0)
@@ -50,13 +50,13 @@ def test_only_glide_500_are_claimed_and_amber_200_go_to_prime(population):
     assert database.claim_amber_candidates(db, 1, 1001, 500) == []
     ids = database.claim_amber_candidates(db, 1, 1000, 500)
     assert ids == list(range(1000, 500, -1))
-    assert database.claim_mmgbsa_candidates(db, 1, 200, 1000, 500) == []
+    assert database.claim_primg_gbsa_candidates(db, 1, 200, 1000, 500) == []
     finish(db, ids)
     assert database.amber_completion_reason(db, 1, 1000, 500) is None
     assert database.stage_completion_reason(db, 1, 'amber-gbsa', 1000, 200,
                                             amber_keep_count=500) is None
     assert database.claim_amber_candidates(db, 1, 1000, 500) == []
-    assert database.claim_mmgbsa_candidates(db, 1, 200, 1000, 500) == list(range(501, 701))
+    assert database.claim_primg_gbsa_candidates(db, 1, 200, 1000, 500) == list(range(501, 701))
     with database.connect(db) as conn:
         assert conn.execute('SELECT COUNT(amber_gbsa_score) FROM compound').fetchone()[0] == 500
         assert conn.execute("SELECT COUNT(*) FROM compound WHERE id<=500 AND state='docked'").fetchone()[0] == 500
@@ -72,14 +72,14 @@ def test_atomic_claims_never_refill_from_outside_glide_top_500(population):
 def test_scores_failures_and_ties_keep_their_glide_positions(population):
     db = population
     with database.connect(db) as conn:
-        conn.execute("UPDATE compound SET state='gbsa_done',gbsa_score=-50,amber_gbsa_score=-20 WHERE id=1000")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-50,amber_gbsa_score=-20 WHERE id=1000")
         conn.execute("UPDATE compound SET state='failed',failed_stage='amber_gbsa' WHERE id=999")
         conn.execute('UPDATE compound SET docking_score=-998 WHERE id IN (997,998)')
     assert database.claim_amber_candidates(db, 1, 1000, 3) == [997]
     finish(db, [997])
     assert database.claim_amber_candidates(db, 1, 1000, 3) == []
     assert database.amber_completion_reason(db, 1, 1000, 3) is None
-    assert database.claim_mmgbsa_candidates(db, 1, 2, 1000, 3) == [997]
+    assert database.claim_primg_gbsa_candidates(db, 1, 2, 1000, 3) == [997]
     with database.connect(db) as conn:
         assert conn.execute('SELECT state,amber_gbsa_score FROM compound WHERE id=998').fetchone() == ('docked',None)
 
@@ -87,18 +87,18 @@ def test_scores_failures_and_ties_keep_their_glide_positions(population):
 def test_legacy_outside_scores_are_preserved_but_not_selected(population, tmp_path):
     db = population
     with database.connect(db) as conn:
-        conn.execute("UPDATE compound SET amber_gbsa_score=-999,gbsa_score=-100,state='gbsa_done' WHERE id=1")
+        conn.execute("UPDATE compound SET amber_gbsa_score=-999,primg_gbsa_score=-100,state='primg_gbsa_done' WHERE id=1")
     ids = database.claim_amber_candidates(db, 1, 1000, 500)
     finish(db, ids)
     assert [r[0] for r in database.prime_selection_rows(db, 1, 200, 500)] == list(range(501,701))
-    args = SimpleNamespace(db_path=db, amber_keep_count=500, gbsa_input_count=200)
+    args = SimpleNamespace(db_path=db, amber_keep_count=500, primg_gbsa_input_count=200)
     amber_gbsa.write_rankings(args, 1, tmp_path)
     assert len((tmp_path/'amber_scores.tsv').read_text().splitlines()) == 502
     assert len((tmp_path/'amber_top.tsv').read_text().splitlines()) == 501
     assert len((tmp_path/'prime_candidates.tsv').read_text().splitlines()) == 201
     assert not any(line.startswith('1\t') for line in (tmp_path/'prime_candidates.tsv').read_text().splitlines()[1:])
     with database.connect(db) as conn:
-        assert conn.execute('SELECT amber_gbsa_score,gbsa_score,state FROM compound WHERE id=1').fetchone() == (-999,-100,'gbsa_done')
+        assert conn.execute('SELECT amber_gbsa_score,primg_gbsa_score,state FROM compound WHERE id=1').fetchone() == (-999,-100,'primg_gbsa_done')
 
 
 def test_legacy_outside_running_claim_still_blocks_prime(population):
@@ -107,16 +107,16 @@ def test_legacy_outside_running_claim_still_blocks_prime(population):
     with database.connect(db) as conn:
         conn.execute("UPDATE compound SET state='amber_running' WHERE id=1")
     assert 'running Amber' in database.amber_completion_reason(db, 1, 1000, 500)
-    assert database.claim_mmgbsa_candidates(db, 1, 200, 1000, 500) == []
+    assert database.claim_primg_gbsa_candidates(db, 1, 200, 1000, 500) == []
     assert 'running Amber' in database.iteration_completion_reason(db,1,1000,200,1,500)
 
 
 def test_generation_gate_needs_only_selected_amber_and_prime_results(population):
     db = population
     finish(db, database.claim_amber_candidates(db, 1, 1000, 500))
-    assert 'unfinished MM-GBSA' in database.iteration_completion_reason(db,1,1000,200,1,500)
+    assert 'unfinished primg_gbsa' in database.iteration_completion_reason(db,1,1000,200,1,500)
     with database.connect(db) as conn:
-        conn.execute("UPDATE compound SET gbsa_score=-40,state='gbsa_done' WHERE id BETWEEN 501 AND 700")
+        conn.execute("UPDATE compound SET primg_gbsa_score=-40,state='primg_gbsa_done' WHERE id BETWEEN 501 AND 700")
     assert database.iteration_completion_reason(db,1,1000,200,20,500) is None
     with database.connect(db) as conn:
         assert conn.execute('SELECT COUNT(*) FROM compound WHERE amber_gbsa_score IS NULL').fetchone()[0] == 500
@@ -136,7 +136,7 @@ def test_worker_honors_configured_glide_count_and_recovers_legacy_run(population
     directory = tmp_path / layout
     directory.mkdir(parents=True)
     args = SimpleNamespace(db_path=population, output=tmp_path, target_count=1000,
-        amber_gbsa_enabled=True, amber_keep_count=500, gbsa_input_count=200,
+        amber_gbsa_enabled=True, amber_keep_count=500, primg_gbsa_input_count=200,
         amber_receptor=tmp_path/'receptor.maegz', amber_charge_method='bcc',
         amber_remote={'host':'t41','remote_work_dir':'/runs'})
     args.amber_receptor.touch()

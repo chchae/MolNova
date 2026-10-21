@@ -32,12 +32,12 @@ def prepare_reference_receptor(args):
     """Bootstrap the default receptor using the existing Prime grid extractor."""
     if args.amber_receptor.is_file():
         return
-    default = stage_directory(args.output, 0, 'mmgbsa') / 'receptor.maegz'
+    default = stage_directory(args.output, 0, 'primg_gbsa') / 'receptor.maegz'
     if args.amber_receptor != default:
         raise FileNotFoundError(f'Amber receptor not found: {args.amber_receptor}')
     default.parent.mkdir(parents=True, exist_ok=True)
     pending = default.with_name('receptor.pending.maegz')
-    source = getattr(args, 'mmgbsa_receptor', None)
+    source = getattr(args, 'primg_gbsa_receptor', None)
     if source is not None:
         import shutil
         shutil.copy2(source, pending)
@@ -182,7 +182,7 @@ def prepare_remote(args, iteration, directory, record):
     from molnova import amber_slurm
     if record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY):
         config['slurm'] = {'partition': record['settings']['partition'],
-                           'job_name': 'molnova-amber-' + record['run_id']}
+                           'job_name': record.get('slurm_job_name', 'molnova-amber-' + record['run_id'])}
         if 'slurm_time_limit' in record:
             config['slurm']['time_limit'] = record['slurm_time_limit']
         if record['mode'] == amber_slurm.ARRAY:
@@ -321,14 +321,14 @@ def download_logs(directory, record):
 def write_rankings(args, iteration, directory):
     rows = database.amber_rankings(args.db_path, iteration)
     retained = database.amber_rankings(args.db_path, iteration, args.amber_keep_count)
-    candidates = rows if iteration == 0 else retained[:args.gbsa_input_count]
+    candidates = rows if iteration == 0 else retained[:args.primg_gbsa_input_count]
     selections = [('amber_scores.tsv', rows), ('amber_top.tsv', retained),
                   ('prime_candidates.tsv', candidates)]
     for name, selected in selections:
         pending = directory / (name + '.pending')
         with pending.open('w', newline='') as stream:
             writer = csv.writer(stream, delimiter='\t')
-            writer.writerow(['id', 'result_title', 'name', 'docking_score', 'amber_gbsa_score', 'gbsa_score'])
+            writer.writerow(['id', 'result_title', 'name', 'docking_score', 'amber_gbsa_score', 'primg_gbsa_score'])
             writer.writerows((cid, f'CMPID_{cid}', name, dock, amber, prime)
                              for cid, name, dock, amber, prime in selected)
         os.replace(pending, directory / name)

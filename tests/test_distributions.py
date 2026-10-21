@@ -14,20 +14,20 @@ def population(tmp_path):
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         _core.ensure_schema_columns(conn)
-        conn.executemany('INSERT INTO compound(id,name,smiles,iteration,state,rdk_mw,docking_score,gbsa_score) '
+        conn.executemany('INSERT INTO compound(id,name,smiles,iteration,state,rdk_mw,docking_score,primg_gbsa_score) '
                          'VALUES (?,?,?,?,?,?,?,?)', [
             (1, 'reference', 'CC', 0, 'reference', 30., None, -10.),
-            (2, 'first', 'COc1ccc(Cl)cc1', 1, 'gbsa_done', 142., -8., -25.),
+            (2, 'first', 'COc1ccc(Cl)cc1', 1, 'primg_gbsa_done', 142., -8., -25.),
             (3, 'second', 'CCOc1ccc(Cl)cc1', 1, 'docked', 156., -7., None),
             (4, 'missing', 'NCc1ccc(Br)cc1', 1, 'generated', None, None, None),
             (5, 'excluded', 'CCN', 1, 'druglike_rejected', 45., None, None),
-            (6, 'future', 'NCCCl', 2, 'gbsa_done', 80., -9., -30.),
+            (6, 'future', 'NCCCl', 2, 'primg_gbsa_done', 80., -9., -30.),
         ])
         conn.execute('CREATE TABLE compound_druglike_selection(compound_id INTEGER PRIMARY KEY,passed INTEGER,reason TEXT)')
         conn.executemany('INSERT INTO compound_druglike_selection VALUES (?,?,NULL)', [(2, 1), (3, 1), (5, 0)])
     for iteration in (1, 2):
         database.iteration_scaffold(db, iteration, {'scaffold_smiles': '[*:0]c1ccc([*:1])cc1'})
-    return SimpleNamespace(db_path=db, output=tmp_path, project='project', gbsa_elite_count=1)
+    return SimpleNamespace(db_path=db, output=tmp_path, project='project', primg_gbsa_elite_count=1)
 
 
 def read_report(args, iteration=1):
@@ -44,7 +44,7 @@ def test_report_is_cumulative_read_only_and_preserves_missing_values(population)
     current = result['iterations'][1]
     assert current['n'] == 4 and current['selection_unknown'] == 1
     assert current['cohorts']['selected']['n'] == 2
-    assert current['cohorts']['prime_scored']['n'] == 1
+    assert current['cohorts']['primg_gbsa_scored']['n'] == 1
     stats = current['cohorts']['all']['metrics']['docking_score']
     assert stats['n'] == 2 and stats['missing'] == 2
     assert stats['median'] == -7.5 and sum(stats['hist']) == 2
@@ -80,19 +80,19 @@ def test_repeated_unchanged_snapshot_does_not_duplicate_log(population):
     read_report(population)
     assert path.read_bytes() == previous
     with database.connect(population.db_path) as conn:
-        conn.execute('UPDATE compound SET gbsa_score=-20 WHERE id=3')
+        conn.execute('UPDATE compound SET primg_gbsa_score=-20 WHERE id=3')
     result = read_report(population)
-    assert result['iterations'][1]['cohorts']['prime_scored']['n'] == 2
+    assert result['iterations'][1]['cohorts']['primg_gbsa_scored']['n'] == 2
     assert path.read_bytes().startswith(previous) and path.read_bytes() != previous
 
 
 def test_nonfinite_scores_are_missing_not_serialized_as_nan(population):
     with database.connect(population.db_path) as conn:
-        conn.execute('UPDATE compound SET gbsa_score=?,docking_score=? WHERE id=3', (float('inf'), float('-inf')))
+        conn.execute('UPDATE compound SET primg_gbsa_score=?,docking_score=? WHERE id=3', (float('inf'), float('-inf')))
     result = read_report(population)
     stats = result['iterations'][1]['cohorts']['all']['metrics']['docking_score']
     assert stats['n'] == 1 and stats['missing'] == 3
-    assert result['iterations'][1]['cohorts']['prime_scored']['n'] == 1
+    assert result['iterations'][1]['cohorts']['primg_gbsa_scored']['n'] == 1
 
 
 def test_invalid_smiles_and_empty_or_reference_only_populations(population):
@@ -116,7 +116,7 @@ def test_report_failure_retains_published_html_and_log(population, monkeypatch):
     root = population.output / 'analysis'
     before = {name: (root / name).read_bytes() for name in ('index.html', 'summary.json', 'distribution.log')}
     with database.connect(population.db_path) as conn:
-        conn.execute('UPDATE compound SET gbsa_score=-26 WHERE id=2')
+        conn.execute('UPDATE compound SET primg_gbsa_score=-26 WHERE id=2')
     def fail(*args):
         raise OSError('cannot render')
     monkeypatch.setattr(reports, 'build_report', fail)
@@ -140,7 +140,7 @@ def test_sampling_is_balanced_bounded_and_independent_of_scores():
     assert sum(row['id'] < 100 for row in chosen) == 10
     for group in groups.values():
         for row in group:
-            row['gbsa_score'] = -row['id']
+            row['primg_gbsa_score'] = -row['id']
     assert reports.balanced_sample(groups, 20) == chosen
     assert reports.diversity([{'id': 1, 'smiles': 'CC'}], [])['internal_diversity'] is None
 
@@ -162,8 +162,7 @@ def test_manual_cli_needs_no_calculator_inputs_or_project_initialization(populat
         config.distribution_project(population.output / 'missing.toml')
 
 
-@pytest.mark.parametrize('settings', [{'distribution-report': 'yes'}, {'distribution-report-interval': True},
-                                     {'distribution-report-interval': 0}])
+@pytest.mark.parametrize('settings', [{'distribution-report': 'yes'}, {'distribution-report': 1}])
 def test_report_configuration_rejects_invalid_values(settings):
     with pytest.raises(ValueError):
         config.distribution_settings(settings)
@@ -175,7 +174,7 @@ def test_old_read_only_schema_has_nullable_diagnostic_columns(tmp_path):
         conn.execute('CREATE TABLE compound(id INTEGER,name TEXT,smiles TEXT,iteration INTEGER,state TEXT)')
         conn.execute("INSERT INTO compound VALUES (1,'old','C',1,'generated')")
     rows, scaffolds = database.distribution_snapshot(path)
-    assert rows[0]['gbsa_score'] is None and rows[0]['rdk_mw'] is None
+    assert rows[0]['primg_gbsa_score'] is None and rows[0]['rdk_mw'] is None
     assert scaffolds == {}
     with sqlite3.connect(path) as conn:
         assert len(conn.execute('PRAGMA table_info(compound)').fetchall()) == 5
@@ -194,12 +193,13 @@ def test_driver_report_failure_does_not_gate_scientific_work(tmp_path, monkeypat
     assert len(calls) == 1
 
 
-def test_supervisor_reports_completed_stages_and_throttles_pending_polls(population, monkeypatch):
+@pytest.mark.parametrize('stage', ['generate', 'druglike', 'synthetic', 'ligprep', 'glide',
+                                 'amber-gbsa', 'primg_gbsa', 'primg_gbsa-recovery', 'fep'])
+def test_supervisor_reports_only_verified_generate_completion(population, monkeypatch, stage):
     args = population
     args.distribution_report_enabled = True
-    args.distribution_report_interval = 300
     args.target_count = 4
-    args.gbsa_input_count = 1
+    args.primg_gbsa_input_count = 1
     args.synthetic_feasibility_enabled = False
     events = []
     calls = []
@@ -212,6 +212,6 @@ def test_supervisor_reports_completed_stages_and_throttles_pending_polls(populat
         def wait(self, seconds):
             pass
     assert driver.supervise_iteration(args, args.output / 'project.toml', 1,
-                                      [('glide', 'module')], 1, Stop())
-    assert calls == ['glide', 'glide', 'glide']
-    assert events == ['glide-in-progress', 'glide-complete']
+                                      [(stage, 'module')], 1, Stop())
+    assert calls == [stage, stage, stage]
+    assert events == (['generate-complete'] if stage == 'generate' else [])

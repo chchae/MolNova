@@ -22,7 +22,7 @@ class PrimeAtomTypingError(RuntimeError):
         self.compound_id = self.compound_ids[0] if len(self.compound_ids) == 1 else None
         titles = ", ".join(f"CMPID_{cid}" for cid in self.compound_ids)
         super().__init__(f"{titles}: Prime atom typing failed; "
-                         "see mmgbsa_input.Prime.log and mmgbsa_input.err.log")
+                         "see primg_gbsa.Prime.log and primg_gbsa.err.log")
 
 
 def _check_single_compound_atomtyping(text, compound_ids):
@@ -71,7 +71,7 @@ def _current_diagnostics(directory, record):
     baseline = record.get("log_snapshot", {})
     logs = []
     for path in directory.glob("*.log"):
-        if path.name == "prime_license_retry.log":
+        if path.name == "primg_gbsa_license_retry.log":
             continue
         text = path.read_text(errors="replace")
         named_job = re.search(r"^JobId\s*:\s*(\S+)", text, re.MULTILINE)
@@ -89,12 +89,12 @@ def persist_atomtyping_failures(directory, db_path):
     record = load_job(directory) or {}
     failed = record.get("atomtyping_failed_ids", [])
     if failed:
-        database.mark_gbsa_atomtyping_failures(db_path, failed,
+        database.mark_primg_gbsa_atomtyping_failures(db_path, failed,
                                               str(PrimeAtomTypingError(failed)))
 
 
 def job_file(directory):
-    return Path(directory) / "prime_job.json"
+    return Path(directory) / "primg_gbsa_job.json"
 
 
 def load_job(directory):
@@ -134,7 +134,7 @@ def reconcile_saved_job(directory, db_path, iteration):
     if record is None:
         return None
     ids = set(record["compound_ids"])
-    rows = database.mmgbsa_submission_rows(db_path, ids)
+    rows = database.primg_gbsa_submission_rows(db_path, ids)
     current = {cid for cid, row in rows.items() if row[0] == iteration}
     if ids and current == ids:
         return record
@@ -180,7 +180,7 @@ def reconcile_saved_job(directory, db_path, iteration):
     archived = directory.with_name(f"{directory.name}.stale-{time.time_ns()}")
     directory.rename(archived)
     directory.mkdir()
-    work_started(f"Iteration {iteration}: archived obsolete MM-GBSA files to {archived.name}; "
+    work_started(f"Iteration {iteration}: archived obsolete primg_gbsa files to {archived.name}; "
                  "using current database compounds.")
     return None
 
@@ -227,7 +227,7 @@ def _launch_history(directory, record):
             job_id = job_id.strip()
             if job_id and job_id not in jobs:
                 for job in job_details(suite, job_id, directory):
-                    if job_kind(job) == "mmgbsa":
+                    if job_kind(job) == "primg_gbsa":
                         jobs[job["jobId"]] = job
     return list(jobs.values())
 
@@ -241,7 +241,7 @@ def reconcile_interrupted_submission(directory, record):
     # Legacy logs also carry an authoritative job identity if newly written.
     ids = set()
     for path in directory.glob("*.log"):
-        if path.name == "prime_license_retry.log":
+        if path.name == "primg_gbsa_license_retry.log":
             continue
         if record.get("log_snapshot", {}).get(path.name) == _log_signature(path):
             continue
@@ -270,7 +270,7 @@ def reconcile_interrupted_submission(directory, record):
         raise PrimeReconciliationPending("Prime launch registration grace period has not elapsed")
     # Unidentified calculation artifacts prevent claiming that nothing launched.
     if any(directory.glob("*-out.maegz")) or any(
-        path.name != "prime_license_retry.log" and path.stat().st_size
+        path.name != "primg_gbsa_license_retry.log" and path.stat().st_size
         and record.get("log_snapshot", {}).get(path.name) != _log_signature(path)
         for path in directory.glob("*.log")
     ):
@@ -332,7 +332,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
             from molnova.stages._logging import job_elapsed, format_elapsed
             elapsed = job_elapsed(parent)
             if elapsed is not None:
-                detail(f"Prime MM-GBSA calculation completed; elapsed={format_elapsed(elapsed)}.", flush=True)
+                detail(f"PRIMG_GBSA (Prime) calculation completed; elapsed={format_elapsed(elapsed)}.", flush=True)
             return True
         if failed:
             _retire_failed_submission(directory, record)
@@ -352,7 +352,7 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
         _save(directory, record)
     if record["launching"]:
         raise RuntimeError("Prime submission was interrupted before its JobId was saved; "
-                           "reconcile prime_job.json with JobServer before resubmitting.")
+                           "reconcile primg_gbsa_job.json with JobServer before resubmitting.")
     if record["retry_at"] > time.time():
         return False
     if record["attempt"] > retries:
@@ -394,4 +394,4 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
         if failed:
             raise PrimeAtomTypingError(failed)
         raise subprocess.CalledProcessError(code, command, output=output)
-    raise RuntimeError("Prime submission returned no JobId; reconcile prime_job.json before resubmitting.")
+    raise RuntimeError("Prime submission returned no JobId; reconcile primg_gbsa_job.json before resubmitting.")

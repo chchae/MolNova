@@ -32,7 +32,7 @@ def discard_terminal_results(directory):
     directory = Path(directory)
     if record_file(directory).exists():
         record_file(directory).replace(directory / f'glide_job.previous-{time.time_ns()}.json')
-    for pattern in ('glide_constrained*.log', '*_lib.maegz', 'best_poses.maegz', 'docking_scores.tsv'):
+    for pattern in ('glide*.log', '*_lib.maegz', 'best_poses.maegz', 'docking_scores.tsv'):
         for path in directory.glob(pattern):
             if path.is_file():
                 path.unlink()
@@ -123,7 +123,7 @@ def group_status(suite, directory, log_file, output_file, live=None, timeout_sec
 def submit(suite, command, directory):
     directory = Path(directory)
     with submission_guard(suite, 'glide'):
-        # Recheck under the same submission mutex as MM-GBSA.
+        # Recheck under the same submission mutex as primg_gbsa.
         live = active_jobs(suite)
         if any(job_kind(j) == 'glide' and belongs_to_directory(j, directory) for j in live):
             raise RuntimeError('Glide group already has a live external job; recover it instead')
@@ -134,8 +134,8 @@ def submit(suite, command, directory):
             if any(j.get('status') not in TERMINAL for j in job_details(suite, existing['job_id'], directory)):
                 raise RuntimeError('Glide group saved job still running')
         archive = directory / f'previous-{time.time_ns()}'
-        old = [path for path in directory.glob('glide_constrained*')
-               if path.name != 'glide_constrained.in']
+        old = [path for path in directory.glob('glide*')
+               if path.name != 'glide.in']
         old += [path for name in ('best_poses.maegz', 'docking_scores.tsv', 'glide_launch.log')
                 if (path := directory / name).exists()]
         if old:

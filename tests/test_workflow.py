@@ -16,14 +16,14 @@ def _fep_args(tmp_path, fep_input_count=2):
         _core.ensure_schema_columns(conn)
         conn.executemany(
             """
-            INSERT INTO compound(name, smiles, iteration, gbsa_score, state)
+            INSERT INTO compound(name, smiles, iteration, primg_gbsa_score, state)
             VALUES (?, ?, ?, ?, ?)
             """,
             [
                 ("REF", "C", 0, None, "reference"),
-                ("TOP1", "CC", 1, -10.0, "gbsa_done"),
-                ("TOP2", "CCC", 1, -9.0, "gbsa_done"),
-                ("OUTSIDE", "CCCC", 1, -8.0, "gbsa_done"),
+                ("TOP1", "CC", 1, -10.0, "primg_gbsa_done"),
+                ("TOP2", "CCC", 1, -9.0, "primg_gbsa_done"),
+                ("OUTSIDE", "CCCC", 1, -8.0, "primg_gbsa_done"),
             ],
         )
         ids = dict(conn.execute("SELECT name, id FROM compound"))

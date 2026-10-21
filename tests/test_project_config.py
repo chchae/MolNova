@@ -25,13 +25,28 @@ aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 '''
 
 
+def test_prime_gbsa_toml_keys_reach_worker_settings(tmp_path):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + '''
+prime-gbsa-input-count = 37
+prime-gbsa-flexdist = 4.5
+prime-gbsa-license-retry-seconds = 123
+prime-gbsa-license-retries = 8
+''')
+    settings = _core.load_project_toml(project)
+    assert settings['primg_gbsa_input_count'] == 37
+    assert settings['primg_gbsa_flexdist'] == 4.5
+    assert settings['primg_gbsa_license_retry_seconds'] == 123
+    assert settings['primg_gbsa_license_retries'] == 8
+
+
 @pytest.mark.parametrize('extra, enabled, prime_count', [
     ('', False, 50),
     ('amber_gbsa = false\n', False, 50),
     ('amber_gbsa = true\n', True, 50),
     ('amber-gbsa-enabled = true\n', True, 50),
-    ('amber_gbsa = true\ngbsa-input-count = 30\n', True, 30),
-    ('gbsa-input-count = 100\n', False, 100),
+    ('amber_gbsa = true\nprime-gbsa-input-count = 30\n', True, 30),
+    ('prime-gbsa-input-count = 100\n', False, 100),
 ])
 def test_optional_amber_mode_defaults_and_stage_order(tmp_path, extra, enabled, prime_count):
     project = tmp_path / 'egfr.toml'
@@ -39,10 +54,10 @@ def test_optional_amber_mode_defaults_and_stage_order(tmp_path, extra, enabled, 
     settings = _core.load_project_toml(project)
     assert settings['amber_gbsa_enabled'] is enabled
     assert settings['amber_keep_count'] == 500
-    assert settings['gbsa_input_count'] == prime_count
+    assert settings['primg_gbsa_input_count'] == prime_count
     stages = [stage for stage, _ in driver.build_stages(False, False, enabled)]
-    assert stages == (['generate', 'druglike', 'ligprep', 'glide', 'amber-gbsa', 'mmgbsa'] if enabled
-                      else ['generate', 'druglike', 'ligprep', 'glide', 'mmgbsa'])
+    assert stages == (['generate', 'druglike', 'ligprep', 'glide', 'amber-gbsa', 'primg_gbsa'] if enabled
+                      else ['generate', 'druglike', 'ligprep', 'glide', 'primg_gbsa'])
 
 
 @pytest.mark.parametrize('extra, count', [
@@ -76,16 +91,16 @@ def test_conflicting_amber_input_count_aliases_are_rejected(tmp_path, enabled):
 
 def test_amber_input_count_must_cover_prime_input_count(tmp_path):
     from molnova.config import amber_settings
-    with pytest.raises(ValueError, match='amber-input-count must be >= gbsa-input-count'):
+    with pytest.raises(ValueError, match='amber-input-count must be >= prime-gbsa-input-count'):
         amber_settings({'out-dir': 'output', 'amber_gbsa': True,
-                        'amber-input-count': 100, 'gbsa-input-count': 200}, tmp_path)
+                        'amber-input-count': 100, 'prime-gbsa-input-count': 200}, tmp_path)
 
 
 @pytest.mark.parametrize('extra', [
     'amber_gbsa = "true"\n',
     'amber_gbsa = true\namber-gbsa-enabled = false\n',
-    'gbsa-input-count = true\n',
-    'gbsa-input-count = 0\n',
+    'prime-gbsa-input-count = true\n',
+    'prime-gbsa-input-count = 0\n',
 ])
 def test_invalid_amber_mode_configuration(tmp_path, extra):
     project = tmp_path / 'egfr.toml'
@@ -245,19 +260,19 @@ def test_sidechain_heavy_atom_limit_configuration(tmp_path, extra, expected):
     assert _core.load_project_toml(project)['sidechain_max_heavy_atoms'] == expected
 
 
-@pytest.mark.parametrize('extra, expected', [('', 0.0), ('prime-flexdist = 0\n', 0.0),
-                                           ('prime-flexdist = 6.0\n', 6.0)])
-def test_prime_flexdist_configuration(tmp_path, extra, expected):
+@pytest.mark.parametrize('extra, expected', [('', 0.0), ('prime-gbsa-flexdist = 0\n', 0.0),
+                                           ('prime-gbsa-flexdist = 6.0\n', 6.0)])
+def test_primg_gbsa_flexdist_configuration(tmp_path, extra, expected):
     project = tmp_path / 'project.toml'
     project.write_text(PROJECT_TOML + extra)
-    assert _core.load_project_toml(project)['prime_flexdist'] == expected
+    assert _core.load_project_toml(project)['primg_gbsa_flexdist'] == expected
 
 
 @pytest.mark.parametrize('value', [-1, True, False, '6.0', float('nan'), float('inf'), -float('inf'), None])
-def test_prime_flexdist_rejects_invalid_values(value):
-    from molnova.config import prime_flexdist
-    with pytest.raises(ValueError, match='prime-flexdist'):
-        prime_flexdist({'prime-flexdist': value})
+def test_primg_gbsa_flexdist_rejects_invalid_values(value):
+    from molnova.config import primg_gbsa_flexdist
+    with pytest.raises(ValueError, match='prime-gbsa-flexdist'):
+        primg_gbsa_flexdist({'prime-gbsa-flexdist': value})
 
 
 @pytest.mark.parametrize("absolute_output", [False, True])

@@ -81,7 +81,7 @@ def test_stage_uses_prepared_counts_reserves_live_jobs_and_keeps_native_commands
     args = SimpleNamespace(db_path=db, output=tmp_path, schrodinger=Path('/suite'),
                            host='compute:128', glide_cpus=12, mcs_smarts=None,
                            reference_poses=Path('refs.maegz'), grid=Path('grid.zip'))
-    prepared = tmp_path / 'iter1/ligprep/ligprep_all.maegz'
+    prepared = tmp_path / 'iter1/ligprep/ligprep.maegz'
     prepared.parent.mkdir(parents=True)
     prepared.write_text('input')
     root = tmp_path / 'iter1/glide'

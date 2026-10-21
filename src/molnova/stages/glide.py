@@ -45,7 +45,7 @@ def prepare_glide_files(glide_root, ligprep_file, live=(), suite=None):
             if suite is not None and any(j.get('status') not in TERMINAL for j in job_details(suite, saved['job_id'], group)):
                 raise RuntimeError('Changed input has live saved Glide jobs; files retained')
             record_file(group).replace(group / f'glide_job.previous-{time.time_ns()}.json')
-        artifacts = set(group.glob("glide_constrained*"))
+        artifacts = set(group.glob("glide*"))
         artifacts.update(group / name for name in (
             "best_poses.maegz", "docking_scores.tsv", "_reference.maegz",
             "ligprep_group.maegz",
@@ -135,7 +135,7 @@ def process_completed_job(iteration, args, job, extractor, merger, glide_root):
             db_path=args.db_path,
         )
     detail(f"Reference {job['reference_id']} completed: DB updated={updated}, no-pose={len(failed)}")
-    logfile = job.get("log_file", job["group_dir"] / "glide_constrained.log")
+    logfile = job.get("log_file", job["group_dir"] / "glide.log")
     if logfile.exists():
         match = re.search(r"Total elapsed time for Glide script\s*=\s*([0-9.]+)\s*seconds",
                           logfile.read_text(errors="replace"))
@@ -192,7 +192,7 @@ def _run_stage(args, ns):
         return
 
     work_started(f"Iteration {iteration}: processing Glide for {len(groups)} reference groups.")
-    ligprep_file = stage_directory(args.output, iteration, 'ligprep') / "ligprep_all.maegz"
+    ligprep_file = stage_directory(args.output, iteration, 'ligprep') / "ligprep.maegz"
     if not ligprep_file.exists():
         raise FileNotFoundError(f"LigPrep output not found: {ligprep_file}")
 
@@ -223,8 +223,8 @@ def _run_stage(args, ns):
         gdir = glide_root / f"ref_{refid}"
         gdir.mkdir(parents=True, exist_ok=True)
         ref_file = gdir / "_reference.maegz"
-        output_file = gdir / "glide_constrained_lib.maegz"
-        log_file = gdir / "glide_constrained.log"
+        output_file = gdir / "glide_lib.maegz"
+        log_file = gdir / "glide.log"
 
         job = dict(reference_id=refid, reference_name=refname,
                    group_dir=gdir, reference_file=ref_file,

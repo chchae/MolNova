@@ -23,7 +23,7 @@ from molnova.config import distribution_project
 METRICS = {
     'rdk_mw': 'Molecular weight', 'rdk_clogp': 'cLogP', 'rdk_tpsa': 'TPSA',
     'rdk_qed': 'QED', 'rdk_sa_score': 'SA', 'docking_score': 'Glide',
-    'amber_gbsa_score': 'Amber GBSA', 'gbsa_score': 'Prime GBSA', 'fep_score': 'FEP',
+    'amber_gbsa_score': 'Amber GBSA', 'primg_gbsa_score': 'primg_gbsa', 'fep_score': 'FEP',
 }
 MAP_LIMIT = 2000
 DIVERSITY_LIMIT = 200
@@ -215,13 +215,13 @@ def build_report(rows, scaffolds, directory, through, elite_count=10):
         if low == high:
             low, high = low - .5, high + .5
         bounds[metric] = [low, high]
-    elites = {iteration: sorted((row for row in group if finite(row['gbsa_score'])),
-                               key=lambda row: (row['gbsa_score'], row['id']))[:elite_count]
+    elites = {iteration: sorted((row for row in group if finite(row['primg_gbsa_score'])),
+                               key=lambda row: (row['primg_gbsa_score'], row['id']))[:elite_count]
               for iteration, group in groups.items()}
     summaries = []
     for iteration, group in sorted(groups.items()):
         cohorts = {'all': group, 'selected': [row for row in group if row['druglike_selected'] == 1],
-                   'prime_scored': [row for row in group if finite(row['gbsa_score'])]}
+                   'primg_gbsa_scored': [row for row in group if finite(row['primg_gbsa_score'])]}
         summaries.append({'iteration': iteration, 'n': len(group),
             'states': dict(Counter(row['state'] for row in group)),
             'selection_unknown': sum(row['druglike_selected'] is None for row in group),
@@ -255,7 +255,7 @@ def log_summary(report):
         lines.append(f"iter{iteration:02d}: n={item['n']}, druglike_pass={item['cohorts']['selected']['n']}, "
                      f"selection_unknown={item['selection_unknown']}, diversity={fmt(d['internal_diversity'])} "
                      f"(sample={d['sample_n']}, pairs={d['pair_n']}), "
-                     f"previous_Prime_elite_similarity={fmt(d['previous_elite_similarity_median'])} "
+                     f"previous_primg_gbsa_elite_similarity={fmt(d['previous_elite_similarity_median'])} "
                      f"(elites={d['previous_elite_n']})")
         for metric, label in METRICS.items():
             stats = item['cohorts']['all']['metrics'][metric]
@@ -288,7 +288,7 @@ def write_report(args, iteration=None, event='manual'):
                 and json.loads(marker.read_text()).get('signature') == signature):
             print(f"[distribution] unchanged; report={directory / 'index.html'}", flush=True)
             return directory / 'index.html'
-        report = build_report(rows, scaffolds, directory, through, getattr(args, 'gbsa_elite_count', 10))
+        report = build_report(rows, scaffolds, directory, through, getattr(args, 'primg_gbsa_elite_count', 10))
         report.update(project=args.project, event=event, signature=signature,
                       generated_at=datetime.now(timezone.utc).isoformat())
         html = render(report)
