@@ -36,7 +36,8 @@ MolNova is a modular iterative lead-optimization pipeline integrating REINVENT4/
 ## Iteration landscape reports
 
 `molnova run project.toml` automatically refreshes chemical-space, substituent
-and property/score reports only after verified Generate completion. It also
+and property/score reports after verified FEP candidate export. With FEP disabled,
+reports refresh after Prime GBSA completes instead. It also
 writes cumulative numerical summaries
 and text histograms to the run output and `output/analysis/distribution.log`.
 

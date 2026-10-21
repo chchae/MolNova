@@ -195,12 +195,16 @@ def test_driver_report_failure_does_not_gate_scientific_work(tmp_path, monkeypat
 
 @pytest.mark.parametrize('stage', ['generate', 'druglike', 'synthetic', 'ligprep', 'glide',
                                  'amber-gbsa', 'prime_gbsa', 'prime_gbsa-recovery', 'fep'])
-def test_supervisor_reports_only_verified_generate_completion(population, monkeypatch, stage):
+@pytest.mark.parametrize('fep_enabled', [False, True])
+@pytest.mark.parametrize('iteration', [0, 1])
+def test_supervisor_reports_only_verified_final_stage_completion(population, monkeypatch, stage,
+                                                               fep_enabled, iteration):
     args = population
     args.distribution_report_enabled = True
     args.target_count = 4
     args.prime_gbsa_input_count = 1
     args.synthetic_feasibility_enabled = False
+    args.fep_enabled = fep_enabled
     events = []
     calls = []
     monkeypatch.setattr(driver, 'refresh_distribution_report', lambda *a: events.append(a[3]))
@@ -211,7 +215,8 @@ def test_supervisor_reports_only_verified_generate_completion(population, monkey
     class Stop(driver.StopFlag):
         def wait(self, seconds):
             pass
-    assert driver.supervise_iteration(args, args.output / 'project.toml', 1,
+    assert driver.supervise_iteration(args, args.output / 'project.toml', iteration,
                                       [(stage, 'module')], 1, Stop())
     assert calls == [stage, stage, stage]
-    assert events == (['generate-complete'] if stage == 'generate' else [])
+    final_stage = 'fep' if fep_enabled else 'prime_gbsa'
+    assert events == ([f'{final_stage}-complete'] if iteration > 0 and stage == final_stage else [])

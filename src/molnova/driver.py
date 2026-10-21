@@ -280,7 +280,8 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                     # Recovery alone does not finish the final Prime candidate set.
                     print(f"[driver  ] iteration {iteration}: {stage} complete "
                           f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
-                if stage == 'generate':
+                report_stage = 'fep' if getattr(args, 'fep_enabled', False) else 'prime_gbsa'
+                if iteration > 0 and stage == report_stage:
                     refresh_distribution_report(args, project_toml, iteration, f'{stage}-complete', stop)
                 break
             routine_prime_gbsa_poll = (rc == 0 and stage in {'prime_gbsa', 'prime_gbsa-recovery'}

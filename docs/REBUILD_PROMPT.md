@@ -1550,8 +1550,11 @@ summaries also enter an existing redirected run log. These are diagnostics, not
 scientific selection inputs or additional completion gates.
 
 **Later confirmed user correction (2026-10-21):** refresh automatically only
-after verified Generate completion. Do not report after any other stage or
-during pending/retry worker passes.
+after verified FEP stage completion (currently candidate export, not an
+automated FEP calculation). With FEP disabled, refresh after verified Prime
+GBSA completion instead. This supersedes the earlier Generate-completion
+trigger. Do not report for reference-only iteration 0, earlier stages, recovery
+passes, or pending/retry worker passes.
 A report failure is visible but does not stop scientific supervision. Unchanged
 snapshot/event/template combinations do not append duplicate log records.
 `distribution-report = false` disables automatic reports;
