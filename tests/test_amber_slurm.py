@@ -36,7 +36,7 @@ def test_debug_population_limits_and_unchanged_scientific_resources(tmp_path, ex
     toml.write_text(PROJECT + extra)
     args = _core.load_project_toml(toml)
     assert [args[k] for k in ('target_count', 'sample_size', 'amber_keep_count',
-                              'primg_gbsa_input_count', 'primg_gbsa_elite_count', 'fep_input_count')] == (
+                              'prime_gbsa_input_count', 'prime_gbsa_elite_count', 'fep_input_count')] == (
         [1000, 10000, 50, 5, 1, 2] if debug else [10000, 100000, 500, 50, 10, 20])
     assert args['debug'] is debug
     assert args['amber_remote']['host'] == 't41'
@@ -50,10 +50,10 @@ def test_debug_population_limits_and_unchanged_scientific_resources(tmp_path, ex
 def test_debug_explicit_counts_alias_and_floor_minimum(tmp_path):
     toml = tmp_path / 'test.toml'
     toml.write_text(PROJECT + 'debug = true\namber-keep-count = 123\n'
-                    'prime-gbsa-input-count = 19\nprimg-gbsa-elite-count = 1\nuse-slurm = true\n')
+                    'prime-gbsa-input-count = 19\nprime-gbsa-elite-count = 1\nuse-slurm = true\n')
     args = _core.load_project_toml(toml)
     assert args['amber_keep_count'] == 12
-    assert args['primg_gbsa_input_count'] == args['primg_gbsa_elite_count'] == 1
+    assert args['prime_gbsa_input_count'] == args['prime_gbsa_elite_count'] == 1
     assert args['amber_cpus'] == 384
     assert args['host'] == 't41-cpu:128'
     # File remains unmodified, so a separate stage scales exactly once.
@@ -523,7 +523,7 @@ def test_timeout_fails_only_mapped_compound_and_unblocks_prime(project, monkeypa
             'failed', 'amber_gbsa', 'Amber Slurm task 123_1 reached its time limit (TIMEOUT)')
         assert conn.execute('SELECT COUNT(amber_gbsa_score) FROM compound').fetchone()[0] == 3
     assert database.amber_completion_reason(project.db_path, 1, 4, 4) is None
-    assert database.claim_primg_gbsa_candidates(project.db_path, 1, 2, 4, 4) == [4, 3]
+    assert database.claim_prime_gbsa_candidates(project.db_path, 1, 2, 4, 4) == [4, 3]
     archived = json.loads((project.output / f'{record["run_id"]}.completed.json').read_text())
     assert archived['timeout_compound_ids'] == [1]
     assert archived['slurm_terminal_state'] == native['state']
@@ -593,4 +593,4 @@ def test_reference_timeout_recovery_preserves_existing_prime_and_fep(project, mo
         assert conn.execute('SELECT state,prime_gbsa_score,fep_score,failed_stage FROM compound WHERE id=1').fetchone() == (
             'fep_done', -20, -30, 'amber_gbsa')
     assert database.amber_completion_reason(project.db_path, 0, 10000) is None
-    assert database.claim_primg_gbsa_candidates(project.db_path, 0, 50, 10000, 500) == [2, 3, 4]
+    assert database.claim_prime_gbsa_candidates(project.db_path, 0, 50, 10000, 500) == [2, 3, 4]

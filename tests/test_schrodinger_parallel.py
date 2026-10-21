@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 from molnova import _core
-from molnova.config import primg_gbsa_job_options, schrodinger_cpu_settings, schrodinger_job_options
+from molnova.config import prime_gbsa_job_options, schrodinger_cpu_settings, schrodinger_job_options
 
 
-@pytest.mark.parametrize("stage", ["ligprep", "glide", "primg_gbsa"])
+@pytest.mark.parametrize("stage", ["ligprep", "glide", "prime_gbsa"])
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "8"])
 def test_invalid_cpu_settings(stage, value):
     with pytest.raises(ValueError, match=f"{stage.replace('_', '-')}-cpus"):
@@ -17,11 +17,11 @@ def test_invalid_cpu_settings(stage, value):
 def test_config_loads_cpu_overrides(tmp_path):
     from test_project_config import PROJECT_TOML
     path = tmp_path / "project.toml"
-    path.write_text(PROJECT_TOML + '\nligprep-cpus = 8\nglide-cpus = 16\nprimg-gbsa-cpus = 4\n')
+    path.write_text(PROJECT_TOML + '\nligprep-cpus = 8\nglide-cpus = 16\nprime-gbsa-cpus = 4\n')
     settings = _core.load_project_toml(path)
-    assert [settings[f"{s}_cpus"] for s in ("ligprep", "glide", "primg_gbsa")] == [8, 16, 4]
+    assert [settings[f"{s}_cpus"] for s in ("ligprep", "glide", "prime_gbsa")] == [8, 16, 4]
     assert schrodinger_cpu_settings({"host": "localhost"}) == {
-        "ligprep_cpus": None, "glide_cpus": None, "primg_gbsa_cpus": None,
+        "ligprep_cpus": None, "glide_cpus": None, "prime_gbsa_cpus": None,
     }
 
 
@@ -32,8 +32,8 @@ def test_config_loads_cpu_overrides(tmp_path):
     ("a:4 b:8", "a:4 b:3"),
 ])
 @pytest.mark.parametrize("ligand_count", [1, 7, 8, 200])
-def test_primg_gbsa_queues_each_ligand_with_fixed_host_slots(host, expected, ligand_count):
-    assert primg_gbsa_job_options(host, ligand_count) == ["-HOST", expected, "-NJOBS", str(ligand_count)]
+def test_prime_gbsa_queues_each_ligand_with_fixed_host_slots(host, expected, ligand_count):
+    assert prime_gbsa_job_options(host, ligand_count) == ["-HOST", expected, "-NJOBS", str(ligand_count)]
 
 
 def test_host_defaults_and_multiple_hosts():

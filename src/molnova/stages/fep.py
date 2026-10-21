@@ -22,7 +22,7 @@ def export_candidates(args, iteration):
     rows = database.fep_candidates(
         args.db_path, iteration, args.fep_input_count,
         target_count=getattr(args, 'target_count', 1),
-        prime_count=getattr(args, 'primg_gbsa_input_count', None),
+        prime_count=getattr(args, 'prime_gbsa_input_count', None),
         amber_keep_count=database.amber_keep_count(args))
     outdir = stage_directory(args.output, iteration, 'fep')
     outdir.mkdir(parents=True, exist_ok=True)
@@ -88,13 +88,13 @@ def _run_stage(args, ns):
     if iteration is None:
         print("No scored compounds currently require FEP staging.")
         return
-    for stage in ('generate', 'druglike', 'synthetic_feasibility', 'ligprep', 'glide', 'amber_gbsa', 'primg_gbsa'):
+    for stage in ('generate', 'druglike', 'synthetic_feasibility', 'ligprep', 'glide', 'amber_gbsa', 'prime_gbsa'):
         if database.stage_is_running(args.db_path, stage):
             raise RuntimeError(f'FEP waiting for {stage} worker')
-    from molnova import amber_gbsa, primg_gbsa_async, ligprep_recovery
+    from molnova import amber_gbsa, prime_gbsa_async, ligprep_recovery
     directory = iteration_directory(args.output, iteration)
     if (amber_gbsa.load_job(stage_in_iteration(directory, 'amber_gbsa')) is not None
-            or primg_gbsa_async.load_job(stage_in_iteration(directory, 'primg_gbsa')) is not None
+            or prime_gbsa_async.load_job(stage_in_iteration(directory, 'prime_gbsa')) is not None
             or ligprep_recovery.load_job(stage_in_iteration(directory, 'ligprep')) is not None):
         raise RuntimeError('FEP waiting for saved external submissions to retire')
     from molnova.driver import external_completion_reason

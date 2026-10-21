@@ -4,8 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from molnova import _core as c, database, primg_gbsa_async as prime, primg_gbsa_queue as q
-from molnova.stages import primg_gbsa
+from molnova import _core as c, database, prime_gbsa_async as prime, prime_gbsa_queue as q
+from molnova.stages import prime_gbsa
 
 
 def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
@@ -15,10 +15,10 @@ def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
     with sqlite3.connect(db) as conn:
         c.create_sqlite_schema(conn)
         conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,state) "
-                         "VALUES (?,'C',1,-9,'primg_gbsa_running')", [(str(i),) for i in range(count)])
+                         "VALUES (?,'C',1,-9,'prime_gbsa_running')", [(str(i),) for i in range(count)])
     args = SimpleNamespace(db_path=db, output=tmp_path, host='compute:128',
-                           schrodinger=Path('/suite'), primg_gbsa_elite_count=1, primg_gbsa_flexdist=flexdist)
-    directory = tmp_path / 'iter1/primg_gbsa'
+                           schrodinger=Path('/suite'), prime_gbsa_elite_count=1, prime_gbsa_flexdist=flexdist)
+    directory = tmp_path / 'iter1/prime_gbsa'
     directory.mkdir(parents=True)
     ids = list(range(1, count + 1))
     record = q.create_queue(args, directory, ids)
@@ -27,7 +27,7 @@ def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
     for cid in ids:
         folder = q._folder(directory, record, cid)
         folder.mkdir(parents=True)
-        (folder / 'primg_gbsa_input.maegz').write_text('PV')
+        (folder / 'prime_gbsa_input.maegz').write_text('PV')
     launched, completed = [], set()
     def submit(command, folder, compound_ids, **kw):
         cid = compound_ids[0]
@@ -46,11 +46,11 @@ def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
         score = folder / 'scores.tsv'
         score.write_text(f'id\tprime_gbsa_score\n{cid}\t-35\n')
         updated = c.update_prime_gbsa_scores(score, args.db_path, allowed_ids=compound_ids)
-        (folder / 'primg_gbsa_top.tsv').write_text('elites')
-        (folder / 'primg_gbsa_input-out.maegz').write_text(f'receptor\nCMPID_{cid}\n')
+        (folder / 'prime_gbsa_top.tsv').write_text('elites')
+        (folder / 'prime_gbsa_input-out.maegz').write_text(f'receptor\nCMPID_{cid}\n')
         return updated
     monkeypatch.setattr(prime, 'submit_or_poll', submit)
-    monkeypatch.setattr(c, 'finish_iteration_primg_gbsa', finish)
+    monkeypatch.setattr(c, 'finish_iteration_prime_gbsa', finish)
     def merge(command, cwd, **kw):
         assert Path(command[1]).name == '_merge_best_poses.py'
         Path(command[2]).write_text(''.join(Path(path).read_text() for path in command[3:]))
@@ -61,10 +61,10 @@ def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
 @pytest.mark.parametrize('initial, changed', [(6.0, 0.0), (0.0, 6.0), (6.0, 12.0)])
 def test_queue_pins_flexibility_for_active_jobs_and_individual_refill(tmp_path, monkeypatch, initial, changed):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, flexdist=initial)
-    assert record['primg_gbsa_flexdist'] == initial
+    assert record['prime_gbsa_flexdist'] == initial
     q.poll_queue(1, args, root, record)
     before = prime.load_job(q._folder(root, record, 1))
-    args.primg_gbsa_flexdist = changed
+    args.prime_gbsa_flexdist = changed
     completed.add(2)
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 9))
@@ -75,28 +75,28 @@ def test_queue_pins_flexibility_for_active_jobs_and_individual_refill(tmp_path, 
     else:
         assert '-rflexdist' not in refilled and '-out_type' not in refilled
     saved = prime.load_job(root)
-    assert saved['primg_gbsa_flexdist'] == initial
+    assert saved['prime_gbsa_flexdist'] == initial
     assert sum(state == 'active' for state in saved['entries'].values()) == 7
-    assert database.primg_gbsa_submission_rows(args.db_path, [2])[2][2] == -35
+    assert database.prime_gbsa_submission_rows(args.db_path, [2])[2][2] == -35
 
 
 def test_legacy_queue_missing_flexibility_keeps_frozen_protocol_for_pending_jobs(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
-    del record['primg_gbsa_flexdist']
+    del record['prime_gbsa_flexdist']
     prime._save(root, record)
-    args.primg_gbsa_flexdist = 6.0
+    args.prime_gbsa_flexdist = 6.0
     q.poll_queue(1, args, root, prime.load_job(root))
     completed.add(2)
     q.poll_queue(1, args, root, prime.load_job(root))
     child = prime.load_job(q._folder(root, record, 8))
     assert '-rflexdist' not in child['command']
-    assert 'primg_gbsa_flexdist' not in prime.load_job(root)
+    assert 'prime_gbsa_flexdist' not in prime.load_job(root)
 
 
 def test_saved_child_command_is_used_exactly_even_when_queue_options_differ(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, flexdist=6.0)
     folder = q._folder(root, record, 1)
-    old_command = ['/old-suite/prime_mmgbsa', str(folder / 'primg_gbsa_input.maegz'),
+    old_command = ['/old-suite/prime_mmgbsa', str(folder / 'prime_gbsa_input.maegz'),
                    '-OVERWRITE', '-HOST', 'old-host', '-NJOBS', '1']
     prime._save(folder, dict(command=old_command, job_id='old-id', compound_ids=[1]))
     record['entries']['1'] = 'active'
@@ -134,17 +134,17 @@ def test_refill_one_free_slot_while_six_jobs_still_running(tmp_path, monkeypatch
     saved = prime.load_job(root)
     assert saved['entries']['2'] == 'done'
     assert sum(s == 'active' for s in saved['entries'].values()) == 7
-    rows = database.primg_gbsa_submission_rows(args.db_path, [1, 2, 8])
-    assert rows[2][1:] == ('primg_gbsa_done', -35)
-    assert rows[1][1:] == ('primg_gbsa_running', None)
-    assert rows[8][1:] == ('primg_gbsa_running', None)
+    rows = database.prime_gbsa_submission_rows(args.db_path, [1, 2, 8])
+    assert rows[2][1:] == ('prime_gbsa_done', -35)
+    assert rows[1][1:] == ('prime_gbsa_running', None)
+    assert rows[8][1:] == ('prime_gbsa_running', None)
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 9))
     completed.update(range(1, 11))
     assert q.poll_queue(1, args, root, prime.load_job(root)) == 9
     assert prime.load_job(root) is None
     assert len(launches) == len(set(launches)) == 10
-    assert all(row[2] == -35 for row in database.primg_gbsa_submission_rows(args.db_path, range(1, 11)).values())
+    assert all(row[2] == -35 for row in database.prime_gbsa_submission_rows(args.db_path, range(1, 11)).values())
 
 
 @pytest.mark.parametrize('legacy', [False, True])
@@ -162,7 +162,7 @@ def test_total_elapsed_survives_worker_restart(tmp_path, monkeypatch, capsys, le
     monkeypatch.setattr(q.time, 'time', lambda: 4661.2)
     completed.add(1)
     assert q.poll_queue(1, args, root, prime.load_job(root)) == 1
-    assert 'primg_gbsa queue completed; total elapsed=01:01:01.2' in capsys.readouterr().out
+    assert 'prime_gbsa queue completed; total elapsed=01:01:01.2' in capsys.readouterr().out
     saved = json.loads((root / f"{record['run_dir']}.completed.json").read_text())
     assert saved['started_at'] == 1000.0
     assert saved['finished_at'] == 4661.2
@@ -215,7 +215,7 @@ def test_terminal_failure_only_marks_one_compound_and_refills(tmp_path, monkeypa
     monkeypatch.setattr(prime, 'submit_or_poll', failure)
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 9))
-    assert database.primg_gbsa_submission_rows(args.db_path, [3])[3][1] == 'failed'
+    assert database.prime_gbsa_submission_rows(args.db_path, [3])[3][1] == 'failed'
     assert prime.load_job(root)['entries']['3'] == 'failed'
 
 
@@ -235,7 +235,7 @@ def test_license_retry_releases_slot_for_another_compound(tmp_path, monkeypatch)
 
 def test_global_limit_and_legacy_batch_prevent_extra_jobs(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
-    other = tmp_path / 'iter2/primg_gbsa'
+    other = tmp_path / 'iter2/prime_gbsa'
     other.mkdir(parents=True)
     prime._save(other, {'mode': q.MODE, 'entries': {'101': 'active', '102': 'active'}})
     q.poll_queue(1, args, root, record)
@@ -258,7 +258,7 @@ def test_crash_after_score_commit_recovers_without_resubmission(tmp_path, monkey
         original(directory, record)
     monkeypatch.setattr(prime, '_save', crash)
     q.poll_queue(1, args, root, prime.load_job(root))
-    assert database.primg_gbsa_submission_rows(args.db_path, [1])[1][2] == -35
+    assert database.prime_gbsa_submission_rows(args.db_path, [1])[1][2] == -35
     assert prime.load_job(root)['entries']['1'] == 'active'
     monkeypatch.setattr(prime, '_save', original)
     assert q.poll_queue(1, args, root, prime.load_job(root)) == 0
@@ -267,28 +267,28 @@ def test_crash_after_score_commit_recovers_without_resubmission(tmp_path, monkey
 
 def test_worker_recovers_queue_before_resetting_claims(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
-    args.primg_gbsa_input_count = 10
+    args.prime_gbsa_input_count = 10
     args.target_count = 10
     monkeypatch.setattr(q, 'prepare_inputs', lambda *a: None)
-    primg_gbsa._run_stage(args, 1)
+    prime_gbsa._run_stage(args, 1)
     assert launches == list(range(1, 8))
-    assert all(row[1] == 'primg_gbsa_running' for row in database.primg_gbsa_submission_rows(args.db_path, range(1, 11)).values())
+    assert all(row[1] == 'prime_gbsa_running' for row in database.prime_gbsa_submission_rows(args.db_path, range(1, 11)).values())
 
 
 def test_missing_score_is_terminal_and_releases_only_its_slot(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
     q.poll_queue(1, args, root, record)
     completed.add(4)
-    finish = c.finish_iteration_primg_gbsa
-    monkeypatch.setattr(c, 'finish_iteration_primg_gbsa',
+    finish = c.finish_iteration_prime_gbsa
+    monkeypatch.setattr(c, 'finish_iteration_prime_gbsa',
                         lambda iteration, args, folder, ids: 0 if ids == [4] else finish(iteration, args, folder, ids))
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 9))
     assert prime.load_job(root)['entries']['4'] == 'failed'
-    assert database.primg_gbsa_submission_rows(args.db_path, [4])[4][1] == 'failed'
+    assert database.prime_gbsa_submission_rows(args.db_path, [4])[4][1] == 'failed'
 
 
-@pytest.mark.parametrize('stage,interval,expected', [('primg_gbsa', 30, 5), ('primg_gbsa', 2, 2), ('glide', 30, 30)])
+@pytest.mark.parametrize('stage,interval,expected', [('prime_gbsa', 30, 5), ('prime_gbsa', 2, 2), ('glide', 30, 30)])
 def test_supervisor_refill_interval(stage, interval, expected, tmp_path, monkeypatch):
     from molnova import driver
     waits = []
@@ -312,18 +312,18 @@ def test_obsolete_unsubmitted_queue_is_archived_for_fresh_calculation(tmp_path, 
         conn.execute('DELETE FROM compound')
     assert prime.reconcile_saved_job(root, args.db_path, 1) is None
     assert prime.load_job(root) is None
-    assert len(list(root.parent.glob('primg_gbsa.stale-*'))) == 1
+    assert len(list(root.parent.glob('prime_gbsa.stale-*'))) == 1
     assert not launches
 
 
 def test_committed_score_without_child_record_is_not_calculated_again(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET prime_gbsa_score=-41,state='primg_gbsa_done'")
-    (q._folder(root, record, 1) / 'primg_gbsa_input-out.maegz').write_text('receptor\nCMPID_1\n')
+        conn.execute("UPDATE compound SET prime_gbsa_score=-41,state='prime_gbsa_done'")
+    (q._folder(root, record, 1) / 'prime_gbsa_input-out.maegz').write_text('receptor\nCMPID_1\n')
     assert q.poll_queue(1, args, root, record) == 0
     assert not launches
-    assert database.primg_gbsa_submission_rows(args.db_path, [1])[1][2] == -41
+    assert database.prime_gbsa_submission_rows(args.db_path, [1])[1][2] == -41
 
 
 def test_refills_before_checking_remaining_active_jobs(tmp_path, monkeypatch):
@@ -349,7 +349,7 @@ def test_glide_blocks_refill_but_existing_scores_are_still_collected(tmp_path, m
                         [{'jobId':'live-glide','jobName':'glide','status':'RUNNING'}])
     q.poll_queue(1, args, root, prime.load_job(root))
     assert launches == list(range(1, 8))
-    assert database.primg_gbsa_submission_rows(args.db_path, [1])[1][2] == -35
+    assert database.prime_gbsa_submission_rows(args.db_path, [1])[1][2] == -35
     assert sum(s == 'active' for s in prime.load_job(root)['entries'].values()) == 6
     monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     q.poll_queue(1, args, root, prime.load_job(root))
@@ -359,7 +359,7 @@ def test_glide_blocks_refill_but_existing_scores_are_still_collected(tmp_path, m
 def test_final_coordinates_wait_for_queue_and_exclude_failed_results(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=3)
     assert q.poll_queue(1, args, root, record) is None
-    output = root / 'primg_gbsa_final.maegz'
+    output = root / 'prime_gbsa_final.maegz'
     assert not output.exists()
     completed.add(1)
     submit = prime.submit_or_poll
@@ -380,7 +380,7 @@ def test_final_coordinates_wait_for_queue_and_exclude_failed_results(tmp_path, m
 def test_coordinate_merge_failure_preserves_previous_file_and_retries_without_jobs(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
     q.poll_queue(1, args, root, record)
-    output = root / 'primg_gbsa_final.maegz'
+    output = root / 'prime_gbsa_final.maegz'
     output.write_text('previous final coordinates')
     completed.add(1)
     merge = c.run_command
@@ -391,9 +391,9 @@ def test_coordinate_merge_failure_preserves_previous_file_and_retries_without_jo
     with pytest.raises(RuntimeError, match='structure writer failed'):
         q.poll_queue(1, args, root, prime.load_job(root))
     assert output.read_text() == 'previous final coordinates'
-    assert not (root / 'primg_gbsa_final.pending.maegz').exists()
+    assert not (root / 'prime_gbsa_final.pending.maegz').exists()
     assert prime.load_job(root)['entries']['1'] == 'done'
-    assert database.primg_gbsa_submission_rows(args.db_path, [1])[1][2] == -35
+    assert database.prime_gbsa_submission_rows(args.db_path, [1])[1][2] == -35
     monkeypatch.setattr(c, 'run_command', merge)
     assert q.poll_queue(1, args, root, prime.load_job(root)) == 0
     assert output.read_text() == 'receptor\nCMPID_1\n'
@@ -405,12 +405,12 @@ def test_coordinates_include_previous_completed_queues_without_duplicates(tmp_pa
     previous = dict(record, run_dir='queue-1', compound_ids=[1], entries={'1': 'done'})
     folder = q._folder(root, previous, 1)
     folder.mkdir(parents=True)
-    (folder / 'primg_gbsa_input-out.maegz').write_text('original receptor\nCMPID_1\n')
+    (folder / 'prime_gbsa_input-out.maegz').write_text('original receptor\nCMPID_1\n')
     (root / 'queue-1.completed.json').write_text(json.dumps(previous))
     q.poll_queue(1, args, root, record)
     completed.update([1, 2])
     q.poll_queue(1, args, root, prime.load_job(root))
-    assert (root / 'primg_gbsa_final.maegz').read_text() == 'original receptor\nCMPID_1\nreceptor\nCMPID_2\n'
+    assert (root / 'prime_gbsa_final.maegz').read_text() == 'original receptor\nCMPID_1\nreceptor\nCMPID_2\n'
 
 
 def test_missing_completed_coordinates_keep_queue_recoverable(tmp_path, monkeypatch):
@@ -418,8 +418,8 @@ def test_missing_completed_coordinates_keep_queue_recoverable(tmp_path, monkeypa
     record['entries']['1'] = 'done'
     prime._save(root, record)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET prime_gbsa_score=-35,state='primg_gbsa_done'")
-    with pytest.raises(RuntimeError, match='final primg_gbsa coordinates are missing'):
+        conn.execute("UPDATE compound SET prime_gbsa_score=-35,state='prime_gbsa_done'")
+    with pytest.raises(RuntimeError, match='final prime_gbsa coordinates are missing'):
         q.poll_queue(1, args, root, prime.load_job(root))
     assert prime.load_job(root) is not None
     assert not launches
@@ -434,7 +434,7 @@ def test_native_merger_preserves_receptor_and_ligand_coordinates_and_properties(
     structures = {}
     originals = []
     for cid in (1, 2):
-        source = q._folder(root, record, cid) / 'primg_gbsa_input-out.maegz'
+        source = q._folder(root, record, cid) / 'prime_gbsa_input-out.maegz'
         source.write_text('native output')
         receptor = SimpleNamespace(title='receptor', xyz=[(float(cid), 0, 0)], property={'native': cid})
         ligand = SimpleNamespace(title=f'CMPID_{cid}', xyz=[(0, float(cid), 0)],
@@ -467,11 +467,11 @@ def test_legacy_completed_batch_publishes_native_coordinates(tmp_path, monkeypat
     monkeypatch.setattr(prime, 'submit_or_poll', lambda *a, **kw: True)
     monkeypatch.setattr(prime, 'persist_atomtyping_failures', lambda *a: None)
     def finish(*a):
-        (root / 'primg_gbsa_input-out.maegz').write_bytes(b'native coordinates and properties')
+        (root / 'prime_gbsa_input-out.maegz').write_bytes(b'native coordinates and properties')
         return 2
-    monkeypatch.setattr(c, 'finish_iteration_primg_gbsa', finish)
-    assert c.run_iteration_primg_gbsa(1, args, root.parent, root.parent / 'glide') == 2
-    assert (root / 'primg_gbsa_final.maegz').read_bytes() == b'native coordinates and properties'
+    monkeypatch.setattr(c, 'finish_iteration_prime_gbsa', finish)
+    assert c.run_iteration_prime_gbsa(1, args, root.parent, root.parent / 'glide') == 2
+    assert (root / 'prime_gbsa_final.maegz').read_bytes() == b'native coordinates and properties'
     assert prime.load_job(root) is None
 
 
@@ -481,10 +481,10 @@ def test_supervised_queue_poll_has_one_terse_line_with_all_progress_counts(tmp_p
     from molnova.stages import _logging
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch)
     args.target_count = 10
-    args.primg_gbsa_input_count = 10
+    args.prime_gbsa_input_count = 10
     args.synthetic_feasibility_enabled = False
     def worker(stage, command, cwd, stop):
-        primg_gbsa._run_stage(args, 1)
+        prime_gbsa._run_stage(args, 1)
         return 0
     monkeypatch.setattr(driver, 'stream_process', worker)
     token = _logging.set_log_level(level)
@@ -493,18 +493,18 @@ def test_supervised_queue_poll_has_one_terse_line_with_all_progress_counts(tmp_p
             if saved:
                 completed.add(2)
             assert not driver.supervise_iteration(args, tmp_path / 'project.toml', 1,
-                                                 [('primg_gbsa', 'molnova.stages.primg_gbsa')],
+                                                 [('prime_gbsa', 'molnova.stages.prime_gbsa')],
                                                  30, driver.StopFlag(), once=True)
             output = capsys.readouterr().out
-            summary = (f'{1:<3d}: primg_gbsa running={10-saved:<3d}, saved={saved:<3d}, '
+            summary = (f'{1:<3d}: prime_gbsa running={10-saved:<3d}, saved={saved:<3d}, '
                        f'queue=7, waiting={3-saved:<3d}, limit=7, updated={saved}.')
             assert summary in output
             if level == 1:
                 assert output.strip() == summary
             else:
-                assert 'recovering saved primg_gbsa job' in output
+                assert 'recovering saved prime_gbsa job' in output
                 assert 'submitted/running' in output
-                assert 'primg_gbsa pending:' in output
+                assert 'prime_gbsa pending:' in output
     finally:
         _logging._log_level.reset(token)
 
@@ -512,7 +512,7 @@ def test_supervised_queue_poll_has_one_terse_line_with_all_progress_counts(tmp_p
 def test_progress_counts_exclude_nonfinite_scores_and_other_iterations(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=3)
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40 WHERE id=1")
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=? WHERE id=2", (float('inf'),))
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES ('other','C',2,'primg_gbsa_done',-50)")
-    assert database.primg_gbsa_progress_counts(args.db_path, 1) == (1, 1)
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',prime_gbsa_score=-40 WHERE id=1")
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',prime_gbsa_score=? WHERE id=2", (float('inf'),))
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES ('other','C',2,'prime_gbsa_done',-50)")
+    assert database.prime_gbsa_progress_counts(args.db_path, 1) == (1, 1)

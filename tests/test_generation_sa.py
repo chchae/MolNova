@@ -41,8 +41,8 @@ def test_completed_generation_backfills_only_missing_scores(project, monkeypatch
     with database.connect(project.db_path) as conn:
         conn.executemany(
             "INSERT INTO compound(name,smiles,iteration,state,sa_score,docking_score,prime_gbsa_score,failed_stage,failure_message) "
-            "VALUES (?, ?, 1, ?, ?, -8, -40, 'primg_gbsa', 'diagnostic')",
-            [('a', 'CCO', 'primg_gbsa_done', 3.25), ('b', 'CC', 'failed', None)],
+            "VALUES (?, ?, 1, ?, ?, -8, -40, 'prime_gbsa', 'diagnostic')",
+            [('a', 'CCO', 'prime_gbsa_done', 3.25), ('b', 'CC', 'failed', None)],
         )
         conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('ref','C',0,'reference')")
         before = conn.execute('SELECT id,state,docking_score,prime_gbsa_score,failed_stage,failure_message FROM compound').fetchall()

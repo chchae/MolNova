@@ -15,9 +15,9 @@ def project(tmp_path):
         conn.executemany(
             'INSERT INTO compound(id,name,smiles,iteration,state,failed_stage,docking_score,amber_gbsa_score,prime_gbsa_score) '
             "VALUES (?,?,'CC',1,?,?,?,?,?)",
-            [(1,'one','primg_gbsa_done',None,-10,-20,-30),
+            [(1,'one','prime_gbsa_done',None,-10,-20,-30),
              (2,'two','failed','glide',None,None,None),
-             (3,'three','failed','primg_gbsa',-9,-19,None),
+             (3,'three','failed','prime_gbsa',-9,-19,None),
              (4,'four','sa_rejected',None,None,None,None),
              (5,'five','failed','ligprep',None,None,None)])
     return args
@@ -25,7 +25,7 @@ def project(tmp_path):
 
 @pytest.mark.parametrize('stage,successes,failures', [
     ('generate',{1,2,3,5},set()), ('ligprep',{1,2,3},{5}),
-    ('glide',{1,3},{2}), ('amber-gbsa',{1,3},set()), ('primg_gbsa',{1},{3}),
+    ('glide',{1,3},{2}), ('amber-gbsa',{1,3},set()), ('prime_gbsa',{1},{3}),
 ])
 def test_summary_counts_original_compounds_and_attributes_failures(project, stage, successes, failures):
     assert database.stage_summary_results(project.db_path,1,stage) == (successes,failures)
@@ -36,7 +36,7 @@ def test_summary_counts_original_compounds_and_attributes_failures(project, stag
 
 
 def test_native_prime_times_use_only_completed_scored_ids_and_do_not_double_count(project):
-    root = project.output/'iter1/primg_gbsa'
+    root = project.output/'iter1/prime_gbsa'
     root.mkdir(parents=True)
     for run in ['queue-1','queue-2']:
         (root/f'{run}.completed.json').write_text(json.dumps({
@@ -45,17 +45,17 @@ def test_native_prime_times_use_only_completed_scored_ids_and_do_not_double_coun
         for cid in (1,2,3):
             folder=root/run/f'CMPID_{cid}'
             folder.mkdir(parents=True)
-            (folder/'primg_gbsa.log').write_text(
+            (folder/'prime_gbsa.log').write_text(
                 f'Total Time Elapsed (hours:minutes:seconds) 0:00:{30 if cid==1 else 99}\n')
     (root/'queue-3.completed.json').write_text('{broken')
-    summary=completion_summary(project,1,'primg_gbsa',120)
+    summary=completion_summary(project,1,'prime_gbsa',120)
     assert 'native job n=1/1 avg/median/min/max=30.0/30.0/30.0/30.0s' in summary
     assert 'wall/compound=60.00s' in summary
 
 
 def test_missing_prime_logs_are_unavailable_not_zero(project):
-    assert 'native job time=n/a' in completion_summary(project,1,'primg_gbsa',120)
-    assert 'wall/compound=n/a' in completion_summary(project,99,'primg_gbsa',120)
+    assert 'native job time=n/a' in completion_summary(project,1,'prime_gbsa',120)
+    assert 'wall/compound=n/a' in completion_summary(project,99,'prime_gbsa',120)
 
 
 def test_amber_failure_preserving_prior_prime_result_is_still_counted(project):

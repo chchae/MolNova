@@ -81,7 +81,8 @@ def test_local_tl_uses_reinvent_environment_and_shape_compatibility(tmp_path, mo
     valid.write_text("[*]C\t*N\n")
     monkeypatch.setattr(_core.shutil, "which", lambda _: "/calculator/bin/reinvent")
 
-    def run(command):
+    def run(command, *, log_dir):
+        assert log_dir == tmp_path
         assert command[:2] == [Path("/calculator/bin/python"),
                                Path(reinvent_remote.__file__).with_name("reinvent_launcher.py")]
         config = tomllib.loads(Path(command[-1]).read_text())
@@ -172,7 +173,8 @@ def test_remote_transport_roundtrip_and_sqlite_insertion(tmp_path, monkeypatch):
 def test_local_sampling_remains_available(tmp_path, monkeypatch):
     monkeypatch.setattr(_core.shutil, "which", lambda _: "/local/bin/reinvent")
 
-    def run(command):
+    def run(command, *, log_dir):
+        assert log_dir == tmp_path
         assert command[0] == "/local/bin/reinvent"
         (tmp_path / "generated.csv").write_text("SMILES\nC\n")
 

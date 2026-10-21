@@ -17,17 +17,17 @@ def population(tmp_path):
         conn.executemany('INSERT INTO compound(id,name,smiles,iteration,state,rdk_mw,docking_score,prime_gbsa_score) '
                          'VALUES (?,?,?,?,?,?,?,?)', [
             (1, 'reference', 'CC', 0, 'reference', 30., None, -10.),
-            (2, 'first', 'COc1ccc(Cl)cc1', 1, 'primg_gbsa_done', 142., -8., -25.),
+            (2, 'first', 'COc1ccc(Cl)cc1', 1, 'prime_gbsa_done', 142., -8., -25.),
             (3, 'second', 'CCOc1ccc(Cl)cc1', 1, 'docked', 156., -7., None),
             (4, 'missing', 'NCc1ccc(Br)cc1', 1, 'generated', None, None, None),
             (5, 'excluded', 'CCN', 1, 'druglike_rejected', 45., None, None),
-            (6, 'future', 'NCCCl', 2, 'primg_gbsa_done', 80., -9., -30.),
+            (6, 'future', 'NCCCl', 2, 'prime_gbsa_done', 80., -9., -30.),
         ])
         conn.execute('CREATE TABLE compound_druglike_selection(compound_id INTEGER PRIMARY KEY,passed INTEGER,reason TEXT)')
         conn.executemany('INSERT INTO compound_druglike_selection VALUES (?,?,NULL)', [(2, 1), (3, 1), (5, 0)])
     for iteration in (1, 2):
         database.iteration_scaffold(db, iteration, {'scaffold_smiles': '[*:0]c1ccc([*:1])cc1'})
-    return SimpleNamespace(db_path=db, output=tmp_path, project='project', primg_gbsa_elite_count=1)
+    return SimpleNamespace(db_path=db, output=tmp_path, project='project', prime_gbsa_elite_count=1)
 
 
 def read_report(args, iteration=1):
@@ -194,12 +194,12 @@ def test_driver_report_failure_does_not_gate_scientific_work(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize('stage', ['generate', 'druglike', 'synthetic', 'ligprep', 'glide',
-                                 'amber-gbsa', 'primg_gbsa', 'primg_gbsa-recovery', 'fep'])
+                                 'amber-gbsa', 'prime_gbsa', 'prime_gbsa-recovery', 'fep'])
 def test_supervisor_reports_only_verified_generate_completion(population, monkeypatch, stage):
     args = population
     args.distribution_report_enabled = True
     args.target_count = 4
-    args.primg_gbsa_input_count = 1
+    args.prime_gbsa_input_count = 1
     args.synthetic_feasibility_enabled = False
     events = []
     calls = []

@@ -156,12 +156,12 @@ def load_project_toml(filename):
         raise RuntimeError("'aizynth-cli' must not be empty.")
 
     output = resolve_path(config["out-dir"])
-    from molnova.config import primg_gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, primg_gbsa_flexdist, fep_settings, debug_settings, distribution_settings
+    from molnova.config import prime_gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_gbsa_flexdist, fep_settings, debug_settings, distribution_settings
     return debug_settings(config, {
         **distribution_settings(config),
         **generation,
         **amber_settings(config, base),
-        **primg_gbsa_license_retry_settings(config),
+        **prime_gbsa_license_retry_settings(config),
         **schrodinger_cpu_settings(config),
         "toml_file": filename,
         "log_level": log_level(config),
@@ -188,8 +188,8 @@ def load_project_toml(filename):
         "elite_diverse_count": int(config.get("elite-diverse-count", 20)),
         "elite_candidate_pool": int(config.get("elite-candidate-pool", 200)),
         "elite_tl_epochs": int(config.get("elite-tl-epochs", 3)),
-        "primg_gbsa_elite_count": int(config.get("primg-gbsa-elite-count", 10)),
-        "primg_gbsa_flexdist": primg_gbsa_flexdist(config),
+        "prime_gbsa_elite_count": int(config.get("prime-gbsa-elite-count", 10)),
+        "prime_gbsa_flexdist": prime_gbsa_flexdist(config),
         **fep_settings(config),
         "synthetic_feasibility_enabled": synthetic_enabled,
         "aizynth_config": aizynth_config,
@@ -198,9 +198,9 @@ def load_project_toml(filename):
         "sa_score_cpus": sa_score_process_count(config),
         "sa_accepted_ratio": sa_accepted_ratio(config),
         "remote_aizynth": remote_aizynth,
-        "primg_gbsa_receptor": (
-            resolve_path(config["primg-gbsa-receptor"])
-            if config.get("primg-gbsa-receptor")
+        "prime_gbsa_receptor": (
+            resolve_path(config["prime-gbsa-receptor"])
+            if config.get("prime-gbsa-receptor")
             else None
         ),
         "ligprep_ph": float(config.get("ligprep-ph", 7.4)),
@@ -302,7 +302,7 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
             "WHERE iteration>0 AND fep_score IS NOT NULL"
         )
         conn.execute(
-            "UPDATE compound SET state='primg_gbsa_done' "
+            "UPDATE compound SET state='prime_gbsa_done' "
             "WHERE iteration>0 AND fep_score IS NULL "
             "AND prime_gbsa_score IS NOT NULL"
         )
@@ -370,8 +370,8 @@ def find_iteration_for_state(stage: str, db_path: str | Path) -> int | None:
     conditions = {
         "ligprep": "iteration>0 AND state IN ('generated','ligprep_running')",
         "glide": "iteration>0 AND state IN ('ligprepped','glide_running') AND docking_score IS NULL",
-        "primg_gbsa": "iteration>0 AND docking_score IS NOT NULL AND prime_gbsa_score IS NULL AND state IN ('docked','primg_gbsa_running')",
-        "fep": "iteration>0 AND prime_gbsa_score IS NOT NULL AND fep_score IS NULL AND state IN ('primg_gbsa_done','fep_running')",
+        "prime_gbsa": "iteration>0 AND docking_score IS NOT NULL AND prime_gbsa_score IS NULL AND state IN ('docked','prime_gbsa_running')",
+        "fep": "iteration>0 AND prime_gbsa_score IS NOT NULL AND fep_score IS NULL AND state IN ('prime_gbsa_done','fep_running')",
         "synthetic_feasibility": "iteration>0 AND synthetic_feasibility IS NULL AND state IN ('generated','synthetic_running')",
     }
     if stage not in conditions:
@@ -1585,11 +1585,11 @@ def select_global_elites(
     candidate_pool=0,
 ):
     """
-    Select global elites from all PREVIOUS generated iterations by primg_gbsa.
+    Select global elites from all PREVIOUS generated iterations by prime_gbsa.
 
-    primg_gbsa is the final ranking stage. Docking score is retained only as
+    prime_gbsa is the final ranking stage. Docking score is retained only as
     metadata and as the first-stage filter that decides which compounds are
-    evaluated by primg_gbsa.
+    evaluated by prime_gbsa.
 
     Return rows:
         id, name, smiles, iteration, docking_score, prime_gbsa_score
@@ -1932,7 +1932,7 @@ def write_elite_libinvent_training_files(
             print(
                 "WARNING: elite cannot be decomposed for LibInvent TL: "
                 f"id={compound_id}, name={name}, "
-                f"docking={docking_score}, primg_gbsa={prime_gbsa_score}"
+                f"docking={docking_score}, prime_gbsa={prime_gbsa_score}"
             )
             continue
 
@@ -3810,7 +3810,7 @@ def run_reference_guided_docking(iteration, args, glide_root):
 
 
 # ============================================================
-# PRIMG_GBSA (Prime) rescoring
+# PRIME_GBSA (Prime) rescoring
 # ============================================================
 
 def select_iteration_docking_top(
@@ -3866,7 +3866,7 @@ best = None
 best_atoms = -1
 
 with tempfile.TemporaryDirectory(
-    prefix="primg_gbsa_grid_"
+    prefix="prime_gbsa_grid_"
 ) as tmp:
     tmpdir = Path(tmp)
 
@@ -3934,10 +3934,10 @@ print(
     return script_file
 
 
-def create_primg_gbsa_pv_builder(root_dir):
+def create_prime_gbsa_pv_builder(root_dir):
     script_file = (
         root_dir
-        / "_build_primg_gbsa_pv.py"
+        / "_build_prime_gbsa_pv.py"
     )
 
     script = r"""
@@ -3949,7 +3949,7 @@ from schrodinger import structure
 
 if len(sys.argv) not in (5, 6):
     raise SystemExit(
-        "Usage: _build_primg_gbsa_pv.py "
+        "Usage: _build_prime_gbsa_pv.py "
         "<receptor.maegz> <best_poses.maegz> "
         "<ids.txt> <output.maegz>"
     )
@@ -4053,7 +4053,7 @@ from schrodinger import structure
 if len(sys.argv) != 3:
     raise SystemExit(
         "Usage: _extract_prime_gbsa_scores.py "
-        "<primg_gbsa-out.maegz> <scores.tsv>"
+        "<prime_gbsa-out.maegz> <scores.tsv>"
     )
 
 input_file = Path(sys.argv[1])
@@ -4204,9 +4204,9 @@ def update_prime_gbsa_scores(
     if allowed_ids is not None:
         unexpected = {compound_id for _, compound_id in rows} - set(allowed_ids)
         if unexpected:
-            raise ValueError(f"primg_gbsa returned unsubmitted compound IDs: {sorted(unexpected)}")
+            raise ValueError(f"prime_gbsa returned unsubmitted compound IDs: {sorted(unexpected)}")
     if any(not math.isfinite(score) for score, _ in rows):
-        raise ValueError("primg_gbsa returned a non-finite score")
+        raise ValueError("prime_gbsa returned a non-finite score")
 
     with db_connect(db_path) as conn:
         with conn.cursor() as cur:
@@ -4215,7 +4215,7 @@ def update_prime_gbsa_scores(
                 UPDATE compound
                 SET
                     prime_gbsa_score = %s,
-                    state = 'primg_gbsa_done',
+                    state = 'prime_gbsa_done',
                     failed_stage = NULL,
                     failure_message = NULL,
                     modified_at = CURRENT_TIMESTAMP
@@ -4228,44 +4228,44 @@ def update_prime_gbsa_scores(
     return updated
 
 
-def run_iteration_primg_gbsa(
+def run_iteration_prime_gbsa(
     iteration,
     args,
     iteration_dir,
     glide_dir,
     compound_ids=None,
 ):
-    from molnova.primg_gbsa_async import load_job, submit_or_poll, job_file, persist_atomtyping_failures
-    primg_gbsa_dir = stage_in_iteration(iteration_dir, 'primg_gbsa')
-    active = load_job(primg_gbsa_dir)
+    from molnova.prime_gbsa_async import load_job, submit_or_poll, job_file, persist_atomtyping_failures
+    prime_gbsa_dir = stage_in_iteration(iteration_dir, 'prime_gbsa')
+    active = load_job(prime_gbsa_dir)
     if active is not None and active.get("mode") == "compound_queue_v1":
-        from molnova.primg_gbsa_queue import poll_queue
-        return poll_queue(iteration, args, primg_gbsa_dir, active)
+        from molnova.prime_gbsa_queue import poll_queue
+        return poll_queue(iteration, args, prime_gbsa_dir, active)
     if active is not None and active.get("mode") == "native_batch_v1":
-        from molnova.primg_gbsa_batch import poll_batch
-        return poll_batch(iteration, args, primg_gbsa_dir, active)
+        from molnova.prime_gbsa_batch import poll_batch
+        return poll_batch(iteration, args, prime_gbsa_dir, active)
     if active is not None:
-        from molnova.primg_gbsa_streaming import collect_completed_subjobs
+        from molnova.prime_gbsa_streaming import collect_completed_subjobs
         from molnova.schrodinger_guard import submission_guard
-        if not submit_or_poll(active["command"], primg_gbsa_dir, active["compound_ids"],
-                              wait_seconds=getattr(args, "primg_gbsa_license_retry_seconds", 300),
-                              retries=getattr(args, "primg_gbsa_license_retries", 3),
+        if not submit_or_poll(active["command"], prime_gbsa_dir, active["compound_ids"],
+                              wait_seconds=getattr(args, "prime_gbsa_license_retry_seconds", 300),
+                              retries=getattr(args, "prime_gbsa_license_retries", 3),
                               on_completed_subjobs=lambda record, jobs: collect_completed_subjobs(
-                                  args, iteration, primg_gbsa_dir, record, jobs),
-                              submission_fence=lambda: submission_guard(args.schrodinger, "primg_gbsa")):
+                                  args, iteration, prime_gbsa_dir, record, jobs),
+                              submission_fence=lambda: submission_guard(args.schrodinger, "prime_gbsa")):
             return None
-        updated = finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, active["compound_ids"])
-        persist_atomtyping_failures(primg_gbsa_dir, args.db_path)
+        updated = finish_iteration_prime_gbsa(iteration, args, prime_gbsa_dir, active["compound_ids"])
+        persist_atomtyping_failures(prime_gbsa_dir, args.db_path)
         # A legacy batch already contains all its final native structures.
-        output_file = max(primg_gbsa_dir.glob('*-out.maegz'), key=lambda path: path.stat().st_mtime)
-        pending_coordinates = primg_gbsa_dir / 'primg_gbsa_final.pending.maegz'
+        output_file = max(prime_gbsa_dir.glob('*-out.maegz'), key=lambda path: path.stat().st_mtime)
+        pending_coordinates = prime_gbsa_dir / 'prime_gbsa_final.pending.maegz'
         shutil.copy2(output_file, pending_coordinates)
-        pending_coordinates.replace(primg_gbsa_dir / 'primg_gbsa_final.maegz')
-        job_file(primg_gbsa_dir).unlink()
+        pending_coordinates.replace(prime_gbsa_dir / 'prime_gbsa_final.maegz')
+        job_file(prime_gbsa_dir).unlink()
         return updated
 
-    from molnova.primg_gbsa_batch import other_submission
-    if other_submission(args, primg_gbsa_dir) is not None:
+    from molnova.prime_gbsa_batch import other_submission
+    if other_submission(args, prime_gbsa_dir) is not None:
         # Do not reserve a second batch: a waiting native manifest would also
         # prevent an older individual queue from refilling its remaining slots.
         print(f'Iteration {iteration}: Prime waiting for another iteration to retire.')
@@ -4279,7 +4279,7 @@ def run_iteration_primg_gbsa(
     else:
         from molnova import database
         top_rows = database.prime_selection_rows(
-            args.db_path, iteration, args.primg_gbsa_input_count, database.amber_keep_count(args),
+            args.db_path, iteration, args.prime_gbsa_input_count, database.amber_keep_count(args),
         )
 
     if compound_ids is not None:
@@ -4302,7 +4302,7 @@ def run_iteration_primg_gbsa(
     if not top_rows:
         print()
         print(
-            "primg_gbsa skipped: no docked compounds."
+            "prime_gbsa skipped: no docked compounds."
         )
         return 0
 
@@ -4311,22 +4311,22 @@ def run_iteration_primg_gbsa(
     if not best_poses.exists():
         print()
         print(
-            "WARNING: primg_gbsa skipped because "
+            "WARNING: prime_gbsa skipped because "
             f"{best_poses} does not exist."
         )
         return 0
 
-    primg_gbsa_dir = stage_in_iteration(iteration_dir, 'primg_gbsa')
+    prime_gbsa_dir = stage_in_iteration(iteration_dir, 'prime_gbsa')
 
-    primg_gbsa_dir.mkdir(
+    prime_gbsa_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
-    from molnova.primg_gbsa_queue import prepare_new_calculation
-    prepare_new_calculation(args, primg_gbsa_dir)
+    from molnova.prime_gbsa_queue import prepare_new_calculation
+    prepare_new_calculation(args, prime_gbsa_dir)
 
     top_tsv = (
-        primg_gbsa_dir
+        prime_gbsa_dir
         / "docking_top.tsv"
     )
 
@@ -4353,7 +4353,7 @@ def run_iteration_primg_gbsa(
         )
 
     ids_file = (
-        primg_gbsa_dir
+        prime_gbsa_dir
         / "ids.txt"
     )
 
@@ -4367,18 +4367,18 @@ def run_iteration_primg_gbsa(
     )
 
     receptor_file = (
-        primg_gbsa_dir
+        prime_gbsa_dir
         / "receptor.maegz"
     )
 
-    if args.primg_gbsa_receptor is not None:
+    if args.prime_gbsa_receptor is not None:
         receptor_source = (
-            args.primg_gbsa_receptor
+            args.prime_gbsa_receptor
         )
 
         if not receptor_source.exists():
             raise FileNotFoundError(
-                f"primg_gbsa receptor not found: {receptor_source}"
+                f"prime_gbsa receptor not found: {receptor_source}"
             )
 
         if receptor_source.resolve() != receptor_file.resolve():
@@ -4389,7 +4389,7 @@ def run_iteration_primg_gbsa(
         receptor_file.unlink(missing_ok=True)
         extractor = (
             create_grid_receptor_extractor(
-                primg_gbsa_dir
+                prime_gbsa_dir
             )
         )
 
@@ -4400,18 +4400,18 @@ def run_iteration_primg_gbsa(
                 args.grid,
                 receptor_file,
             ],
-            cwd=primg_gbsa_dir,
+            cwd=prime_gbsa_dir,
         )
 
     pv_builder = (
-        create_primg_gbsa_pv_builder(
-            primg_gbsa_dir
+        create_prime_gbsa_pv_builder(
+            prime_gbsa_dir
         )
     )
 
     pv_file = (
-        primg_gbsa_dir
-        / "primg_gbsa_input.maegz"
+        prime_gbsa_dir
+        / "prime_gbsa_input.maegz"
     )
     pv_file.unlink(missing_ok=True)
 
@@ -4419,32 +4419,32 @@ def run_iteration_primg_gbsa(
                   best_poses, ids_file, pv_file]
     if iteration == 0:
         import json
-        reference_map = primg_gbsa_dir / 'reference_ids.json'
+        reference_map = prime_gbsa_dir / 'reference_ids.json'
         reference_map.write_text(json.dumps({row[1]: row[0] for row in top_rows}))
         pv_command.append(reference_map)
-    run_command(pv_command, cwd=primg_gbsa_dir)
+    run_command(pv_command, cwd=prime_gbsa_dir)
 
-    for old_file in primg_gbsa_dir.glob(
+    for old_file in prime_gbsa_dir.glob(
         "*-out.maegz"
     ):
         old_file.unlink()
 
     print()
-    print("PRIMG_GBSA (Prime)")
+    print("PRIME_GBSA (Prime)")
     print("-" * 70)
     print(
         f"Docking top input   : {len(top_rows)}"
     )
 
-    from molnova.primg_gbsa_batch import create_batch, poll_batch
-    record = create_batch(args, primg_gbsa_dir, [row[0] for row in top_rows])
-    return poll_batch(iteration, args, primg_gbsa_dir, record)
+    from molnova.prime_gbsa_batch import create_batch, poll_batch
+    record = create_batch(args, prime_gbsa_dir, [row[0] for row in top_rows])
+    return poll_batch(iteration, args, prime_gbsa_dir, record)
 
 
-def finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, compound_ids):
+def finish_iteration_prime_gbsa(iteration, args, prime_gbsa_dir, compound_ids):
     from molnova.stages._logging import detail
     output_candidates = sorted(
-        primg_gbsa_dir.glob(
+        prime_gbsa_dir.glob(
             "*-out.maegz"
         ),
         key=lambda p: p.stat().st_mtime,
@@ -4453,7 +4453,7 @@ def finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, compound_ids):
 
     if not output_candidates:
         raise RuntimeError(
-            "PRIMG_GBSA (Prime) completed without an *-out.maegz file."
+            "PRIME_GBSA (Prime) completed without an *-out.maegz file."
         )
 
     output_file = (
@@ -4462,12 +4462,12 @@ def finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, compound_ids):
 
     score_extractor = (
         create_prime_gbsa_score_extractor(
-            primg_gbsa_dir
+            prime_gbsa_dir
         )
     )
 
     score_file = (
-        primg_gbsa_dir
+        prime_gbsa_dir
         / "prime_gbsa_scores.tsv"
     )
 
@@ -4478,7 +4478,7 @@ def finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, compound_ids):
             output_file,
             score_file,
         ],
-        cwd=primg_gbsa_dir,
+        cwd=prime_gbsa_dir,
     )
 
     updated = update_prime_gbsa_scores(
@@ -4502,15 +4502,15 @@ def finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, compound_ids):
                 """,
                 (
                     iteration,
-                    args.primg_gbsa_elite_count,
+                    args.prime_gbsa_elite_count,
                 ),
             )
 
-            primg_gbsa_elites = cur.fetchall()
+            prime_gbsa_elites = cur.fetchall()
 
     elite_file = (
-        primg_gbsa_dir
-        / "primg_gbsa_top.tsv"
+        prime_gbsa_dir
+        / "prime_gbsa_top.tsv"
     )
 
     with elite_file.open(
@@ -4533,19 +4533,19 @@ def finish_iteration_primg_gbsa(iteration, args, primg_gbsa_dir, compound_ids):
         )
 
         writer.writerows(
-            primg_gbsa_elites
+            prime_gbsa_elites
         )
 
     detail(
-        f"primg_gbsa scores DB   : {updated}"
+        f"prime_gbsa scores DB   : {updated}"
     )
     detail(
-        f"GBSA elite count    : {len(primg_gbsa_elites)}"
+        f"GBSA elite count    : {len(prime_gbsa_elites)}"
     )
 
-    if primg_gbsa_elites:
+    if prime_gbsa_elites:
         detail(
-            f"Best GBSA score     : {primg_gbsa_elites[0][3]}"
+            f"Best GBSA score     : {prime_gbsa_elites[0][3]}"
         )
 
     return updated
@@ -4581,13 +4581,13 @@ def print_iteration_statistics(
             (
                 total,
                 docked,
-                primg_gbsa_count,
+                prime_gbsa_count,
                 dock_min,
                 dock_mean,
                 dock_max,
-                primg_gbsa_min,
-                primg_gbsa_mean,
-                primg_gbsa_max,
+                prime_gbsa_min,
+                prime_gbsa_mean,
+                prime_gbsa_max,
                 sim_min,
                 sim_mean,
                 sim_max,
@@ -4605,7 +4605,7 @@ def print_iteration_statistics(
         f"Docked              : {docked}"
     )
     print(
-        f"primg_gbsa evaluated   : {primg_gbsa_count}"
+        f"prime_gbsa evaluated   : {prime_gbsa_count}"
     )
     print(
         f"Best docking score  : {dock_min}"
@@ -4617,13 +4617,13 @@ def print_iteration_statistics(
         f"Worst docking score : {dock_max}"
     )
     print(
-        f"Best GBSA score     : {primg_gbsa_min}"
+        f"Best GBSA score     : {prime_gbsa_min}"
     )
     print(
-        f"Mean GBSA score     : {primg_gbsa_mean}"
+        f"Mean GBSA score     : {prime_gbsa_mean}"
     )
     print(
-        f"Worst GBSA score    : {primg_gbsa_max}"
+        f"Worst GBSA score    : {prime_gbsa_max}"
     )
     print(
         f"Similarity min      : {sim_min}"
@@ -4678,14 +4678,14 @@ def run_iteration(
         if iteration >= 2:
             elites = select_global_elites(
                 target_iteration=iteration,
-                best_count=args.primg_gbsa_elite_count,
+                best_count=args.prime_gbsa_elite_count,
                 db_path=args.db_path,
             )
 
             print()
-            print("Global primg_gbsa elite selection")
+            print("Global prime_gbsa elite selection")
             print("-" * 70)
-            print(f"Requested           : {args.primg_gbsa_elite_count}")
+            print(f"Requested           : {args.prime_gbsa_elite_count}")
             print(f"Selected total      : {len(elites)}")
 
             if elites:
@@ -4777,7 +4777,7 @@ def run_iteration(
         f"{updated}"
     )
 
-    primg_gbsa_updated = run_iteration_primg_gbsa(
+    prime_gbsa_updated = run_iteration_prime_gbsa(
         iteration=iteration,
         args=args,
         iteration_dir=iteration_dir,
@@ -4786,8 +4786,8 @@ def run_iteration(
 
     print()
     print(
-        f"primg_gbsa scores updated : "
-        f"{primg_gbsa_updated}"
+        f"prime_gbsa scores updated : "
+        f"{prime_gbsa_updated}"
     )
 
     print_iteration_statistics(iteration, args.db_path)

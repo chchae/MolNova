@@ -32,12 +32,12 @@ def prepare_reference_receptor(args):
     """Bootstrap the default receptor using the existing Prime grid extractor."""
     if args.amber_receptor.is_file():
         return
-    default = stage_directory(args.output, 0, 'primg_gbsa') / 'receptor.maegz'
+    default = stage_directory(args.output, 0, 'prime_gbsa') / 'receptor.maegz'
     if args.amber_receptor != default:
         raise FileNotFoundError(f'Amber receptor not found: {args.amber_receptor}')
     default.parent.mkdir(parents=True, exist_ok=True)
     pending = default.with_name('receptor.pending.maegz')
-    source = getattr(args, 'primg_gbsa_receptor', None)
+    source = getattr(args, 'prime_gbsa_receptor', None)
     if source is not None:
         import shutil
         shutil.copy2(source, pending)
@@ -321,7 +321,7 @@ def download_logs(directory, record):
 def write_rankings(args, iteration, directory):
     rows = database.amber_rankings(args.db_path, iteration)
     retained = database.amber_rankings(args.db_path, iteration, args.amber_keep_count)
-    candidates = rows if iteration == 0 else retained[:args.primg_gbsa_input_count]
+    candidates = rows if iteration == 0 else retained[:args.prime_gbsa_input_count]
     selections = [('amber_scores.tsv', rows), ('amber_top.tsv', retained),
                   ('prime_candidates.tsv', candidates)]
     for name, selected in selections:

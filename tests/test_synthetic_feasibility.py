@@ -105,7 +105,7 @@ def test_missing_sa_scores_backfilled_without_changing_scientific_results(monkey
     args = _project(tmp_path)
     with sqlite3.connect(args.db_path) as conn:
         conn.execute(
-            "UPDATE compound SET synthetic_feasibility=1, state='primg_gbsa_done', "
+            "UPDATE compound SET synthetic_feasibility=1, state='prime_gbsa_done', "
             "docking_score=-8, prime_gbsa_score=-40"
         )
         conn.execute("UPDATE compound SET sa_score=3.25 WHERE name='GEN_1'")
@@ -127,8 +127,8 @@ def test_missing_sa_scores_backfilled_without_changing_scientific_results(monkey
             "SELECT sa_score, synthetic_feasibility, state, docking_score, prime_gbsa_score "
             "FROM compound ORDER BY id"
         ).fetchall()
-    assert rows[0] == (3.25, 1, "primg_gbsa_done", -8, -40)
-    assert rows[1] == (pytest.approx(calculate_sa_score("CC")), 1, "primg_gbsa_done", -8, -40)
+    assert rows[0] == (3.25, 1, "prime_gbsa_done", -8, -40)
+    assert rows[1] == (pytest.approx(calculate_sa_score("CC")), 1, "prime_gbsa_done", -8, -40)
 
 
 @pytest.mark.parametrize("smiles", ["not a smiles", ""])
@@ -157,7 +157,7 @@ def test_driver_places_synthetic_stage_after_generation():
     stages = build_stages(synthetic_feasibility_enabled=True, fep_enabled=False)
     names = [stage for stage, _ in stages]
 
-    assert names == ["generate", "druglike", "synthetic", "ligprep", "glide", "primg_gbsa"]
+    assert names == ["generate", "druglike", "synthetic", "ligprep", "glide", "prime_gbsa"]
 
 
 @pytest.mark.parametrize("flag, enabled", [("", True), ("true", True), ("false", False)])
@@ -197,7 +197,7 @@ def test_aizynth_config_paths_resolve_from_project_toml(tmp_path, flag, enabled)
 def test_import_preserves_completed_and_failed_scientific_results(tmp_path):
     args = _project(tmp_path)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done', docking_score=-8, prime_gbsa_score=-40 WHERE id=1")
+        conn.execute("UPDATE compound SET state='prime_gbsa_done', docking_score=-8, prime_gbsa_score=-40 WHERE id=1")
         conn.execute("UPDATE compound SET state='failed', failed_stage='glide', failure_message='no poses' WHERE id=2")
         before = conn.execute("SELECT state, docking_score, prime_gbsa_score, failed_stage, failure_message FROM compound ORDER BY id").fetchall()
     results = tmp_path / "results.json"

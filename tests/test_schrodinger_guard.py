@@ -6,14 +6,14 @@ from molnova import schrodinger_guard as guard
 
 
 @pytest.mark.parametrize('job', [
-    {'jobName': 'primg_gbsa'},
+    {'jobName': 'prime_gbsa'},
     {'jobName': 'custom', 'commandLine': '/suite/prime_mmgbsa custom.maegz'},
     {'jobName': 'custom', 'spec': {'taskSpec': {'programName': 'Prime MMGBSA'}}},
 ])
 def test_canonical_and_native_prime_jobs_block_glide(monkeypatch, job):
-    assert guard.job_kind(job) == 'primg_gbsa'
+    assert guard.job_kind(job) == 'prime_gbsa'
     monkeypatch.setattr(guard, 'active_jobs', lambda *args: [dict(job, jobId='external')])
-    with pytest.raises(guard.SubmissionBlocked, match='primg_gbsa still active'):
+    with pytest.raises(guard.SubmissionBlocked, match='prime_gbsa still active'):
         with guard.submission_guard('/suite', 'glide'):
             pytest.fail('Submitted Glide while native Prime job is active')
 
@@ -26,11 +26,11 @@ def test_live_children_block_even_when_parent_has_finished(monkeypatch):
             {'jobId':'child','status':'RUNNING','jobName':'glide-0001'}]))
     monkeypatch.setattr(guard.subprocess,'run',run)
     with pytest.raises(guard.SubmissionBlocked,match='glide still active'):
-        with guard.submission_guard(Path('/suite'),'primg_gbsa'):
-            pytest.fail('primg_gbsa submitted while Glide child running')
+        with guard.submission_guard(Path('/suite'),'prime_gbsa'):
+            pytest.fail('prime_gbsa submitted while Glide child running')
 
 
-@pytest.mark.parametrize('stage,other',[('primg_gbsa','glide'),('glide','primg_gbsa_input')])
+@pytest.mark.parametrize('stage,other',[('prime_gbsa','glide'),('glide','prime_gbsa_input')])
 def test_opposite_stage_blocked_across_projects(monkeypatch,stage,other):
     monkeypatch.setattr(guard,'active_jobs',lambda *a:[{'jobId':'external','jobName':other,'status':'RUNNING'}])
     with pytest.raises(guard.SubmissionBlocked):
@@ -48,8 +48,8 @@ def test_submission_checks_are_atomic_and_release_after_error(monkeypatch):
     monkeypatch.setattr(guard,'active_jobs',lambda *a:[])
     with guard.submission_guard('/suite','glide'):
         with pytest.raises(guard.SubmissionBlocked,match='in progress'):
-            with guard.submission_guard('/suite','primg_gbsa'):pytest.fail('Concurrent guard')
-    with guard.submission_guard('/suite','primg_gbsa'):pass
+            with guard.submission_guard('/suite','prime_gbsa'):pytest.fail('Concurrent guard')
+    with guard.submission_guard('/suite','prime_gbsa'):pass
 
 
 def test_native_no_active_jobs_exit_one_is_an_empty_queue(monkeypatch):
@@ -57,7 +57,7 @@ def test_native_no_active_jobs_exit_one_is_an_empty_queue(monkeypatch):
     monkeypatch.setattr(guard.subprocess, 'run', lambda cmd, **kw:
                         subprocess.CompletedProcess(cmd, 1, '', 'No jobs matching your search criteria were found.\n'))
     assert guard.active_jobs('/suite') == []
-    with guard.submission_guard('/suite','primg_gbsa'):pass
+    with guard.submission_guard('/suite','prime_gbsa'):pass
 
 
 def test_native_lookup_error_is_not_mistaken_for_empty_queue(monkeypatch):
@@ -65,7 +65,7 @@ def test_native_lookup_error_is_not_mistaken_for_empty_queue(monkeypatch):
     monkeypatch.setattr(guard.subprocess, 'run', lambda cmd, **kw:
                         subprocess.CompletedProcess(cmd, 1, '', 'JobServer connection refused'))
     with pytest.raises(guard.SubmissionBlocked, match='Cannot verify'):
-        with guard.submission_guard('/suite','primg_gbsa'):pytest.fail('Unverified empty queue')
+        with guard.submission_guard('/suite','prime_gbsa'):pytest.fail('Unverified empty queue')
 
 
 def test_parent_details_avoid_duplicate_child_queries(monkeypatch):

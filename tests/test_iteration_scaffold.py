@@ -22,13 +22,13 @@ def project(tmp_path):
         )
         conn.executemany(
             'INSERT INTO compound(name,smiles,iteration,state,docking_score,prime_gbsa_score) '
-            'VALUES (?,?,1,\'primg_gbsa_done\',-10,?)',
+            'VALUES (?,?,1,\'prime_gbsa_done\',-10,?)',
             [('E1', 'COc1ccc(CC)cc1', -40), ('E2', 'CCOc1ccc(CN)cc1', -30),
              ('OUTSIDE', 'NCc1ccc(Cl)cc1', -20)],
         )
     return SimpleNamespace(db_path=path, output=tmp_path, automatic_mcs=True,
-                           mcs_timeout=60, primg_gbsa_elite_count=2, target_count=3,
-                           primg_gbsa_input_count=3, max_iteration=3, sample_size=10,
+                           mcs_timeout=60, prime_gbsa_elite_count=2, target_count=3,
+                           prime_gbsa_input_count=3, max_iteration=3, sample_size=10,
                            elite_tl_epochs=3, libinvent_prior=tmp_path / 'prior')
 
 
@@ -44,7 +44,7 @@ def test_reference_first_then_previous_elites_and_restart(project, monkeypatch):
     assert '[*:0]' in project.libinvent_scaffold_smiles
     assert '[*:1]' in project.libinvent_scaffold_smiles
 
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 2, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 2, 2)
     prepare_iteration_scaffold(project, 3, elites, create=True)
     later = database.iteration_scaffold(project.db_path, 3)
     assert later['mcs_smarts'] != first_core
@@ -113,7 +113,7 @@ def test_first_generation_uses_reference_core_and_original_prior(project, monkey
 
 
 def test_glide_uses_initial_constraint_instead_of_elite_core(project, monkeypatch, capsys):
-    prepare_iteration_scaffold(project, 2, database.iteration_primg_gbsa_elites(project.db_path, 1, 2),
+    prepare_iteration_scaffold(project, 2, database.iteration_prime_gbsa_elites(project.db_path, 1, 2),
                                create=True)
     core = project.mcs_smarts
     assert project.generation_mcs_smarts != core
@@ -142,7 +142,7 @@ def test_explicit_initial_mcs_still_adapts_generation_to_elites(project):
     prepare_iteration_scaffold(project, 1, create=True)
     assert project.libinvent_scaffold_smiles == project.initial_mcs_smarts
     assert database.iteration_scaffold(project.db_path, 1)['source'] == 'reference_mcs_fallback'
-    prepare_iteration_scaffold(project, 3, database.iteration_primg_gbsa_elites(project.db_path, 2, 2),
+    prepare_iteration_scaffold(project, 3, database.iteration_prime_gbsa_elites(project.db_path, 2, 2),
                                create=True)
     assert project.mcs_smarts == project.initial_mcs_smarts
     assert project.generation_mcs_smarts != project.initial_mcs_smarts
@@ -179,7 +179,7 @@ def test_elite_core_can_expand_beyond_original_pose_core(project):
 
 
 def test_old_iteration_keeps_its_already_used_docking_core(project, monkeypatch):
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     inputs = [dict(id=r[0], name=r[1], mol=Chem.MolFromSmiles(r[2])) for r in elites]
     info = _core.prepare_libinvent_scaffold(inputs, None, project.output / 'old')
     old = dict(mcs_smarts=info['mcs_smarts'], scaffold_smiles=info['scaffold_smiles'],
@@ -211,13 +211,13 @@ def test_missing_legacy_core_does_not_recompute(project):
 
 @pytest.mark.parametrize('failure', ['timeout', 'single_input', 'no_attachments'])
 def test_mcs_failure_does_not_save_core_or_change_results(project, monkeypatch, failure):
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     if failure == 'timeout':
         monkeypatch.setattr(_core.rdFMCS, 'FindMCS',
                             lambda *a, **k: SimpleNamespace(canceled=True))
         message = 'timed out'
     elif failure == 'single_input':
-        project.primg_gbsa_elite_count = 1
+        project.prime_gbsa_elite_count = 1
         elites = elites[:1]
         message = 'At least two input ligands'
     else:
@@ -228,7 +228,7 @@ def test_mcs_failure_does_not_save_core_or_change_results(project, monkeypatch, 
         prepare_iteration_scaffold(project, 2, elites, create=True)
     assert database.iteration_scaffold(project.db_path, 2) is None
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT prime_gbsa_score,state FROM compound WHERE name=\'E1\'').fetchone() == (-40, 'primg_gbsa_done')
+        assert conn.execute('SELECT prime_gbsa_score,state FROM compound WHERE name=\'E1\'').fetchone() == (-40, 'prime_gbsa_done')
 
 
 def test_scaffold_snapshot_is_atomic_and_immutable(project):
@@ -273,7 +273,7 @@ def test_insufficient_automatic_attachments_reuse_previous_scaffold_and_resume(
     assert 'reusing validated scaffold from iteration 1' in capsys.readouterr().out
     assert all(_core.decompose_elite_for_libinvent(row[2], snapshot['scaffold_smiles']) for row in elites)
     with database.connect(project.db_path) as conn:
-        assert conn.execute("SELECT prime_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'primg_gbsa_done')
+        assert conn.execute("SELECT prime_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'prime_gbsa_done')
 
     project.libinvent_scaffold_file.unlink()
     project.elite_mcs_smarts = '[*:0]Nc1ccc([*:1])cc1'
@@ -314,7 +314,7 @@ def test_rejected_previous_scaffold_stops_without_snapshot_or_result_changes(
     assert database.iteration_scaffold(project.db_path, 2) is None
     assert not (project.output / 'iter02/01-scaffold').exists()
     with database.connect(project.db_path) as conn:
-        assert conn.execute("SELECT prime_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'primg_gbsa_done')
+        assert conn.execute("SELECT prime_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'prime_gbsa_done')
 
 
 @pytest.mark.parametrize('problem', ['timeout', 'supplied', 'sanitization'])
@@ -342,7 +342,7 @@ def test_fallback_training_uses_current_elites_and_original_prior(fallback_proje
     with database.connect(project.db_path) as conn:
         for name, smiles in [('E1', elites[0][2]), ('E2', elites[1][2])]:
             conn.execute('UPDATE compound SET smiles=? WHERE name=?', (smiles, name))
-    selected = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    selected = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     calls = []
 
     def training(rows, scaffold, directory, **kwargs):
@@ -396,7 +396,7 @@ def test_default_log_shows_initial_and_elite_cores_on_create_and_resume(
         project.initial_mcs_smarts = supplied
         project.elite_mcs_smarts = supplied
         prepare_iteration_scaffold(project, 2,
-                                   database.iteration_primg_gbsa_elites(project.db_path, 1, 2),
+                                   database.iteration_prime_gbsa_elites(project.db_path, 1, 2),
                                    create=True)
         initial = database.iteration_scaffold(project.db_path, 0)['mcs_smarts']
         generation = project.generation_mcs_smarts
@@ -461,7 +461,7 @@ def test_supplied_core_applies_once_when_starting_after_iteration_one(project, m
     database.iteration_scaffold(project.db_path, 1, dict(initial, docking_mcs_smarts=supplied))
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 2, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 2, 2)
     prepare_iteration_scaffold(project, 3, elites, create=True)
     saved = database.iteration_scaffold(project.db_path, 3)
     assert saved['mcs_smarts'] == supplied
@@ -493,7 +493,7 @@ def test_changed_generation_core_cannot_change_iteration_zero_docking_core(proje
     initial = database.iteration_scaffold(project.db_path, 0)
     fixed = project.mcs_smarts
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 2, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 2, 2)
     prepare_iteration_scaffold(project, 3, elites, create=True)
     assert project.generation_mcs_smarts == project.elite_mcs_smarts
     assert project.mcs_smarts == fixed
@@ -506,7 +506,7 @@ def test_changed_generation_core_cannot_change_iteration_zero_docking_core(proje
 
 def test_incompatible_supplied_generation_core_is_not_consumed(project):
     # Save the initial docking constraint before supplying an incompatible core.
-    prepare_iteration_scaffold(project, 2, database.iteration_primg_gbsa_elites(project.db_path, 1, 2), create=True)
+    prepare_iteration_scaffold(project, 2, database.iteration_prime_gbsa_elites(project.db_path, 1, 2), create=True)
     initial = database.iteration_scaffold(project.db_path, 0)
     project.elite_mcs_smarts = '[*:0]C1CCCCC1[*:1]'
     elites = [(100, 'A', 'CC1CCCCC1C', 2, -10, -40),
@@ -522,7 +522,7 @@ def test_reference_fallback_is_not_reapplied_to_existing_project(project):
     project.initial_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 2, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 2, 2)
     prepare_iteration_scaffold(project, 3, elites, create=True)
     saved = database.iteration_scaffold(project.db_path, 3)
     assert saved['source'] == 'previous_iteration_elites'
@@ -537,7 +537,7 @@ def test_reference_docking_query_needs_no_libinvent_attachments(project):
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
-    prepare_iteration_scaffold(project, 3, database.iteration_primg_gbsa_elites(project.db_path, 2, 2), create=True)
+    prepare_iteration_scaffold(project, 3, database.iteration_prime_gbsa_elites(project.db_path, 2, 2), create=True)
     assert project.mcs_smarts == project.initial_mcs_smarts
     assert project.libinvent_scaffold_smiles == project.elite_mcs_smarts
     assert 'scaffold_smiles' not in database.iteration_scaffold(project.db_path, 0)
@@ -548,7 +548,7 @@ def test_reference_input_change_does_not_override_explicit_elite_core(project):
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 2, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 2, 2)
     prepare_iteration_scaffold(project, 3, elites, create=True)
     initial = database.iteration_scaffold(project.db_path, 0)
     project.initial_mcs_smarts = 'invalid changed reference'
@@ -568,7 +568,7 @@ def test_first_iteration_uses_explicit_elite_core_instead_of_reference_core(proj
     assert project.libinvent_scaffold_smiles == project.elite_mcs_smarts
     assert project.mcs_smarts == project.initial_mcs_smarts
     assert database.iteration_scaffold(project.db_path, 1)['source'] == 'user_elite_mcs'
-    prepare_iteration_scaffold(project, 3, database.iteration_primg_gbsa_elites(project.db_path, 2, 2), create=True)
+    prepare_iteration_scaffold(project, 3, database.iteration_prime_gbsa_elites(project.db_path, 2, 2), create=True)
     assert database.iteration_scaffold(project.db_path, 3)['source'] == 'previous_iteration_elites'
 
 
@@ -631,7 +631,7 @@ def test_iteration_zero_preserves_explicit_initial_elite_input(project):
 def test_saved_elite_mcs_log_reports_absent_current_input_and_keeps_snapshot(project, monkeypatch, capsys):
     project.initial_mcs_smarts = 'c1ccccc1'
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     prepare_iteration_scaffold(project, 2, elites, create=True)
     saved = database.iteration_scaffold(project.db_path, 2)
     capsys.readouterr()
@@ -650,7 +650,7 @@ def test_saved_elite_mcs_log_reports_absent_current_input_and_keeps_snapshot(pro
 def test_saved_elite_mcs_log_reports_changed_current_input(project, capsys):
     project.initial_mcs_smarts = 'c1ccccc1'
     project.elite_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
-    prepare_iteration_scaffold(project, 2, database.iteration_primg_gbsa_elites(project.db_path, 1, 2), create=True)
+    prepare_iteration_scaffold(project, 2, database.iteration_prime_gbsa_elites(project.db_path, 1, 2), create=True)
     saved = database.iteration_scaffold(project.db_path, 2)
     capsys.readouterr()
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
@@ -666,7 +666,7 @@ def test_legacy_iteration_four_without_elite_input_uses_iteration_three_elites(p
                    source='user_initial_mcs', source_ids=[1, 2, 3])
     database.iteration_scaffold(project.db_path, 0, initial)
     database.iteration_scaffold(project.db_path, 1, initial)
-    elites = [(*r[:3], 3, *r[4:]) for r in database.iteration_primg_gbsa_elites(project.db_path, 1, 2)]
+    elites = [(*r[:3], 3, *r[4:]) for r in database.iteration_prime_gbsa_elites(project.db_path, 1, 2)]
     prepare_iteration_scaffold(project, 4, elites, create=True)
     saved = database.iteration_scaffold(project.db_path, 4)
     assert saved['source'] == 'previous_iteration_elites'
@@ -688,7 +688,7 @@ def test_fixed_elite_core_and_attachments_persist_across_cycles_and_restart(proj
     project.initial_mcs_smarts = 'c1ccccc1'
     project.elite_mcs_smarts = 'c1ccccc1'  # Let the first cycle infer attachment sites.
     project.elite_mcs_fixed = True
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     prepare_iteration_scaffold(project, 2, elites, create=True)
     first = database.iteration_scaffold(project.db_path, 2)
     assert first['elite_mcs_fixed'] is True
@@ -716,7 +716,7 @@ def test_fixed_elite_core_and_attachments_persist_across_cycles_and_restart(proj
 def test_enabling_fixed_mode_reuses_the_original_supplied_scaffold(project, monkeypatch):
     project.initial_mcs_smarts = 'c1ccccc1'
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     prepare_iteration_scaffold(project, 2, elites, create=True)
     original = database.iteration_scaffold(project.db_path, 2)
     project.elite_mcs_fixed = True
@@ -733,7 +733,7 @@ def test_switching_fixed_off_recomputes_from_preceding_elites(project):
     project.initial_mcs_smarts = 'c1ccccc1'
     project.elite_mcs_smarts = '[*:0]c1ccc([*:1])cc1'
     project.elite_mcs_fixed = True
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     prepare_iteration_scaffold(project, 2, elites, create=True)
     first = database.iteration_scaffold(project.db_path, 2)
     project.elite_mcs_fixed = False
@@ -754,7 +754,7 @@ def test_fixed_mode_can_pin_the_reference_fallback(project):
         conn.execute('UPDATE compound SET iteration=2 WHERE iteration=1')
     prepare_iteration_scaffold(project, 1, create=True)
     first = database.iteration_scaffold(project.db_path, 1)
-    prepare_iteration_scaffold(project, 3, database.iteration_primg_gbsa_elites(project.db_path, 2, 2), create=True)
+    prepare_iteration_scaffold(project, 3, database.iteration_prime_gbsa_elites(project.db_path, 2, 2), create=True)
     assert database.iteration_scaffold(project.db_path, 3)['scaffold_smiles'] == first['scaffold_smiles']
     assert project.generation_mcs_smarts == project.initial_mcs_smarts
 
@@ -763,7 +763,7 @@ def test_fixed_mode_still_checks_preceding_iteration_and_docking_compatibility(p
     project.initial_mcs_smarts = 'c1ccccc1'
     project.elite_mcs_smarts = '[*:0]Oc1ccc([*:1])cc1'
     project.elite_mcs_fixed = True
-    elites = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+    elites = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     prepare_iteration_scaffold(project, 2, elites, create=True)
     with pytest.raises(RuntimeError, match='preceding iteration'):
         prepare_iteration_scaffold(project, 3, elites, create=True)
@@ -778,7 +778,7 @@ def test_invalid_fixed_flag(value):
 
 
 def test_readable_mcs_log_preserves_original_query_and_scaffold(project, capsys):
-    prepare_iteration_scaffold(project, 2, database.iteration_primg_gbsa_elites(project.db_path, 1, 2), create=True)
+    prepare_iteration_scaffold(project, 2, database.iteration_prime_gbsa_elites(project.db_path, 1, 2), create=True)
     saved = database.iteration_scaffold(project.db_path, 2)
     original = saved['mcs_smarts']
     summary = mcs_display_summary(original)

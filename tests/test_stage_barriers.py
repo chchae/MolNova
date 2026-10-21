@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from molnova import _core, database, ligprep_recovery as recovery, primg_gbsa_async
-from molnova.stages import ligprep, glide, primg_gbsa
+from molnova import _core, database, ligprep_recovery as recovery, prime_gbsa_async
+from molnova.stages import ligprep, glide, prime_gbsa
 from molnova.states import CompoundState as State
 
 
@@ -17,10 +17,10 @@ def project(tmp_path, states):
         _core.create_sqlite_schema(conn)
         conn.executemany('INSERT INTO compound(name,smiles,iteration,state,docking_score) '
                          "VALUES (?,'C',1,?,?)",
-                         [(str(i), state, -10+i if state in (State.DOCKED, State.PRIMG_GBSA_RUNNING) else None)
+                         [(str(i), state, -10+i if state in (State.DOCKED, State.PRIME_GBSA_RUNNING) else None)
                           for i, state in enumerate(states)])
     return SimpleNamespace(db_path=db, output=tmp_path, target_count=2,
-                           synthetic_feasibility_enabled=False, primg_gbsa_input_count=200)
+                           synthetic_feasibility_enabled=False, prime_gbsa_input_count=200)
 
 
 def test_generation_barrier_blocks_partial_iteration_and_live_generator(tmp_path, monkeypatch):
@@ -48,26 +48,26 @@ def test_glide_waits_until_ligprep_worker_exits(tmp_path):
     assert database.upstream_completion_reason(args.db_path, 1, 2, 'glide') is None
 
 
-def test_concurrent_primg_gbsa_claims_are_disjoint_and_top_200_is_fixed(tmp_path):
+def test_concurrent_prime_gbsa_claims_are_disjoint_and_top_200_is_fixed(tmp_path):
     args = project(tmp_path, [State.DOCKED]*205)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: database.claim_primg_gbsa_candidates(args.db_path, 1, 200, 205), range(2)))
+        results = list(pool.map(lambda _: database.claim_prime_gbsa_candidates(args.db_path, 1, 200, 205), range(2)))
     assert sorted(map(len, results)) == [0, 200]
     assert set(results[0]).isdisjoint(results[1])
-    assert database.primg_gbsa_candidates(args.db_path, 1, 200, 205) == []
+    assert database.prime_gbsa_candidates(args.db_path, 1, 200, 205) == []
 
 
 def test_restart_resets_only_claims_without_saved_submission(tmp_path, monkeypatch):
-    args = project(tmp_path, [State.PRIMG_GBSA_RUNNING, State.PRIMG_GBSA_RUNNING])
-    directory = tmp_path / 'iter1/primg_gbsa'; directory.mkdir(parents=True)
-    primg_gbsa_async._save(directory, {'command': ['/suite/prime_mmgbsa'], 'compound_ids': [1], 'job_id': 'live'})
+    args = project(tmp_path, [State.PRIME_GBSA_RUNNING, State.PRIME_GBSA_RUNNING])
+    directory = tmp_path / 'iter1/prime_gbsa'; directory.mkdir(parents=True)
+    prime_gbsa_async._save(directory, {'command': ['/suite/prime_mmgbsa'], 'compound_ids': [1], 'job_id': 'live'})
     calls = []
-    monkeypatch.setattr(_core, 'run_iteration_primg_gbsa', lambda **kw: calls.append(kw['compound_ids']))
-    primg_gbsa._run_stage(args, 1)
+    monkeypatch.setattr(_core, 'run_iteration_prime_gbsa', lambda **kw: calls.append(kw['compound_ids']))
+    prime_gbsa._run_stage(args, 1)
     assert calls == [[1]]
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state FROM compound ORDER BY id').fetchall() == [('primg_gbsa_running',), ('docked',)]
-    assert database.claim_primg_gbsa_candidates(args.db_path, 1, 200, 2) == [2]
+        assert conn.execute('SELECT state FROM compound ORDER BY id').fetchall() == [('prime_gbsa_running',), ('docked',)]
+    assert database.claim_prime_gbsa_candidates(args.db_path, 1, 200, 2) == [2]
 
 
 def test_ligprep_restart_polls_live_job_then_downloads_completed_output(tmp_path, monkeypatch):
@@ -125,21 +125,21 @@ def test_new_ligprep_submission_saves_job_id_before_wait_finishes(tmp_path, monk
     assert recovery.run_or_recover(['/suite/ligprep', '-WAIT'], tmp_path, [1], output)
 
 
-def test_primg_gbsa_recovers_job_record_after_scores_committed(tmp_path, monkeypatch):
+def test_prime_gbsa_recovers_job_record_after_scores_committed(tmp_path, monkeypatch):
     args = project(tmp_path, [State.DOCKED, State.DOCKED])
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40")
-    directory = tmp_path/'iter1/primg_gbsa'; directory.mkdir(parents=True)
-    primg_gbsa_async._save(directory, {'command':['/suite/prime_mmgbsa'], 'compound_ids':[1,2], 'job_id':'done'})
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',prime_gbsa_score=-40")
+    directory = tmp_path/'iter1/prime_gbsa'; directory.mkdir(parents=True)
+    prime_gbsa_async._save(directory, {'command':['/suite/prime_mmgbsa'], 'compound_ids':[1,2], 'job_id':'done'})
     def recover(**kw):
         assert kw['compound_ids'] == [1,2]
-        primg_gbsa_async.job_file(directory).unlink()
+        prime_gbsa_async.job_file(directory).unlink()
         return 0
-    monkeypatch.setattr(_core, 'run_iteration_primg_gbsa', recover)
-    primg_gbsa._run_stage(args, 1)
-    assert primg_gbsa_async.load_job(directory) is None
+    monkeypatch.setattr(_core, 'run_iteration_prime_gbsa', recover)
+    prime_gbsa._run_stage(args, 1)
+    assert prime_gbsa_async.load_job(directory) is None
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,prime_gbsa_score FROM compound').fetchall() == [('primg_gbsa_done',-40),('primg_gbsa_done',-40)]
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound').fetchall() == [('prime_gbsa_done',-40),('prime_gbsa_done',-40)]
 
 
 def test_ligprep_status_failure_retains_record(tmp_path, monkeypatch):

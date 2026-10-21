@@ -211,7 +211,7 @@ def _run_stage(args, requested_iteration):
                 return
             reason = database.iteration_completion_reason(
                 args.db_path, completed_iteration, args.target_count,
-                args.primg_gbsa_input_count, args.primg_gbsa_elite_count,
+                args.prime_gbsa_input_count, args.prime_gbsa_elite_count,
                 database.amber_keep_count(args),
             )
             if reason is not None:
@@ -221,12 +221,12 @@ def _run_stage(args, requested_iteration):
 
         work_started(f"Iteration {iteration}: starting " + (
             'elite-guided combichem generation.' if combichem else 'elite transfer learning and sampling.'))
-        elites = database.iteration_primg_gbsa_elites(
-            args.db_path, previous, args.primg_gbsa_elite_count,
+        elites = database.iteration_prime_gbsa_elites(
+            args.db_path, previous, args.prime_gbsa_elite_count,
         )
-        if len(elites) < args.primg_gbsa_elite_count:
+        if len(elites) < args.prime_gbsa_elite_count:
             raise RuntimeError(
-                f"Need {args.primg_gbsa_elite_count} previous primg_gbsa elites; only {len(elites)} available."
+                f"Need {args.prime_gbsa_elite_count} previous prime_gbsa elites; only {len(elites)} available."
             )
         prepare_iteration_directory(args, iteration)
         run_dir = stage_directory(args.output, iteration, 'combichem' if combichem else 'reinvent')

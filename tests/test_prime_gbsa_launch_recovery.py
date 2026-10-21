@@ -6,12 +6,12 @@ import time
 from pathlib import Path
 
 import pytest
-from molnova import primg_gbsa_async as prime, schrodinger_guard as guard
+from molnova import prime_gbsa_async as prime, schrodinger_guard as guard
 from molnova.schrodinger_retry import _run_attempt
 
 
 def record(tmp_path):
-    saved = {'command':['/suite/prime_mmgbsa', str(tmp_path/'primg_gbsa_input.maegz')],
+    saved = {'command':['/suite/prime_mmgbsa', str(tmp_path/'prime_gbsa_input.maegz')],
              'compound_ids':[15478], 'job_id':None, 'launching':True,
              'attempt':1, 'retry_at':0, 'log_snapshot':{},
              'launch_started_at':time.time()-120, 'launch_host':socket.gethostname()}
@@ -36,7 +36,7 @@ def test_recover_native_job_even_if_slurm_queue_is_empty(tmp_path, monkeypatch, 
     saved = record(tmp_path)
     monkeypatch.setattr(prime, '_launch_process_alive', lambda *a: False)
     monkeypatch.setattr(prime, '_launch_history', lambda *a: [
-        {'jobId':'existing', 'status':status, 'jobName':'primg_gbsa_input'}])
+        {'jobId':'existing', 'status':status, 'jobName':'prime_gbsa_input'}])
     assert prime.reconcile_interrupted_submission(tmp_path, saved)
     assert prime.load_job(tmp_path)['job_id']=='existing'
     assert not prime.load_job(tmp_path)['launching']

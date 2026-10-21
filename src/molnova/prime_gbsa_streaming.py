@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from molnova import _core
-from molnova.primg_gbsa_async import _save
+from molnova.prime_gbsa_async import _save
 from molnova.stages._logging import job_elapsed, format_elapsed
 
 

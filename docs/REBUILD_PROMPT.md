@@ -3,16 +3,16 @@
 ## Confirmed calculation naming (2026-10-21)
 
 The user requested fresh projects and waived compatibility with prior work for
-this rename. The Prime stage is `primg_gbsa` (user-specified spelling), with
-`prime_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
-`primg_gbsa`, CLI `molnova primg_gbsa`, and directory `08-primg_gbsa`.
-The score column was subsequently corrected to `prime_gbsa_score` at the
-user's request; stage identifiers retain their existing spelling.
+this rename. All Prime stage identifiers now use `prime_gbsa`, including
+`prime_gbsa_score`, `prime_gbsa_running`, `prime_gbsa_done`, failure stage
+`prime_gbsa`, CLI `molnova prime_gbsa`, and directory `08-prime_gbsa`.
+The user subsequently requested the same corrected spelling everywhere,
+including Python module names, states, CLI, TOML, manifests and output paths.
 TOML uses `prime-gbsa-input-count`, `prime-gbsa-flexdist`,
 `prime-gbsa-license-retry-seconds`, and `prime-gbsa-license-retries`.
-Other renamed Prime keys are `primg-gbsa-elite-count`, `primg-gbsa-receptor`,
-and `primg-gbsa-cpus`. Internal Python settings retain `primg_gbsa_*`.
-Native job basenames are `ligprep`, `glide`, and `primg_gbsa`; new Amber
+Other renamed Prime keys are `prime-gbsa-elite-count`, `prime-gbsa-receptor`,
+and `prime-gbsa-cpus`. Internal Python settings retain `prime_gbsa_*`.
+Native job basenames are `ligprep`, `glide`, and `prime_gbsa`; new Amber
 Slurm names are `amber-<UUID>` without `molnova-` or `run-`.
 The external executable `prime_mmgbsa`, vendor Maestro property names such as
 `r_psp_MMGBSA_dG_Bind`, and native JobServer recognition remain unchanged.
@@ -28,9 +28,9 @@ digits: `iter00`, `iter01`, `iter02`, …, `iter10`, …, `iter100`.
 Use fixed stage directory names in execution order:
 `01-scaffold`, `02-generate` (both LibInvent and combichem), `03-druglike`,
 `04-synthetic_feasibility`, `05-ligprep`, `06-glide`, `07-amber_gbsa`,
-`08-primg_gbsa`, `09-fep`. Optional stages retain their assigned numbers when skipped.
+`08-prime_gbsa`, `09-fep`. Optional stages retain their assigned numbers when skipped.
 These paths supersede unnumbered output examples elsewhere in this document for
-new work. The default Amber receptor is `<out-dir>/iter00/08-primg_gbsa/receptor.maegz`.
+new work. The default Amber receptor is `<out-dir>/iter00/08-prime_gbsa/receptor.maegz`.
 Explicit configured input paths retain their meaning.
 
 Preserve existing legacy iteration/stage paths for restart, saved JobIds, native
@@ -104,7 +104,7 @@ Each target has separate TOML, DB, inputs, and outputs, sharing the installed pa
 - Exact RDKit, REINVENT4, AiZynthFinder, PyTorch/CUDA versions and environment locks are not pinned in the reviewed files.
 - Schrödinger resolution: stage `--schrodinger`, then `SCHRODINGER`, then `/home1/schrodinger/2026-3`. `run` currently has no `--schrodinger`; use the environment variable.
 
-Responsibilities: `config.py` configuration; `database.py` SQL/claims/locks; `states.py` state definitions; `driver.py` supervision; `stages/` independent entry points; `chemistry/` scaffold/similarity/SA; remote adapters SSH transport; recovery modules durable native submissions; `primg_gbsa_queue.py` individual-job queue; `schrodinger_guard.py` submission fencing. `_core.py` retains substantial prototype calculation logic and compatibility wrappers. Module placement is an engineering direction, not a requirement to reproduce internal duplication.
+Responsibilities: `config.py` configuration; `database.py` SQL/claims/locks; `states.py` state definitions; `driver.py` supervision; `stages/` independent entry points; `chemistry/` scaffold/similarity/SA; remote adapters SSH transport; recovery modules durable native submissions; `prime_gbsa_queue.py` individual-job queue; `schrodinger_guard.py` submission fencing. `_core.py` retains substantial prototype calculation logic and compatibility wrappers. Module placement is an engineering direction, not a requirement to reproduce internal duplication.
 
 ## 3. Configuration and project isolation — documented baseline
 
@@ -141,11 +141,11 @@ amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
 amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
-amber-receptor = "./output/iter00/08-primg_gbsa/receptor.maegz"
+amber-receptor = "./output/iter00/08-prime_gbsa/receptor.maegz"
 amber-charge-method = "bcc"
 amber-ssh-config = "/home1/chchae/.ssh/config"
 # prime-gbsa-input-count omitted: 200 without Amber, 50 with Amber
-primg-gbsa-elite-count = 20
+prime-gbsa-elite-count = 20
 prime-gbsa-license-retry-seconds = 300
 prime-gbsa-license-retries = 3
 ligprep-ph = 7.4
@@ -170,7 +170,7 @@ These are environment-specific values, not proof that the paths/hosts are access
 | `glide-job-timeout` | 1800 seconds; 0 disables |
 | `elite-tl-epochs` | 3 |
 | `prime-gbsa-input-count` | 200 |
-| `primg-gbsa-elite-count` | 10 |
+| `prime-gbsa-elite-count` | 10 |
 | `prime-gbsa-flexdist` | 0.0 Å (frozen receptor) |
 | `fep-enabled`, `fep-input-count` | false, 20 |
 | `synthetic-feasibility-enabled` | true |
@@ -178,7 +178,7 @@ These are environment-specific values, not proof that the paths/hosts are access
 | `prime-gbsa-license-retry-seconds`, `prime-gbsa-license-retries` | 300, 3 |
 | LigPrep pH/tolerance/states/stereo | 7.4 / 1.0 / 2 / 1 |
 
-Synthetic assessment requires `aizynth-config` when enabled. CPU overrides and `aizynth-nproc` must be positive integers, job timeout nonnegative, retry count nonnegative, retry delay positive; reject bool as an integer for these validated settings. CPU overrides require one host entry. Bare hosts retain vendor defaults; explicit multiple-host slot counts are summed for LigPrep/Glide splitting. The legacy `primg-gbsa-cpus` setting does not increase the new queue ceiling. Legacy elite/diversity keys must not alter the current previous-iteration GBSA elite policy. A retained `ligprep-ring-confs` key does not authorize `-r 1`.
+Synthetic assessment requires `aizynth-config` when enabled. CPU overrides and `aizynth-nproc` must be positive integers, job timeout nonnegative, retry count nonnegative, retry delay positive; reject bool as an integer for these validated settings. CPU overrides require one host entry. Bare hosts retain vendor defaults; explicit multiple-host slot counts are summed for LigPrep/Glide splitting. The legacy `prime-gbsa-cpus` setting does not increase the new queue ceiling. Legacy elite/diversity keys must not alter the current previous-iteration GBSA elite policy. A retained `ligprep-ring-confs` key does not authorize `-r 1`.
 
 ## 4. Database and state contract — documented baseline
 
@@ -186,9 +186,9 @@ Connection settings: `journal_mode=WAL`, `busy_timeout=30000`, `foreign_keys=ON`
 
 `compound`: `id INTEGER PRIMARY KEY AUTOINCREMENT`; unique non-null `name`; non-null `smiles`; integer `iteration` default 0; nullable real `dG_exp`, `docking_score`, `prime_gbsa_score`, `amber_gbsa_score`, `fep_score`, `sa_score`, `similarity`; nullable `synthetic_feasibility` restricted to 0/1; non-null `state`; nullable `failed_stage`, `failure_message`; nullable `similar_to` referencing `compound(id)`; creation/modification timestamps. Index iteration, state, and similar_to. The application ensures reference selection points to iteration 0.
 
-States: `reference`, `generated`, `sa_rejected`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `amber_running`, `primg_gbsa_running`, `primg_gbsa_done`, `fep_running`, `fep_done`, `failed`.
+States: `reference`, `generated`, `sa_rejected`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `amber_running`, `prime_gbsa_running`, `prime_gbsa_done`, `fep_running`, `fep_done`, `failed`.
 
-Generated compounds start at `generated`; references start at `reference`, not through generation. Synthetic evaluation temporarily uses `synthetic_running`, normally returning to `generated` with assessment fields populated. Reference GBSA can use `primg_gbsa_running`/`primg_gbsa_done`. Export alone does not mean FEP completion. Permanent GBSA failures use `failed_stage="primg_gbsa"`; command name `primg_gbsa` is distinct.
+Generated compounds start at `generated`; references start at `reference`, not through generation. Synthetic evaluation temporarily uses `synthetic_running`, normally returning to `generated` with assessment fields populated. Reference GBSA can use `prime_gbsa_running`/`prime_gbsa_done`. Export alone does not mean FEP completion. Permanent GBSA failures use `failed_stage="prime_gbsa"`; command name `prime_gbsa` is distinct.
 
 Use write transactions such as `BEGIN IMMEDIATE` for claims. Schema upgrades preserve legacy columns and results, inferring state from legacy status/score fields only when initially adding state. Reinitialization never overwrites active or terminal state. Do not delete/rebuild a DB containing compounds but lacking references. Never reset all running claims indiscriminately.
 
@@ -196,7 +196,7 @@ Use write transactions such as `BEGIN IMMEDIATE` for claims. Schema upgrades pre
 
 Current handoff, driver, and tests specify a single-thread, single-iteration supervisor. Select the iteration once and pass it explicitly to every worker. One stage subprocess runs at a time:
 
-`generate → synthetic (enabled) → ligprep → glide → amber-gbsa (enabled) → primg_gbsa → fep export (enabled)`.
+`generate → synthetic (enabled) → ligprep → glide → amber-gbsa (enabled) → prime_gbsa → fep export (enabled)`.
 
 Exit after that iteration; do not automatically advance N+1. Default selection prioritizes missing/recoverable iteration-0 GBSA, otherwise oldest unfinished generated iteration, otherwise next new iteration. Explicit later iterations first process pending reference GBSA. Iteration 0 runs Amber GBSA (when enabled) before Prime MM-GBSA, using supplied reference poses without generation/LigPrep/Glide.
 
@@ -230,7 +230,7 @@ Driver/stage locks prevent duplicate local workers. Exit status 0 is insufficien
 
 LigPrep requires target-count, finished generation worker, and enabled synthetic assessment. Glide waits for all LigPrep work, including retryable work, and upstream worker exit. MM-GBSA requires finished upstream processing. Terminal failures count as processed; retryable work and Glide tail timeouts do not.
 
-N+1 generation requires all preceding iterations to satisfy completion: target-count; no unfinished upstream work; no `primg_gbsa_running`; each final selected top-N compound (Amber-ranked when enabled) has a finite Prime GBSA score or terminal failure; at least `primg-gbsa-elite-count` finite GBSA results. Explicit generation cannot bypass the gate. Top-N-excluded compounds need no GBSA. Ending an individual driver iteration does not itself require enough elites for a next generation.
+N+1 generation requires all preceding iterations to satisfy completion: target-count; no unfinished upstream work; no `prime_gbsa_running`; each final selected top-N compound (Amber-ranked when enabled) has a finite Prime GBSA score or terminal failure; at least `prime-gbsa-elite-count` finite GBSA results. Explicit generation cannot bypass the gate. Top-N-excluded compounds need no GBSA. Ending an individual driver iteration does not itself require enough elites for a next generation.
 
 ## 6. References, MCS, scaffold, and generation — documented baseline
 
@@ -495,7 +495,7 @@ iteration-0 fallback is retained across later reference TOML changes. An explici
 `elite-mcs` for a new generation takes precedence. If both are absent, infer
 the first generation MCS from iteration-0 references. Subsequent new iterations
 N>1 infer their generation MCS/scaffold from exactly the selected
-`primg-gbsa-elite-count` finite Prime elites of N-1 (20 in EGFR), after existing
+`prime-gbsa-elite-count` finite Prime elites of N-1 (20 in EGFR), after existing
 completion gates. Supplied later-generation cores use those same elites for
 attachment analysis and TL. Do not infer from all compounds or pooled history.
 
@@ -789,11 +789,11 @@ Completion fraction defaults to 0.95. Tail timeout 300 seconds limits worker wai
 
 ## 9. MM-GBSA — documented baseline
 
-For generated iterations, check target-count and absence of all upstream states; rank by final Amber scores when section 15 is enabled, otherwise final docking scores, with stable ties; select top `prime-gbsa-input-count`, including already scored rows; atomically claim only unscored `docked` rows. Never claim `primg_gbsa_running` as new work. Preserve top-N ranking positions of existing scores.
+For generated iterations, check target-count and absence of all upstream states; rank by final Amber scores when section 15 is enabled, otherwise final docking scores, with stable ties; select top `prime-gbsa-input-count`, including already scored rows; atomically claim only unscored `docked` rows. Never claim `prime_gbsa_running` as new work. Preserve top-N ranking positions of existing scores.
 
-Receptor comes from `primg-gbsa-receptor` when configured, otherwise from the grid archive. Input is receptor-first followed by corresponding best ligand poses. Preserve structure titles, properties, and coordinates when splitting.
+Receptor comes from `prime-gbsa-receptor` when configured, otherwise from the grid archive. Input is receptor-first followed by corresponding best ligand poses. Preserve structure titles, properties, and coordinates when splitting.
 
-New submissions use `compound_queue_v1`, manifest `iterN/primg_gbsa/primg_gbsa_job.json`, individual files/records under `queue-<timestamp>/CMPID_<id>/`, and receptor plus one ligand per Prime job:
+New submissions use `compound_queue_v1`, manifest `iterN/prime_gbsa/prime_gbsa_job.json`, individual files/records under `queue-<timestamp>/CMPID_<id>/`, and receptor plus one ligand per Prime job:
 
 ```text
 prime_mmgbsa <input.maegz> -OVERWRITE -HOST <bare-host> -NJOBS 1
@@ -813,7 +813,7 @@ Keep native compound identity, energy properties, score extraction and final
 coordinate publication. This changes the selected scientific protocol, with no
 speed or ranking-quality claim; do not recalculate/relabel existing scores.
 
-Save `primg_gbsa_flexdist` in each newly created queue before preparing or submitting
+Save `prime_gbsa_flexdist` in each newly created queue before preparing or submitting
 jobs. Freeze this value for every member, including pending members, across
 restart, refill and TOML changes. Queues without this metadata retain the legacy
 zero/frozen protocol. An existing child's saved exact command always wins over
@@ -824,7 +824,7 @@ submission fencing and readiness gates. Local installed help/source, option
 parsing and native ASL whole-residue selection were checked without submitting
 Prime work. Flexible-mode minimization/energies have not been externally validated.
 
-Prefer `r_psp_MMGBSA_dG_Bind`, then NS/property-name fallbacks. Accept only submitted IDs and finite scores. Preserve existing GBSA values. Commit score/state before queue checkpoint. Definitive new-job failure or terminal score absence fails only that compound. Explicit legacy atomtyping failure uses `failed_stage="primg_gbsa"`; ambiguous legacy failures remain retryable. Preserve other jobs/results.
+Prefer `r_psp_MMGBSA_dG_Bind`, then NS/property-name fallbacks. Accept only submitted IDs and finite scores. Preserve existing GBSA values. Commit score/state before queue checkpoint. Definitive new-job failure or terminal score absence fails only that compound. Explicit legacy atomtyping failure uses `failed_stage="prime_gbsa"`; ambiguous legacy failures remain retryable. Preserve other jobs/results.
 
 License default is initial attempt plus three retries, 300-second delay. Backoff with no live/uncertain launch releases its slot; status/download failures or uncertain launches retain identity/slot. Under stage lock, reset only unscored running claims absent from saved submissions to `docked` (or `reference` for iteration 0). Recover saved jobs before new work.
 
@@ -854,7 +854,7 @@ molnova generate egfr.toml --iteration 1
 molnova synthetic-feasibility egfr.toml --iteration 1
 molnova ligprep egfr.toml --iteration 1
 molnova glide egfr.toml --iteration 1
-molnova primg_gbsa egfr.toml --iteration 1
+molnova prime_gbsa egfr.toml --iteration 1
 molnova fep egfr.toml --iteration 1
 molnova fep egfr.toml --iteration 1 --import-scores fep_scores.tsv
 molnova synthetic-feasibility egfr.toml --iteration 1 --import-results results.json.gz
@@ -878,12 +878,12 @@ id	fep_score
 
 ## 12. Outputs and elapsed time — documented baseline
 
-Output DB: `output/<project>.sqlite`. Iteration artifacts include `iter0/primg_gbsa/`, `iterN/reinvent/generated.csv`, sampling/TL TOML, `elite_selected.tsv`, `elite_train.smi`, `elite_valid.smi`, `TL_libinvent.model`, synthetic directory/results, LigPrep directory, Glide group files and `best_poses.maegz`, MM-GBSA queue/manifests, FEP candidate TSV, native logs, and SSH reproduction records. These are output contracts; score values depend on real calculations and are not supplied as fabricated expected results.
+Output DB: `output/<project>.sqlite`. Iteration artifacts include `iter0/prime_gbsa/`, `iterN/reinvent/generated.csv`, sampling/TL TOML, `elite_selected.tsv`, `elite_train.smi`, `elite_valid.smi`, `TL_libinvent.model`, synthetic directory/results, LigPrep directory, Glide group files and `best_poses.maegz`, MM-GBSA queue/manifests, FEP candidate TSV, native logs, and SSH reproduction records. These are output contracts; score values depend on real calculations and are not supplied as fabricated expected results.
 
 `status` reports iteration/state counts; docking/GBSA/FEP counts and minima; synthetic assessed and solved counts. Supervisor prints startup configuration once, suppresses repeated initialization noise, and prints concise idle skip reasons. **Confirmed console verbosity change (2026-10-13):** flat TOML `log_level` defaults to 1 (`log-level` is an alias; conflicting values are rejected). Accept integers >=1, excluding bool. Level 1 shows stage/iteration summaries and total completion times; level 2 also shows worker invocation timing and stage-internal progress; level >=3 displays individual compound/reference-group docking, Prime and external-command output. Amber native per-compound logs display at level >=3 after artifact download; they are not a live remote stream. Failure summaries and tracebacks remain visible at every level. This applies to supervised and standalone stages; filtering never changes result persistence, JobId checkpointing, queue refill or scientific state. Retain native logs and save suppressed helper-command output in `molnova_commands.log` under the configured output directory (reference import) or the stage work directory (including generation); never use the project root for these logs. Save Prime launch output in `prime_launch.log`, and Glide launch output in `glide_launch.log` in the corresponding work directory. Concise pose-merge logging is an observed uncommitted change, not a scientific constraint.
 
 **Confirmed terse MM-GBSA polling (2026-10-16):** each normal level-1 compound
-queue pass prints one line containing iteration-wide `running` (PRIMG_GBSA_RUNNING
+queue pass prints one line containing iteration-wide `running` (PRIME_GBSA_RUNNING
 compound rows) and `saved` (finite persisted GBSA scores), plus this queue's
 `active`, `waiting`, project queue `limit`, and `scores updated` in that pass.
 The running count includes queued waiting claims; saved includes earlier queues
@@ -900,7 +900,7 @@ seven-job refill and scientific state are unchanged.
 Active invocation duration, including errors, is `HH:MM:SS.s`; keep idle polls concise. Distinguish native calculation time from worker duration. Queue manifests/archives store started_at/finished_at and report total wall time including waiting, collection, and restart downtime. Legacy queue start can be recovered from its nanosecond run-directory timestamp. This queue timing feature is present in reviewed uncommitted code/docs/tests.
 
 Confirmed addition requested on 2026-10-12: after MM-GBSA completes, publish
-`iterN/primg_gbsa/primg_gbsa_final.maegz` containing the native final structures from
+`iterN/prime_gbsa/prime_gbsa_final.maegz` containing the native final structures from
 successful results. Keep receptor and ligand entries, CMPID titles, coordinates
 and native score properties unchanged; per-compound receptor structures remain
 paired with their ligands. Merge completed queue manifests plus the finishing
@@ -990,9 +990,9 @@ Amber calculation and Amber-based top-500 reduction. Keep the current EGFR host
 on t41 and 124 parallel single-core calculations; omission defaults remain unchanged.
 Store `compound.amber_gbsa_score` separately from Prime `prime_gbsa_score`, and preserve
 all scientific results and saved jobs. Use the prepared receptor at
-`output/iter0/primg_gbsa/receptor.maegz`, each iteration's
+`output/iter0/prime_gbsa/receptor.maegz`, each iteration's
 `iterN/glide/best_poses.maegz`, and `CMPID_<id>` calculation identity.
-`iterN/amber_gbsa/` remains separate from `iterN/primg_gbsa/`. Iteration 0 still scores
+`iterN/amber_gbsa/` remains separate from `iterN/prime_gbsa/`. Iteration 0 still scores
 all eligible reference poses with Amber before unscored Prime references, without
 Glide/top-N filtering. Recover existing Prime and Amber submissions intact first,
 including legacy Amber submissions containing more than the new Glide shortlist.
@@ -1098,7 +1098,7 @@ and released remote lock were verified. No production SQLite results/jobs were
 modified. This verifies execution for one compound, not 124-way throughput or
 scientific ranking quality.
 
-`amber-receptor` defaults to `<out-dir>/iter00/08-primg_gbsa/receptor.maegz` and resolves
+`amber-receptor` defaults to `<out-dir>/iter00/08-prime_gbsa/receptor.maegz` and resolves
 relative to TOML; SSH environment/work/init paths remain remote absolute paths.
 Optional `amber-ssh-config` is a local SSH configuration file; normal host-key
 checks and BatchMode remain enabled. Each remote invocation uses a unique run
@@ -1138,7 +1138,7 @@ Commands:
 ```bash
 molnova run egfr.toml --iteration 1
 molnova amber-gbsa egfr.toml --iteration 1
-molnova primg_gbsa egfr.toml --iteration 1
+molnova prime_gbsa egfr.toml --iteration 1
 ```
 
 Standalone Amber performs one submission/recovery pass; the supervisor polls it.
@@ -1582,7 +1582,7 @@ identity, diversity or improved binding.
 For each iteration, estimate internal diversity as one minus mean pairwise
 Morgan/Tanimoto similarity on at most 200 deterministically sampled molecules.
 Also report the median maximum Tanimoto to the immediately preceding iteration's
-finite Prime top `primg-gbsa-elite-count` compounds (ties by ID); this is not ancestry.
+finite Prime top `prime-gbsa-elite-count` compounds (ties by ID); this is not ancestry.
 Show sample, pair and elite counts; missing/insufficient populations give n/a.
 
 Use the exact saved generation scaffold and existing attachment-aware decomposition

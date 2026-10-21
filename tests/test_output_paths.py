@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from molnova import amber_gbsa, config, driver, primg_gbsa_batch, primg_gbsa_queue
+from molnova import amber_gbsa, config, driver, prime_gbsa_batch, prime_gbsa_queue
 from molnova.paths import (
     STAGE_DIRECTORIES, iteration_directory, stage_directory, stage_manifests,
 )
@@ -47,22 +47,22 @@ def test_duplicate_stage_layouts_are_not_silently_ignored(tmp_path):
         stage_directory(tmp_path, 10, 'glide')
 
 
-@pytest.mark.parametrize('layout', ['iter01/08-primg_gbsa', 'iter1/primg_gbsa', 'iter10/primg_gbsa'])
+@pytest.mark.parametrize('layout', ['iter01/08-prime_gbsa', 'iter1/prime_gbsa', 'iter10/prime_gbsa'])
 def test_prime_resource_guards_find_saved_jobs_in_both_layouts(tmp_path, layout):
-    saved = tmp_path / layout / 'primg_gbsa_job.json'
+    saved = tmp_path / layout / 'prime_gbsa_job.json'
     saved.parent.mkdir(parents=True)
     saved.write_text(json.dumps({'mode': 'compound_queue_v1', 'entries': {'1': 'active', '2': 'waiting'}}))
     args = SimpleNamespace(output=tmp_path)
-    other = tmp_path / 'iter02/08-primg_gbsa'
-    assert stage_manifests(tmp_path, 'primg_gbsa', 'primg_gbsa_job.json') == [saved]
-    assert primg_gbsa_batch.other_submission(args, other) == saved
-    assert primg_gbsa_queue.other_active_slots(args, other) == 1
-    assert primg_gbsa_batch.other_submission(args, saved.parent) is None
+    other = tmp_path / 'iter02/08-prime_gbsa'
+    assert stage_manifests(tmp_path, 'prime_gbsa', 'prime_gbsa_job.json') == [saved]
+    assert prime_gbsa_batch.other_submission(args, other) == saved
+    assert prime_gbsa_queue.other_active_slots(args, other) == 1
+    assert prime_gbsa_batch.other_submission(args, saved.parent) is None
 
 
 @pytest.mark.parametrize('stage,folder,filename,reason', [
     ('ligprep', '05-ligprep', 'ligprep_job.json', 'LigPrep submission'),
-    ('primg_gbsa', '08-primg_gbsa', 'primg_gbsa_job.json', 'primg_gbsa queue'),
+    ('prime_gbsa', '08-prime_gbsa', 'prime_gbsa_job.json', 'prime_gbsa queue'),
     ('amber-gbsa', '07-amber_gbsa', 'amber_job.json', 'Amber remote'),
 ])
 def test_supervisor_recovers_numbered_manifests(tmp_path, stage, folder, filename, reason):
@@ -75,12 +75,12 @@ def test_supervisor_recovers_numbered_manifests(tmp_path, stage, folder, filenam
 
 def test_amber_receptor_default_and_pose_source_follow_output_layout(tmp_path):
     settings = config.amber_settings({'out-dir': 'output'}, tmp_path)
-    assert settings['amber_receptor'] == tmp_path / 'output/iter00/08-primg_gbsa/receptor.maegz'
+    assert settings['amber_receptor'] == tmp_path / 'output/iter00/08-prime_gbsa/receptor.maegz'
     args = SimpleNamespace(output=tmp_path, reference_poses=tmp_path / 'reference.maegz')
     assert amber_gbsa.poses_path(args, 0) == args.reference_poses
     assert amber_gbsa.poses_path(args, 2) == tmp_path / 'iter02/06-glide/best_poses.maegz'
-    (tmp_path / 'output/iter0/primg_gbsa').mkdir(parents=True)
-    assert config.amber_settings({'out-dir': 'output'}, tmp_path)['amber_receptor'] == tmp_path / 'output/iter0/primg_gbsa/receptor.maegz'
+    (tmp_path / 'output/iter0/prime_gbsa').mkdir(parents=True)
+    assert config.amber_settings({'out-dir': 'output'}, tmp_path)['amber_receptor'] == tmp_path / 'output/iter0/prime_gbsa/receptor.maegz'
 
 
 def test_glide_uncertain_launch_in_numbered_folder_blocks_supervisor(tmp_path):

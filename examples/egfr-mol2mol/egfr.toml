@@ -23,7 +23,7 @@ elite-mcs-fixed = false
 # elite-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
 # 첫 cycle은 reference-mcs, 이후는 직전 iteration의 Prime elite에서 generation core 결정
 # 다음 cycle도 Prime elite가 필요하며 FEP 후보 fallback이 이 조건을 대체하지 않습니다.
-primg-gbsa-elite-count = 10
+prime-gbsa-elite-count = 10
 
 # REINVENT4를 사용할 때만 적용; combichem은 prior/REINVENT runtime을 사용하지 않습니다.
 # libinvent-prior = "/home1/astrazeneca/REINVENT/priors/mol2mol_medium_similarity.prior"
@@ -69,7 +69,7 @@ amber-slurm-cpus = 384           # 전체 Amber 작업 합계 상한; 각 단일
 amber-slurm-env = "/share/opt/amber26/envs/AmberTools26"
 # amber-slurm-work-dir = "/homes1/사용자명/molnova-amber-slurm-runs"  # 기본값: 현재 사용자별 디렉터리
 amber-cpus = 124
-amber-receptor = "./output/iter00/08-primg_gbsa/receptor.maegz"
+amber-receptor = "./output/iter00/08-prime_gbsa/receptor.maegz"
 amber-charge-method = "bcc"
 amber-ssh-host = "t41"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"

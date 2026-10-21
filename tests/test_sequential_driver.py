@@ -19,11 +19,11 @@ def project(tmp_path, state=State.GENERATED, iteration=3):
         conn.execute(
             "INSERT INTO compound(name,smiles,iteration,state,docking_score,prime_gbsa_score) "
             "VALUES ('CMP','C',?,?,?,?)",
-            (iteration, state, -10 if state in {State.DOCKED, State.PRIMG_GBSA_DONE} else None,
-             -20 if state == State.PRIMG_GBSA_DONE else None),
+            (iteration, state, -10 if state in {State.DOCKED, State.PRIME_GBSA_DONE} else None,
+             -20 if state == State.PRIME_GBSA_DONE else None),
         )
     return SimpleNamespace(db_path=db, output=tmp_path, target_count=1,
-                           primg_gbsa_input_count=1, primg_gbsa_elite_count=10, max_iteration=5,
+                           prime_gbsa_input_count=1, prime_gbsa_elite_count=10, max_iteration=5,
                            synthetic_feasibility_enabled=True, schrodinger=Path('/suite'))
 
 
@@ -37,7 +37,7 @@ def test_sequential_workers_share_iteration_and_wait_for_real_completion(tmp_pat
         'synthetic': "UPDATE compound SET synthetic_feasibility=1,sa_score=2",
         'ligprep': "UPDATE compound SET state='ligprepped'",
         'glide': "UPDATE compound SET state='docked',docking_score=-10",
-        'primg_gbsa': "UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-20",
+        'prime_gbsa': "UPDATE compound SET state='prime_gbsa_done',prime_gbsa_score=-20",
     }
 
     class Stop(driver.StopFlag):
@@ -49,7 +49,7 @@ def test_sequential_workers_share_iteration_and_wait_for_real_completion(tmp_pat
         assert cwd == tmp_path
         calls.append(stage)
         # Exit 0 is not a completed calculation. Glide and GBSA need another pass.
-        if stage in {'glide', 'primg_gbsa'} and calls.count(stage) == 1:
+        if stage in {'glide', 'prime_gbsa'} and calls.count(stage) == 1:
             return 0
         with database.connect(args.db_path) as conn:
             conn.execute(transitions[stage])
@@ -59,7 +59,7 @@ def test_sequential_workers_share_iteration_and_wait_for_real_completion(tmp_pat
     monkeypatch.setattr(guard, 'active_jobs', lambda suite: [])
     assert driver.supervise_iteration(args, tmp_path/'project.toml', 3,
                                      driver.build_stages(True, False), 30, Stop())
-    assert calls == ['generate', 'druglike', 'synthetic', 'ligprep', 'glide', 'glide', 'primg_gbsa', 'primg_gbsa']
+    assert calls == ['generate', 'druglike', 'synthetic', 'ligprep', 'glide', 'glide', 'prime_gbsa', 'prime_gbsa']
     assert waits == [30, 5]
     with database.connect(args.db_path) as conn:
         assert conn.execute('SELECT DISTINCT iteration FROM compound').fetchall() == [(3,)]
@@ -89,7 +89,7 @@ def test_retry_failure_cannot_advance_stage(tmp_path, monkeypatch):
 
 
 def test_restart_resumes_oldest_unfinished_iteration_and_never_requires_elites(tmp_path):
-    args = project(tmp_path, State.PRIMG_GBSA_DONE, iteration=1)
+    args = project(tmp_path, State.PRIME_GBSA_DONE, iteration=1)
     assert driver.choose_iteration(args) == 2
     with database.connect(args.db_path) as conn:
         conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('later','C',3,'generated')")
@@ -106,20 +106,20 @@ def test_restart_resumes_oldest_unfinished_iteration_and_never_requires_elites(t
 def test_terminal_failures_are_processed_and_top_n_excludes_others(tmp_path):
     args = project(tmp_path, State.FAILED)
     assert database.stage_completion_reason(args.db_path, 3, 'ligprep', 1, 1, True) is None
-    assert database.stage_completion_reason(args.db_path, 3, 'primg_gbsa', 1, 1) is None
+    assert database.stage_completion_reason(args.db_path, 3, 'prime_gbsa', 1, 1) is None
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,prime_gbsa_score=-20")
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',docking_score=-10,prime_gbsa_score=-20")
         conn.execute("INSERT INTO compound(name,smiles,iteration,state,docking_score) "
                      "VALUES ('outside','C',3,'docked',-5)")
-    assert database.stage_completion_reason(args.db_path, 3, 'primg_gbsa', 2, 1) is None
+    assert database.stage_completion_reason(args.db_path, 3, 'prime_gbsa', 2, 1) is None
 
 
 def test_later_iteration_cannot_mask_requested_iteration(tmp_path):
     args = project(tmp_path)
     with database.connect(args.db_path) as conn:
         conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score,docking_score) "
-                     "VALUES ('later','C',4,'primg_gbsa_done',-30,-15)")
-    assert database.stage_completion_reason(args.db_path, 3, 'primg_gbsa', 1, 1)
+                     "VALUES ('later','C',4,'prime_gbsa_done',-30,-15)")
+    assert database.stage_completion_reason(args.db_path, 3, 'prime_gbsa', 1, 1)
 
 
 def test_live_native_job_overrides_completed_db_and_zero_exit(tmp_path, monkeypatch):
@@ -129,7 +129,7 @@ def test_live_native_job_overrides_completed_db_and_zero_exit(tmp_path, monkeypa
     monkeypatch.setattr(guard, 'active_jobs', lambda suite: [live])
     monkeypatch.setattr(driver, 'stream_process', lambda *a: 0)
     assert not driver.supervise_iteration(args, tmp_path/'p.toml', 3,
-        [('glide','module'), ('primg_gbsa','module')], 30, driver.StopFlag(), once=True)
+        [('glide','module'), ('prime_gbsa','module')], 30, driver.StopFlag(), once=True)
     live['spec']['launchParams']['launchDirectory'] = str(tmp_path/'iter4/glide/ref_6')
     assert driver.external_completion_reason(args, 3, 'glide') is None
 
@@ -148,10 +148,10 @@ def test_uncertain_glide_record_and_unretired_prime_queue_block_transition(tmp_p
     directory.mkdir(parents=True)
     (directory/'glide_job.json').write_text(json.dumps({'job_id': None}))
     assert 'uncertain' in driver.external_completion_reason(args, 3, 'glide')
-    directory = tmp_path/'iter3/primg_gbsa'
+    directory = tmp_path/'iter3/prime_gbsa'
     directory.mkdir(parents=True)
-    (directory/'primg_gbsa_job.json').write_text(json.dumps({'mode':'compound_queue_v1'}))
-    assert 'recovery' in driver.external_completion_reason(args, 3, 'primg_gbsa')
+    (directory/'prime_gbsa_job.json').write_text(json.dumps({'mode':'compound_queue_v1'}))
+    assert 'recovery' in driver.external_completion_reason(args, 3, 'prime_gbsa')
 
 
 def test_cli_forwards_iteration_to_driver(tmp_path, monkeypatch):
@@ -181,20 +181,20 @@ p=argparse.ArgumentParser(); p.add_argument('project'); p.add_argument('--iterat
 a=p.parse_args(); root=Path(a.project).parent
 with sqlite3.connect(root/'project.sqlite') as c:
     state=c.execute('SELECT state FROM compound WHERE iteration=?',(a.iteration,)).fetchone()[0]
-    transitions={'generated':('ligprepped',None,None),'ligprepped':('docked',-10,None),'docked':('primg_gbsa_done',-10,-20)}
-    new,dock,primg_gbsa=transitions[state]
-    c.execute('UPDATE compound SET state=?,docking_score=?,prime_gbsa_score=? WHERE iteration=?',(new,dock,primg_gbsa,a.iteration))
+    transitions={'generated':('ligprepped',None,None),'ligprepped':('docked',-10,None),'docked':('prime_gbsa_done',-10,-20)}
+    new,dock,prime_gbsa=transitions[state]
+    c.execute('UPDATE compound SET state=?,docking_score=?,prime_gbsa_score=? WHERE iteration=?',(new,dock,prime_gbsa,a.iteration))
 with (root/'order.log').open('a') as f:f.write(str(a.iteration)+':'+new+'\n')
 """)
     monkeypatch.setenv('PYTHONPATH', str(tmp_path))
     monkeypatch.setattr(guard, 'active_jobs', lambda suite: [])
-    stages = [(stage, 'fake_worker') for stage in ('ligprep','glide','primg_gbsa')]
+    stages = [(stage, 'fake_worker') for stage in ('ligprep','glide','prime_gbsa')]
     class Deadline(driver.StopFlag):
         def is_set(self):
             return time.monotonic() - started > 5
     started = time.monotonic()
     assert driver.supervise_iteration(args, tmp_path/'p.toml', 3, stages, 1, Deadline())
-    assert (tmp_path/'order.log').read_text().splitlines() == ['3:ligprepped','3:docked','3:primg_gbsa_done']
+    assert (tmp_path/'order.log').read_text().splitlines() == ['3:ligprepped','3:docked','3:prime_gbsa_done']
 
 
 def test_saved_glide_child_blocks_even_when_list_is_empty(tmp_path, monkeypatch):
@@ -222,7 +222,7 @@ def test_ligprep_postcommit_restart_retires_only_terminal_record(tmp_path, monke
 
 
 def test_fep_export_is_a_single_final_stage(tmp_path, monkeypatch):
-    args = project(tmp_path, State.PRIMG_GBSA_DONE)
+    args = project(tmp_path, State.PRIME_GBSA_DONE)
     calls = []
     monkeypatch.setattr(driver, 'stream_process', lambda stage,*a: calls.append(stage) or 0)
     assert driver.supervise_iteration(args, tmp_path/'p.toml', 3,
@@ -249,19 +249,19 @@ def test_iteration_timing_survives_restart_and_completion_is_idempotent(tmp_path
 
 
 def test_legacy_iteration_timing_is_labelled_estimated(tmp_path, monkeypatch):
-    args = project(tmp_path, State.PRIMG_GBSA_DONE)
+    args = project(tmp_path, State.PRIME_GBSA_DONE)
     with database.connect(args.db_path) as conn:
         conn.execute("UPDATE compound SET created_at='1970-01-01 00:10:00'")
     monkeypatch.setattr(database.time, 'time', lambda: 1800)
     assert database.start_iteration_timer(args.db_path, 3) == 600
     assert database.finish_iteration_timer(args.db_path, 3) == (1200, True)
     with database.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,prime_gbsa_score FROM compound').fetchone() == ('primg_gbsa_done', -20)
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound').fetchone() == ('prime_gbsa_done', -20)
 
 
 @pytest.mark.parametrize('completed', [True, False])
 def test_driver_reports_total_time_only_after_verified_completion(tmp_path, monkeypatch, capsys, completed):
-    args = project(tmp_path, State.PRIMG_GBSA_DONE)
+    args = project(tmp_path, State.PRIME_GBSA_DONE)
     args.project = 'project'
     args.fep_enabled = False
     with database.connect(args.db_path) as conn:

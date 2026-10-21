@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from molnova import _core, database, ligprep_recovery, primg_gbsa_async, primg_gbsa_queue, schrodinger_guard
+from molnova import _core, database, ligprep_recovery, prime_gbsa_async, prime_gbsa_queue, schrodinger_guard
 from molnova.glide_recovery import group_status
 from molnova.stages import ligprep, glide
 
@@ -93,37 +93,37 @@ def test_obsolete_queue_checks_each_native_child_before_cleanup(tmp_path, monkey
     db = tmp_path / 'project.sqlite'
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-    root = tmp_path / 'primg_gbsa'
+    root = tmp_path / 'prime_gbsa'
     root.mkdir()
-    record = {'mode': primg_gbsa_queue.MODE, 'compound_ids': [30025],
+    record = {'mode': prime_gbsa_queue.MODE, 'compound_ids': [30025],
               'run_dir': 'queue-1', 'entries': {'30025': 'active'}}
-    primg_gbsa_async._save(root, record)
+    prime_gbsa_async._save(root, record)
     child = root / 'queue-1/CMPID_30025'
     child.mkdir(parents=True)
-    primg_gbsa_async._save(child, {'command': ['/suite/prime_mmgbsa'], 'job_id': 'old', 'compound_ids': [30025]})
-    monkeypatch.setattr(primg_gbsa_async, '_job_details', lambda *a: [
+    prime_gbsa_async._save(child, {'command': ['/suite/prime_mmgbsa'], 'job_id': 'old', 'compound_ids': [30025]})
+    monkeypatch.setattr(prime_gbsa_async, '_job_details', lambda *a: [
         {'jobId': 'old', 'status': 'DONE'}, {'jobId': 'child', 'status': status}])
     if status != 'DONE':
-        with pytest.raises(primg_gbsa_async.PrimeReconciliationPending, match='live jobs'):
-            primg_gbsa_async.reconcile_saved_job(root, db, 2)
-        assert primg_gbsa_async.load_job(root) == record
+        with pytest.raises(prime_gbsa_async.PrimeReconciliationPending, match='live jobs'):
+            prime_gbsa_async.reconcile_saved_job(root, db, 2)
+        assert prime_gbsa_async.load_job(root) == record
     else:
-        assert primg_gbsa_async.reconcile_saved_job(root, db, 2) is None
+        assert prime_gbsa_async.reconcile_saved_job(root, db, 2) is None
         assert list(root.iterdir()) == []
-        assert len(list(tmp_path.glob('primg_gbsa.stale-*'))) == 1
+        assert len(list(tmp_path.glob('prime_gbsa.stale-*'))) == 1
 
 
-def test_new_primg_gbsa_inputs_clear_working_files_but_preserve_scored_history(tmp_path, monkeypatch):
+def test_new_prime_gbsa_inputs_clear_working_files_but_preserve_scored_history(tmp_path, monkeypatch):
     monkeypatch.setattr(schrodinger_guard, 'active_jobs', lambda *a: [])
     (tmp_path / 'receptor.maegz').write_text('old receptor')
-    (tmp_path / 'primg_gbsa_input.maegz').write_text('old PV')
-    (tmp_path / 'primg_gbsa_input-out.maegz').write_text('old output')
+    (tmp_path / 'prime_gbsa_input.maegz').write_text('old PV')
+    (tmp_path / 'prime_gbsa_input-out.maegz').write_text('old output')
     completed = tmp_path / 'queue-1.completed.json'
     completed.write_text('{}')
-    primg_gbsa_queue.prepare_new_calculation(SimpleNamespace(primg_gbsa_receptor=None, schrodinger='/suite'), tmp_path)
+    prime_gbsa_queue.prepare_new_calculation(SimpleNamespace(prime_gbsa_receptor=None, schrodinger='/suite'), tmp_path)
     assert not (tmp_path / 'receptor.maegz').exists()
-    assert not (tmp_path / 'primg_gbsa_input.maegz').exists()
-    assert not (tmp_path / 'primg_gbsa_input-out.maegz').exists()
+    assert not (tmp_path / 'prime_gbsa_input.maegz').exists()
+    assert not (tmp_path / 'prime_gbsa_input-out.maegz').exists()
     assert completed.exists()
 
 
@@ -152,38 +152,38 @@ def test_obsolete_queue_reconciles_interrupted_child_without_submitting(tmp_path
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         conn.execute("INSERT INTO compound(name,smiles,iteration,state,docking_score) VALUES ('current','C',2,'docked',-9)")
-    root = tmp_path / 'primg_gbsa'
+    root = tmp_path / 'prime_gbsa'
     root.mkdir()
-    record = {'mode': primg_gbsa_queue.MODE, 'compound_ids': [30025],
+    record = {'mode': prime_gbsa_queue.MODE, 'compound_ids': [30025],
               'run_dir': 'queue-1', 'entries': {'30025': 'active'}}
-    primg_gbsa_async._save(root, record)
+    prime_gbsa_async._save(root, record)
     child = root / 'queue-1/CMPID_30025'
     child.mkdir(parents=True)
-    saved = {'command': ['/suite/prime_mmgbsa', str(child / 'primg_gbsa_input.maegz')],
+    saved = {'command': ['/suite/prime_mmgbsa', str(child / 'prime_gbsa_input.maegz')],
              'compound_ids': [30025], 'job_id': None, 'launching': True,
              'attempt': 1, 'retry_at': 0, 'log_snapshot': {},
              'launch_started_at': time.time() - 120, 'launch_host': socket.gethostname()}
-    primg_gbsa_async._save(child, saved)
-    monkeypatch.setattr(primg_gbsa_async, '_launch_process_alive', lambda *a: False)
+    prime_gbsa_async._save(child, saved)
+    monkeypatch.setattr(prime_gbsa_async, '_launch_process_alive', lambda *a: False)
     def history(*a):
         if case == 'offline':
             raise OSError('JobServer unavailable')
         return [] if case == 'unsubmitted' else [{'jobId': 'recovered', 'status': case.upper()}]
-    monkeypatch.setattr(primg_gbsa_async, '_launch_history', history)
-    monkeypatch.setattr(primg_gbsa_async, '_job_details', lambda *a: [
+    monkeypatch.setattr(prime_gbsa_async, '_launch_history', history)
+    monkeypatch.setattr(prime_gbsa_async, '_job_details', lambda *a: [
         {'jobId': 'recovered', 'status': case.upper()}])
-    monkeypatch.setattr(primg_gbsa_async, '_run_attempt', lambda *a: pytest.fail('obsolete compound submitted'))
+    monkeypatch.setattr(prime_gbsa_async, '_run_attempt', lambda *a: pytest.fail('obsolete compound submitted'))
     if case in ('unsubmitted', 'done'):
-        assert primg_gbsa_async.reconcile_saved_job(root, db, 2) is None
-        assert not primg_gbsa_async.job_file(root).exists()
-        archived = next(tmp_path.glob('primg_gbsa.stale-*')) / 'queue-1/CMPID_30025'
-        recovered = primg_gbsa_async.load_job(archived)
+        assert prime_gbsa_async.reconcile_saved_job(root, db, 2) is None
+        assert not prime_gbsa_async.job_file(root).exists()
+        archived = next(tmp_path.glob('prime_gbsa.stale-*')) / 'queue-1/CMPID_30025'
+        recovered = prime_gbsa_async.load_job(archived)
         assert recovered['launching'] is False
         assert recovered['job_id'] == (None if case == 'unsubmitted' else 'recovered')
     else:
-        with pytest.raises(primg_gbsa_async.PrimeReconciliationPending):
-            primg_gbsa_async.reconcile_saved_job(root, db, 2)
-        assert primg_gbsa_async.load_job(root) == record
-        assert not list(tmp_path.glob('primg_gbsa.stale-*'))
+        with pytest.raises(prime_gbsa_async.PrimeReconciliationPending):
+            prime_gbsa_async.reconcile_saved_job(root, db, 2)
+        assert prime_gbsa_async.load_job(root) == record
+        assert not list(tmp_path.glob('prime_gbsa.stale-*'))
     with database.connect(db) as conn:
         assert conn.execute('SELECT state,docking_score,prime_gbsa_score FROM compound').fetchone() == ('docked', -9, None)

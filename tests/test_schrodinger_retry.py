@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from molnova import schrodinger_retry as retry
-from molnova.config import primg_gbsa_license_retry_settings
+from molnova.config import prime_gbsa_license_retry_settings
 
 
 def test_real_command_retries_license_failure_then_succeeds(tmp_path, monkeypatch):
@@ -63,4 +63,4 @@ def test_success_with_license_warning_is_not_retried(tmp_path, monkeypatch):
 @pytest.mark.parametrize("key,value", [("prime-gbsa-license-retries", -1), ("prime-gbsa-license-retry-seconds", 0), ("prime-gbsa-license-retries", True)])
 def test_invalid_license_retry_config(key, value):
     with pytest.raises(ValueError):
-        primg_gbsa_license_retry_settings({key: value})
+        prime_gbsa_license_retry_settings({key: value})

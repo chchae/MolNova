@@ -6,8 +6,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from molnova import _core as c, database, driver, primg_gbsa_queue, primg_gbsa_batch, primg_gbsa_async
-from molnova.stages import primg_gbsa
+from molnova import _core as c, database, driver, prime_gbsa_queue, prime_gbsa_batch, prime_gbsa_async
+from molnova.stages import prime_gbsa
 
 
 def project(tmp_path):
@@ -18,23 +18,23 @@ def project(tmp_path):
             "INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES (?,'C',0,'reference',?)",
             [('existing', -40), ('missing', None), ('missing2', None)],
         )
-    return SimpleNamespace(db_path=db, output=tmp_path, primg_gbsa_input_count=1,
+    return SimpleNamespace(db_path=db, output=tmp_path, prime_gbsa_input_count=1,
                            target_count=1000, max_iteration=20)
 
 
 def test_references_ignore_docking_count_and_target_and_preserve_existing_scores(tmp_path):
     args = project(tmp_path)
-    assert database.primg_gbsa_candidates(args.db_path, 0, 1, 1000) == [2, 3]
-    assert primg_gbsa.eligible_iteration(args) == 0
+    assert database.prime_gbsa_candidates(args.db_path, 0, 1, 1000) == [2, 3]
+    assert prime_gbsa.eligible_iteration(args) == 0
     assert driver.choose_iteration(args) == 0
     assert driver.choose_iteration(args, 0) == 0
-    assert database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000) == [2, 3]
-    assert database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000) == []
-    assert 'running for 2' in database.stage_completion_reason(args.db_path, 0, 'primg_gbsa', 1000, 1)
+    assert database.claim_prime_gbsa_candidates(args.db_path, 0, 1, 1000) == [2, 3]
+    assert database.claim_prime_gbsa_candidates(args.db_path, 0, 1, 1000) == []
+    assert 'running for 2' in database.stage_completion_reason(args.db_path, 0, 'prime_gbsa', 1000, 1)
     scores = tmp_path / 'scores.tsv'
     scores.write_text('id\tprime_gbsa_score\n1\t-99\n2\t-35\n3\t-30\n')
     assert c.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=[1, 2, 3]) == 2
-    assert database.reference_primg_gbsa_completion_reason(args.db_path) is None
+    assert database.reference_prime_gbsa_completion_reason(args.db_path) is None
     assert len(c.get_reference_compounds(args.db_path)) == 3
     with sqlite3.connect(args.db_path) as conn:
         assert conn.execute('SELECT prime_gbsa_score FROM compound ORDER BY id').fetchall() == [(-40,), (-35,), (-30,)]
@@ -51,36 +51,36 @@ def test_worker_handles_zero_explicitly_and_only_calculates_missing_references(t
         scores = tmp_path / 'scores.tsv'
         scores.write_text('id\tprime_gbsa_score\n2\t-35\n3\t-30\n')
         return c.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=kw['compound_ids'])
-    monkeypatch.setattr(c, 'run_iteration_primg_gbsa', calculate)
-    primg_gbsa._run_stage(args, requested)
+    monkeypatch.setattr(c, 'run_iteration_prime_gbsa', calculate)
+    prime_gbsa._run_stage(args, requested)
     assert len(calls) == 1
-    primg_gbsa._run_stage(args, requested)
+    prime_gbsa._run_stage(args, requested)
     assert len(calls) == 1
 
 
 def test_orphan_reference_claim_restores_reference_and_protects_saved_ids(tmp_path):
     args = project(tmp_path)
-    database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000)
-    assert database.reset_unsubmitted_primg_gbsa(args.db_path, 0, [2]) == [3]
-    rows = database.primg_gbsa_submission_rows(args.db_path, [2, 3])
-    assert rows[2][1] == 'primg_gbsa_running'
+    database.claim_prime_gbsa_candidates(args.db_path, 0, 1, 1000)
+    assert database.reset_unsubmitted_prime_gbsa(args.db_path, 0, [2]) == [3]
+    rows = database.prime_gbsa_submission_rows(args.db_path, [2, 3])
+    assert rows[2][1] == 'prime_gbsa_running'
     assert rows[3][1] == 'reference'
 
 
 def test_reference_terminal_failure_does_not_block_forever(tmp_path):
     args = project(tmp_path)
-    database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000)
-    database.mark_primg_gbsa_atomtyping_failures(args.db_path, [2, 3], 'Cannot atom type structure')
-    assert database.reference_primg_gbsa_completion_reason(args.db_path) is None
-    assert database.primg_gbsa_candidates(args.db_path, 0, 1, 1000) == []
+    database.claim_prime_gbsa_candidates(args.db_path, 0, 1, 1000)
+    database.mark_prime_gbsa_atomtyping_failures(args.db_path, [2, 3], 'Cannot atom type structure')
+    assert database.reference_prime_gbsa_completion_reason(args.db_path) is None
+    assert database.prime_gbsa_candidates(args.db_path, 0, 1, 1000) == []
 
 
 def test_reference_input_uses_original_pose_and_named_identity_map(tmp_path, monkeypatch):
     args = project(tmp_path)
     args.reference_poses = tmp_path / 'references.maegz'
     args.reference_poses.write_text('poses')
-    args.primg_gbsa_receptor = tmp_path / 'receptor.maegz'
-    args.primg_gbsa_receptor.write_text('receptor')
+    args.prime_gbsa_receptor = tmp_path / 'receptor.maegz'
+    args.prime_gbsa_receptor.write_text('receptor')
     args.schrodinger = Path('/suite')
     args.host = 'compute:128'
     args.grid = tmp_path / 'grid.zip'
@@ -89,14 +89,14 @@ def test_reference_input_uses_original_pose_and_named_identity_map(tmp_path, mon
         calls.append(command)
         Path(command[5]).write_text('reference PV')
     monkeypatch.setattr(c, 'run_command', build_pv)
-    monkeypatch.setattr(primg_gbsa_batch, 'poll_batch', lambda *a: None)
-    assert c.run_iteration_primg_gbsa(0, args, tmp_path / 'iter0', tmp_path / 'unused', [2, 3]) is None
+    monkeypatch.setattr(prime_gbsa_batch, 'poll_batch', lambda *a: None)
+    assert c.run_iteration_prime_gbsa(0, args, tmp_path / 'iter0', tmp_path / 'unused', [2, 3]) is None
     assert calls[0][3] == args.reference_poses
     mapping = json.loads(Path(calls[0][-1]).read_text())
     assert mapping == {'missing': 2, 'missing2': 3}
-    saved = primg_gbsa_async.load_job(tmp_path / 'iter0/primg_gbsa')
+    saved = prime_gbsa_async.load_job(tmp_path / 'iter0/prime_gbsa')
     assert saved['compound_ids'] == [2, 3]
-    assert Path(saved['command'][1]).name == 'primg_gbsa.maegz'
+    assert Path(saved['command'][1]).name == 'prime_gbsa.maegz'
     assert Path(saved['command'][1]).read_text() == 'reference PV'
 
 
@@ -117,7 +117,7 @@ def test_reference_pv_builder_maps_original_titles_and_does_not_mutate_source(tm
     module = ModuleType('schrodinger')
     module.structure = SimpleNamespace(StructureReader=reader, StructureWriter=Writer)
     monkeypatch.setitem(sys.modules, 'schrodinger', module)
-    script = c.create_primg_gbsa_pv_builder(tmp_path)
+    script = c.create_prime_gbsa_pv_builder(tmp_path)
     monkeypatch.setattr(sys, 'argv', [str(script), *map(str, (receptor_file, poses_file, ids_file, output_file, mapping))])
     runpy.run_path(str(script), run_name='__main__')
     assert [s.title for s in written] == ['receptor', 'CMPID_2', 'CMPID_3']
@@ -188,7 +188,7 @@ def test_driver_reference_stage_runs_without_generation(tmp_path, monkeypatch, r
     def supervise(args, project, iteration, stages, *other):
         calls.append(iteration)
         if iteration == 0:
-            assert stages == [('primg_gbsa', 'molnova.stages.primg_gbsa')]
+            assert stages == [('prime_gbsa', 'molnova.stages.prime_gbsa')]
             with database.connect(args.db_path) as conn:
                 conn.execute("UPDATE compound SET prime_gbsa_score=-30 WHERE iteration=0 AND prime_gbsa_score IS NULL")
         return True
@@ -199,15 +199,15 @@ def test_driver_reference_stage_runs_without_generation(tmp_path, monkeypatch, r
 
 def test_saved_reference_queue_recovers_without_reset_or_resubmission(tmp_path, monkeypatch):
     args = project(tmp_path)
-    database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000)
-    root = tmp_path / 'iter0/primg_gbsa'
+    database.claim_prime_gbsa_candidates(args.db_path, 0, 1, 1000)
+    root = tmp_path / 'iter0/prime_gbsa'
     root.mkdir(parents=True)
-    record = primg_gbsa_queue.create_queue(args, root, [2, 3])
+    record = prime_gbsa_queue.create_queue(args, root, [2, 3])
     def recover(**kw):
-        assert primg_gbsa_async.load_job(root) == record
+        assert prime_gbsa_async.load_job(root) == record
         assert kw['iteration'] == 0
-        assert all(row[1] == 'primg_gbsa_running' for row in database.primg_gbsa_submission_rows(args.db_path, [2, 3]).values())
+        assert all(row[1] == 'prime_gbsa_running' for row in database.prime_gbsa_submission_rows(args.db_path, [2, 3]).values())
         return None
-    monkeypatch.setattr(c, 'run_iteration_primg_gbsa', recover)
-    primg_gbsa._run_stage(args, 0)
-    assert primg_gbsa_async.load_job(root) == record
+    monkeypatch.setattr(c, 'run_iteration_prime_gbsa', recover)
+    prime_gbsa._run_stage(args, 0)
+    assert prime_gbsa_async.load_job(root) == record

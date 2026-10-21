@@ -17,7 +17,7 @@ def test_database_location_migration_preserves_wal_results_and_original(tmp_path
         conn.execute(
             "INSERT INTO compound(name,smiles,iteration,state,docking_score,prime_gbsa_score,"
             "sa_score,synthetic_feasibility,failed_stage,failure_message) "
-            "VALUES ('CMP','CC',1,'primg_gbsa_done',-8,-40,2.5,1,NULL,NULL)"
+            "VALUES ('CMP','CC',1,'prime_gbsa_done',-8,-40,2.5,1,NULL,NULL)"
         )
         conn.commit()
         assert legacy.with_name(legacy.name + "-wal").stat().st_size > 0
@@ -66,10 +66,9 @@ def test_schema_contains_scores_and_state(tmp_path):
     } <= cols
     assert 'amber_gbsa_score' in cols
     assert 'gbsa_score' not in cols
-    assert 'primg_gbsa_score' not in cols
 
 
-@pytest.mark.parametrize("state", ["failed", "primg_gbsa_running"])
+@pytest.mark.parametrize("state", ["failed", "prime_gbsa_running"])
 def test_schema_upgrade_preserves_existing_state(tmp_path, state):
     db = tmp_path / "test.sqlite"
     with sqlite3.connect(db) as conn:
@@ -82,7 +81,7 @@ def test_schema_upgrade_preserves_existing_state(tmp_path, state):
                 failed_stage, failure_message
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("CMP", "C", 1, -8.0, state, "primg_gbsa", "retry diagnostic"),
+            ("CMP", "C", 1, -8.0, state, "prime_gbsa", "retry diagnostic"),
         )
         _core.ensure_schema_columns(conn)
         result = conn.execute(
@@ -90,7 +89,7 @@ def test_schema_upgrade_preserves_existing_state(tmp_path, state):
             "FROM compound WHERE name='CMP'"
         ).fetchone()
 
-    assert result == (state, "primg_gbsa", "retry diagnostic")
+    assert result == (state, "prime_gbsa", "retry diagnostic")
 
 
 def test_initialize_refuses_to_discard_compounds_without_references(tmp_path):
@@ -275,7 +274,7 @@ def test_running_claim_can_be_recovered_after_stage_lock_releases(tmp_path):
 def test_stage_lock_rejects_overlapping_invocation(tmp_path):
     db = tmp_path / "locked.sqlite"
 
-    with database.stage_lock(db, "primg_gbsa"):
+    with database.stage_lock(db, "prime_gbsa"):
         with pytest.raises(RuntimeError, match="already running"):
-            with database.stage_lock(db, "primg_gbsa"):
+            with database.stage_lock(db, "prime_gbsa"):
                 pass

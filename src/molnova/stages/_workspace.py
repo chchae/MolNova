@@ -20,7 +20,7 @@ def prepare_iteration_directory(args, iteration):
         return None  # Resume exactly the saved iteration, including zero-row plans.
     with ExitStack() as locks:
         if deleted:
-            for stage in ('druglike', 'synthetic', 'ligprep', 'glide', 'amber_gbsa', 'primg_gbsa', 'fep'):
+            for stage in ('druglike', 'synthetic', 'ligprep', 'glide', 'amber_gbsa', 'prime_gbsa', 'fep'):
                 locks.enter_context(database.stage_lock(args.db_path, stage))
         return _prepare(args, iteration, deleted)
 
@@ -35,7 +35,7 @@ def _prepare(args, iteration, deleted):
 
     # Configuration inputs must never be relocated while clearing working output.
     for key in ('db_path', 'toml_file', 'grid', 'reference_poses', 'libinvent_prior',
-                'sidechain_library', 'primg_gbsa_receptor', 'amber_receptor', 'aizynth_config'):
+                'sidechain_library', 'prime_gbsa_receptor', 'amber_receptor', 'aizynth_config'):
         source = getattr(args, key, None)
         if source is not None and Path(source).resolve().is_relative_to(root.resolve()):
             raise RuntimeError(f'Configured {key} is inside {root}; move the input before cleanup')
@@ -47,8 +47,8 @@ def _prepare(args, iteration, deleted):
     for path in files:
         if path.name == 'amber_job.json' or path.name.endswith('.remote-dir.txt'):
             raise RuntimeError(f'Remote work requires reconciliation; files retained: {path}')
-        if path.name in ('ligprep_job.json', 'glide_job.json', 'primg_gbsa_job.json',
-                         'ligprep_job.tmp', 'glide_job.tmp', 'primg_gbsa_job.tmp'):
+        if path.name in ('ligprep_job.json', 'glide_job.json', 'prime_gbsa_job.json',
+                         'ligprep_job.tmp', 'glide_job.tmp', 'prime_gbsa_job.tmp'):
             record = json.loads(path.read_text())
             if not record.get('job_id'):
                 raise RuntimeError(f'Saved or uncertain submission requires recovery; files retained: {path}')
@@ -58,7 +58,7 @@ def _prepare(args, iteration, deleted):
                              re.IGNORECASE | re.MULTILINE)
             jobs.update((job_id, path.parent) for job_id in ids)
             if not ids and (path.name.startswith('ligprep') or path.name.startswith('glide')
-                            or path.name.startswith('primg_gbsa_') or path.name == 'glide_launch.log'):
+                            or path.name.startswith('prime_gbsa_') or path.name == 'glide_launch.log'):
                 unidentified_logs.append(path)
     for path in unidentified_logs:
         if path.parent not in jobs.values():

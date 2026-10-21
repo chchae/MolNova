@@ -105,7 +105,7 @@ def test_jobserver_lookup_failure_retains_every_file(workspace, monkeypatch):
 
 
 @pytest.mark.parametrize('filename, contents', [
-    ('primg_gbsa_job.json', '{"mode":"compound_queue_v1"}'),
+    ('prime_gbsa_job.json', '{"mode":"compound_queue_v1"}'),
     ('ligprep_job.json', '{"job_id":null,"launching":true}'),
     ('glide_job.tmp', '{"job_id":null}'),
     ('amber_job.json', '{}'),

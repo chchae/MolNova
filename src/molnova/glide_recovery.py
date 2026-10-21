@@ -123,7 +123,7 @@ def group_status(suite, directory, log_file, output_file, live=None, timeout_sec
 def submit(suite, command, directory):
     directory = Path(directory)
     with submission_guard(suite, 'glide'):
-        # Recheck under the same submission mutex as primg_gbsa.
+        # Recheck under the same submission mutex as prime_gbsa.
         live = active_jobs(suite)
         if any(job_kind(j) == 'glide' and belongs_to_directory(j, directory) for j in live):
             raise RuntimeError('Glide group already has a live external job; recover it instead')

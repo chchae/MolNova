@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from molnova import glide_recovery as recovery, schrodinger_guard as guard
 from molnova.stages import glide
-from molnova import primg_gbsa_async as prime
+from molnova import prime_gbsa_async as prime
 
 
 def files(tmp_path):
@@ -76,7 +76,7 @@ def test_launch_record_exists_before_native_submit_and_retains_identity(tmp_path
 def test_opposite_stage_fences_glide_before_files_are_archived(tmp_path,monkeypatch):
     log,out=files(tmp_path)
     monkeypatch.setattr(guard,'active_jobs',lambda *a:[
-        {'jobId':'prime','jobName':'primg_gbsa_input','status':'RUNNING'}])
+        {'jobId':'prime','jobName':'prime_gbsa_input','status':'RUNNING'}])
     with pytest.raises(guard.SubmissionBlocked):
         recovery.submit('/suite',['/suite/glide','input.in'],tmp_path)
     assert recovery.load_record(tmp_path) is None
@@ -140,7 +140,7 @@ def test_legacy_prime_retry_fenced_before_launch_marker(tmp_path,monkeypatch):
     monkeypatch.setattr(guard,'active_jobs',lambda *a:[{'jobId':'g','jobName':'glide','status':'RUNNING'}])
     monkeypatch.setattr(prime,'_run_attempt',lambda *a:pytest.fail('Prime submitted while Glide active'))
     cmd=['/suite/prime_mmgbsa','input.maegz']
-    assert prime.submit_or_poll(cmd,tmp_path,[1],submission_fence=lambda:guard.submission_guard('/suite','primg_gbsa')) is False
+    assert prime.submit_or_poll(cmd,tmp_path,[1],submission_fence=lambda:guard.submission_guard('/suite','prime_gbsa')) is False
     assert prime.load_job(tmp_path) is None  # No launch marker for a blocked submission.
 
 

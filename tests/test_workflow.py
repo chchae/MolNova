@@ -21,9 +21,9 @@ def _fep_args(tmp_path, fep_input_count=2):
             """,
             [
                 ("REF", "C", 0, None, "reference"),
-                ("TOP1", "CC", 1, -10.0, "primg_gbsa_done"),
-                ("TOP2", "CCC", 1, -9.0, "primg_gbsa_done"),
-                ("OUTSIDE", "CCCC", 1, -8.0, "primg_gbsa_done"),
+                ("TOP1", "CC", 1, -10.0, "prime_gbsa_done"),
+                ("TOP2", "CCC", 1, -9.0, "prime_gbsa_done"),
+                ("OUTSIDE", "CCCC", 1, -8.0, "prime_gbsa_done"),
             ],
         )
         ids = dict(conn.execute("SELECT name, id FROM compound"))

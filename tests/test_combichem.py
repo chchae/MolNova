@@ -156,7 +156,7 @@ def project(tmp_path, monkeypatch):
                          [('R1', 'Clc1ccc(F)cc1'), ('R2', 'Brc1ccc(I)cc1')])
     args = SimpleNamespace(db_path=path, output=tmp_path, sidechain_library=library,
                            generation_method='combichem', sample_size=4, target_count=4,
-                           max_iteration=5, primg_gbsa_input_count=2, primg_gbsa_elite_count=2,
+                           max_iteration=5, prime_gbsa_input_count=2, prime_gbsa_elite_count=2,
                            iteration_mcs=True, initial_mcs_smarts='c1ccccc1',
                            elite_mcs_smarts='[*:0]c1ccc([*:1])cc1', elite_mcs_fixed=False,
                            mcs_timeout=60, sa_score_cpus=1, sa_accepted_ratio=.75,
@@ -177,7 +177,7 @@ def project(tmp_path, monkeypatch):
 def adaptive_project(project, monkeypatch):
     prepare_iteration_scaffold(project, 1, create=True)
     project.elite_mcs_smarts = None
-    project.primg_gbsa_elite_count = 1
+    project.prime_gbsa_elite_count = 1
     project.sample_size = 1
     project.target_count = 100
     monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[-1])
@@ -336,7 +336,7 @@ def test_concurrent_attachment_switches_install_only_one_round(adaptive_project)
 def test_generation_switches_after_tenth_empty_batch_and_restores_compound_origin(adaptive_project, monkeypatch):
     args = adaptive_project
     with database.connect(args.db_path) as conn:
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES ('preserved','CCO',2,'primg_gbsa_done',-40)")
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES ('preserved','CCO',2,'prime_gbsa_done',-40)")
     original_filter = generate.filter_druglike
     calls = []
     def reject(rows):
@@ -359,7 +359,7 @@ def test_generation_switches_after_tenth_empty_batch_and_restores_compound_origi
     monkeypatch.setattr(combichem, 'refill_plan', original_refill)
     generate._run_combichem(args, 2, args.output / 'iter02/02-generate')
     with database.connect(args.db_path) as conn:
-        assert conn.execute("SELECT state,prime_gbsa_score FROM compound WHERE name='preserved'").fetchone() == ('primg_gbsa_done', -40)
+        assert conn.execute("SELECT state,prime_gbsa_score FROM compound WHERE name='preserved'").fetchone() == ('prime_gbsa_done', -40)
         cid, name, smiles = conn.execute("SELECT id,name,smiles FROM compound WHERE iteration=2 AND name<>'preserved'").fetchone()
     assert database.combichem_compound_scaffold(args.db_path, cid) == active['attachment_selection']
     # The origin survives archiving its producing round and is used for N+1.
@@ -715,8 +715,8 @@ def test_refill_cannot_install_new_round_after_target_is_met(project, monkeypatc
 def test_new_iteration_uses_only_immediately_preceding_elites_without_tl(project, monkeypatch):
     generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,prime_gbsa_score=-id WHERE iteration=1")
-    selected = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',docking_score=-10,prime_gbsa_score=-id WHERE iteration=1")
+    selected = database.iteration_prime_gbsa_elites(project.db_path, 1, 2)
     seen = []
     monkeypatch.setattr(generate, '_run_combichem', lambda args, iteration, directory: seen.append(iteration))
     generate._run_stage(project, 2)
@@ -907,7 +907,7 @@ def test_saved_single_attachment_snapshot_is_not_rewritten(project, monkeypatch)
 def test_single_elite_snapshot_survives_restart_without_reselecting(project, monkeypatch, capsys):
     prepare_iteration_scaffold(project, 1, create=True)
     original = database.iteration_scaffold(project.db_path, 1)
-    project.primg_gbsa_elite_count = 1
+    project.prime_gbsa_elite_count = 1
     project.elite_mcs_smarts = None
     elite = [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40)]
     monkeypatch.setattr(combichem.secrets, 'choice', lambda candidates: candidates[-1])
@@ -936,7 +936,7 @@ def test_single_elite_rejects_missing_or_incompatible_previous_scaffold(previous
 
 def test_single_elite_generation_preserves_completion_gate_and_skips_tl(project, monkeypatch):
     generate._run_stage(project, 1)
-    project.primg_gbsa_elite_count = 1
+    project.prime_gbsa_elite_count = 1
     project.elite_mcs_smarts = None
     started = []
     monkeypatch.setattr(generate, '_run_combichem', lambda *args: started.append(args[1]))
@@ -944,8 +944,8 @@ def test_single_elite_generation_preserves_completion_gate_and_skips_tl(project,
     assert not started
     assert database.iteration_scaffold(project.db_path, 2) is None
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,prime_gbsa_score=-id WHERE iteration=1")
-    elite = database.iteration_primg_gbsa_elites(project.db_path, 1, 1)[0]
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',docking_score=-10,prime_gbsa_score=-id WHERE iteration=1")
+    elite = database.iteration_prime_gbsa_elites(project.db_path, 1, 1)[0]
     generate._run_stage(project, 2)
     assert started == [2]
     saved = database.iteration_scaffold(project.db_path, 2)
@@ -965,7 +965,7 @@ def test_single_elite_reinvent_retains_automatic_mcs_error(project):
     prepare_iteration_scaffold(project, 1, create=True)
     project.sidechain_library = None
     project.elite_mcs_smarts = None
-    project.primg_gbsa_elite_count = 1
+    project.prime_gbsa_elite_count = 1
     with pytest.raises(RuntimeError, match='At least two input ligands'):
         prepare_iteration_scaffold(project, 2, [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40)], create=True)
     assert database.iteration_scaffold(project.db_path, 2) is None
@@ -975,7 +975,7 @@ def test_single_elite_reinvent_retains_automatic_mcs_error(project):
 def test_single_elite_respects_supplied_and_pinned_cores(project, monkeypatch, fixed):
     project.elite_mcs_fixed = fixed
     prepare_iteration_scaffold(project, 1, create=True)
-    project.primg_gbsa_elite_count = 1
+    project.prime_gbsa_elite_count = 1
     project.elite_mcs_smarts = None if fixed else '[*:0]Cc1ccc([*:1])cc1'
     monkeypatch.setattr(combichem, 'prepare_single_elite_scaffold',
                         lambda *a: pytest.fail('replaced supplied/pinned scaffold'))

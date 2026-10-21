@@ -34,10 +34,10 @@ prime-gbsa-license-retry-seconds = 123
 prime-gbsa-license-retries = 8
 ''')
     settings = _core.load_project_toml(project)
-    assert settings['primg_gbsa_input_count'] == 37
-    assert settings['primg_gbsa_flexdist'] == 4.5
-    assert settings['primg_gbsa_license_retry_seconds'] == 123
-    assert settings['primg_gbsa_license_retries'] == 8
+    assert settings['prime_gbsa_input_count'] == 37
+    assert settings['prime_gbsa_flexdist'] == 4.5
+    assert settings['prime_gbsa_license_retry_seconds'] == 123
+    assert settings['prime_gbsa_license_retries'] == 8
 
 
 @pytest.mark.parametrize('extra, enabled, prime_count', [
@@ -54,10 +54,10 @@ def test_optional_amber_mode_defaults_and_stage_order(tmp_path, extra, enabled, 
     settings = _core.load_project_toml(project)
     assert settings['amber_gbsa_enabled'] is enabled
     assert settings['amber_keep_count'] == 500
-    assert settings['primg_gbsa_input_count'] == prime_count
+    assert settings['prime_gbsa_input_count'] == prime_count
     stages = [stage for stage, _ in driver.build_stages(False, False, enabled)]
-    assert stages == (['generate', 'druglike', 'ligprep', 'glide', 'amber-gbsa', 'primg_gbsa'] if enabled
-                      else ['generate', 'druglike', 'ligprep', 'glide', 'primg_gbsa'])
+    assert stages == (['generate', 'druglike', 'ligprep', 'glide', 'amber-gbsa', 'prime_gbsa'] if enabled
+                      else ['generate', 'druglike', 'ligprep', 'glide', 'prime_gbsa'])
 
 
 @pytest.mark.parametrize('extra, count', [
@@ -262,17 +262,17 @@ def test_sidechain_heavy_atom_limit_configuration(tmp_path, extra, expected):
 
 @pytest.mark.parametrize('extra, expected', [('', 0.0), ('prime-gbsa-flexdist = 0\n', 0.0),
                                            ('prime-gbsa-flexdist = 6.0\n', 6.0)])
-def test_primg_gbsa_flexdist_configuration(tmp_path, extra, expected):
+def test_prime_gbsa_flexdist_configuration(tmp_path, extra, expected):
     project = tmp_path / 'project.toml'
     project.write_text(PROJECT_TOML + extra)
-    assert _core.load_project_toml(project)['primg_gbsa_flexdist'] == expected
+    assert _core.load_project_toml(project)['prime_gbsa_flexdist'] == expected
 
 
 @pytest.mark.parametrize('value', [-1, True, False, '6.0', float('nan'), float('inf'), -float('inf'), None])
-def test_primg_gbsa_flexdist_rejects_invalid_values(value):
-    from molnova.config import primg_gbsa_flexdist
+def test_prime_gbsa_flexdist_rejects_invalid_values(value):
+    from molnova.config import prime_gbsa_flexdist
     with pytest.raises(ValueError, match='prime-gbsa-flexdist'):
-        primg_gbsa_flexdist({'prime-gbsa-flexdist': value})
+        prime_gbsa_flexdist({'prime-gbsa-flexdist': value})
 
 
 @pytest.mark.parametrize("absolute_output", [False, True])

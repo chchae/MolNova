@@ -126,10 +126,10 @@ def test_generation_does_not_launch_tl_when_filter_leaves_one_pair(tmp_path, mon
     with _core.open_sqlite(db) as conn:
         _core.create_sqlite_schema(conn)
     args = SimpleNamespace(db_path=db, output=tmp_path, max_iteration=53, target_count=1000,
-                           primg_gbsa_input_count=200, primg_gbsa_elite_count=2,
+                           prime_gbsa_input_count=200, prime_gbsa_elite_count=2,
                            libinvent_scaffold_smiles="C[*]", libinvent_prior="/prior")
     monkeypatch.setattr(generate.database, "iteration_completion_reason", lambda *args: None)
-    monkeypatch.setattr(generate.database, "iteration_primg_gbsa_elites", lambda *args: [1, 2])
+    monkeypatch.setattr(generate.database, "iteration_prime_gbsa_elites", lambda *args: [1, 2])
     monkeypatch.setattr(_core, "write_elite_libinvent_training_files", lambda *a, **kw: (None, None, None, 1))
     monkeypatch.setattr(_core, "run_libinvent_elite_transfer_learning", lambda **kw: pytest.fail("TL launched"))
     monkeypatch.setattr(_core, "run_libinvent_sampling", lambda **kw: pytest.fail("sampling launched"))

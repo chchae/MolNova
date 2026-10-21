@@ -3,16 +3,16 @@
 ## Confirmed calculation naming (2026-10-21)
 
 The user requested fresh projects and waived compatibility with prior work for
-this rename. The Prime stage is `primg_gbsa` (user-specified spelling), with
-`prime_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
-`primg_gbsa`, CLI `molnova primg_gbsa`, and directory `08-primg_gbsa`.
-The score column was subsequently corrected to `prime_gbsa_score` at the
-user's request; stage identifiers retain their existing spelling.
+this rename. All Prime stage identifiers now use `prime_gbsa`, including
+`prime_gbsa_score`, `prime_gbsa_running`, `prime_gbsa_done`, failure stage
+`prime_gbsa`, CLI `molnova prime_gbsa`, and directory `08-prime_gbsa`.
+The user subsequently requested the same corrected spelling everywhere,
+including Python module names, states, CLI, TOML, manifests and output paths.
 TOML uses `prime-gbsa-input-count`, `prime-gbsa-flexdist`,
 `prime-gbsa-license-retry-seconds`, and `prime-gbsa-license-retries`.
-Other renamed Prime keys are `primg-gbsa-elite-count`, `primg-gbsa-receptor`,
-and `primg-gbsa-cpus`. Internal Python settings retain `primg_gbsa_*`.
-Native job basenames are `ligprep`, `glide`, and `primg_gbsa`; new Amber
+Other renamed Prime keys are `prime-gbsa-elite-count`, `prime-gbsa-receptor`,
+and `prime-gbsa-cpus`. Internal Python settings retain `prime_gbsa_*`.
+Native job basenames are `ligprep`, `glide`, and `prime_gbsa`; new Amber
 Slurm names are `amber-<UUID>` without `molnova-` or `run-`.
 The external executable `prime_mmgbsa`, vendor Maestro property names such as
 `r_psp_MMGBSA_dG_Bind`, and native JobServer recognition remain unchanged.
@@ -24,11 +24,11 @@ No existing results, jobs, or project directories were deleted by this change.
 New outputs use `iter01`, `iter02`, …, `iter10` (references: `iter00`).
 Inside each iteration, folders sort in execution order: `01-scaffold`,
 `02-generate`, `03-druglike`, `04-synthetic_feasibility`, `05-ligprep`,
-`06-glide`, `07-amber_gbsa`, `08-primg_gbsa`, `09-fep`.
+`06-glide`, `07-amber_gbsa`, `08-prime_gbsa`, `09-fep`.
 Stage numbers stay fixed when optional stages are disabled. Both generators
 write into `02-generate`. Existing legacy outputs keep their original paths
 for restart; historical path examples below refer to that layout.
-The new default Amber receptor path is `output/iter00/08-primg_gbsa/receptor.maegz`.
+The new default Amber receptor path is `output/iter00/08-prime_gbsa/receptor.maegz`.
 
 
 MolNova is a modular iterative lead-optimization pipeline integrating REINVENT4/LibInvent, Schrödinger LigPrep and Glide, Prime MM-GBSA, SQLite workflow state, and FEP staging.
@@ -153,7 +153,7 @@ then evaluates drug likeness over the whole database iteration. It runs
 Glide best-500 through Amber and Amber best-200 through Prime, and exports up to
 20 FEP candidates. Next generation still requires the configured finite Prime
 elites from the immediately preceding iteration. In this combichem example,
-`primg-gbsa-elite-count=1` drives single-elite replacement; REINVENT TL still requires
+`prime-gbsa-elite-count=1` drives single-elite replacement; REINVENT TL still requires
 at least two usable training pairs. Existing iterations retain their saved policy.
 MM-GBSA waits for all docking work in its iteration to finish:
 
@@ -205,7 +205,7 @@ molnova generate egfr.toml --iteration 5
 molnova synthetic-feasibility egfr.toml --iteration 5
 molnova ligprep egfr.toml --iteration 5
 molnova glide egfr.toml --iteration 5
-molnova primg_gbsa egfr.toml --iteration 5
+molnova prime_gbsa egfr.toml --iteration 5
 molnova fep egfr.toml --iteration 5
 ```
 
@@ -279,10 +279,10 @@ log_level = 1 # default; log-level is also accepted
 At level 1, a routine MM-GBSA queue poll is summarized in one line:
 
 ```text
-[primg_gbsa  ] Iteration 1: MM-GBSA running=186, saved=14, queue active=7, waiting=179, limit=7, scores updated=0.
+[prime_gbsa  ] Iteration 1: MM-GBSA running=186, saved=14, queue active=7, waiting=179, limit=7, scores updated=0.
 ```
 
-`running` counts all `primg_gbsa_running` compounds in the iteration (including queued
+`running` counts all `prime_gbsa_running` compounds in the iteration (including queued
 waiting claims); `saved` counts its finite DB scores, including previous queue
 passes. `active` and `waiting` describe the current queue; `scores updated` is
 this pass's newly persisted results. Level 2 retains detailed recovery/pending
@@ -373,7 +373,7 @@ preceding elites; existing iterations retain their saved cores.
 
 With the default `elite-mcs-fixed = false`, starting at a new iteration 3 uses `elite-mcs` once for that generation's
 TL/sampling. Iteration 4 calculates its generation MCS from iteration 3 Prime
-MM-GBSA elites (`primg-gbsa-elite-count`). Without `elite-mcs`, use `reference-mcs`
+MM-GBSA elites (`prime-gbsa-elite-count`). Without `elite-mcs`, use `reference-mcs`
 as the initial elite MCS in the iteration-0 snapshot, then use it for the first
 generation once. In a continuing project, earlier generation history (including
 legacy rows without a new marker) prevents this fallback from being applied
@@ -441,7 +441,7 @@ GBSA compounds still occupy their positions in the selected ranking. Readiness, 
 use one SQLite write transaction; explicit `--iteration` obeys the same gate.
 
 Prime MM-GBSA receives a receptor-first structure file containing the selected
-best ligand poses. The receptor comes from `primg-gbsa-receptor` when specified, or
+best ligand poses. The receptor comes from `prime-gbsa-receptor` when specified, or
 is extracted from the Glide grid archive. It runs with
 `prime_mmgbsa <input.maegz> -OVERWRITE -HOST <host> [-NJOBS N]`. Result extraction
 prefers `r_psp_MMGBSA_dG_Bind`, with the existing property-name fallbacks. Scores
@@ -503,11 +503,11 @@ MM-GBSA uses a durable MolNova queue with at most **seven active single-compound
 Prime jobs across a project**, including jobs waiting for Slurm resources. Each
 job receives receptor + one best ligand pose and `-HOST <host> -NJOBS 1`; no
 multi-ligand JobDJ parent is launched for new work. Host `:N` and legacy
-`primg-gbsa-cpus` settings do not increase this ceiling. Configured host entries are
+`prime-gbsa-cpus` settings do not increase this ceiling. Configured host entries are
 used in round-robin order.
 
 After docking completes, atomically claim the unscored final top-N. Store queue
-membership and progress in `iterN/primg_gbsa/primg_gbsa_job.json`; each compound has its
+membership and progress in `iterN/prime_gbsa/prime_gbsa_job.json`; each compound has its
 own durable JobId record and files in `queue-<id>/CMPID_<id>/`. A worker checks
 active jobs independently, commits each completed score and state, and fills
 only the released slots. It never waits for the slowest compound. The supervisor
@@ -529,12 +529,12 @@ scores are preserved. Their collection or retry waits for docking completion;
 then saved submission IDs are recovered before selecting missing final top-N scores.
 Before claiming work, the worker checks saved submission IDs against the current
 SQLite iteration. For legacy batch records, if none belong to it and the external job has ended, the old
-`primg_gbsa` directory is moved to `primg_gbsa.stale-<timestamp>` and a clean directory is
+`prime_gbsa` directory is moved to `prime_gbsa.stale-<timestamp>` and a clean directory is
 created automatically. Current compounds are then selected without a restart.
 Running jobs, uncertain submissions and records mixing current/obsolete IDs are
 retained with an explicit reason. Database scores are never reset by this cleanup.
 Explicit atomtyping failures identified in per-compound Prime log sections are
-marked `failed` with `failed_stage = "primg_gbsa"`, including failures in multi-ligand
+marked `failed` with `failed_stage = "prime_gbsa"`, including failures in multi-ligand
 batches. Successful batch scores and existing scientific results are preserved.
 Submission log snapshots prevent old component logs from classifying new jobs.
 Legacy generic or ambiguous batch failures remain retryable; definitive new
@@ -558,11 +558,11 @@ prime-gbsa-license-retries = 3
 ```
 
 These defaults permit one initial attempt plus three retries. The worker keeps
-its stage lock and `primg_gbsa_running` claims during the wait and prints each license
+its stage lock and `prime_gbsa_running` claims during the wait and prints each license
 wait. Non-license failures are reported immediately. When retries are exhausted,
 the existing failure handling restores `docked` state and records the error;
 the supervisor can subsequently retry. Saved GBSA scores are retained. Wait
-messages are also recorded in `iterN/primg_gbsa/primg_gbsa_license_retry.log`.
+messages are also recorded in `iterN/prime_gbsa/prime_gbsa_license_retry.log`.
 
 Synthetic feasibility is enabled by default, including when its flag is omitted.
 Configure a valid AiZynthFinder YAML file containing expansion policy and stock
@@ -692,7 +692,7 @@ and the generation worker to exit (and for optional synthetic screening).
 Glide waits for all LigPrep work, including retryable work, to finish. Completed
 Glide reference groups still persist results immediately; MM-GBSA starts only
 once docking and enabled Amber screening finish, using the final `prime-gbsa-input-count`
-ranking (200 by finite Amber score when available, otherwise Glide score). New GBSA claims exclude `primg_gbsa_running`, so concurrent claimers
+ranking (200 by finite Amber score when available, otherwise Glide score). New GBSA claims exclude `prime_gbsa_running`, so concurrent claimers
 cannot submit the same compound again.
 
 On restart, stage locks prevent overlapping local workers. Saved Prime and
@@ -772,7 +772,7 @@ iterations complete missing reference GBSA first. To run reference calculations:
     molnova run project.toml --iteration 0
 
 To poll Amber separately, use `molnova amber-gbsa project.toml --iteration 0`;
-then poll Prime with `molnova primg_gbsa project.toml --iteration 0`. Reference titles and
+then poll Prime with `molnova prime_gbsa project.toml --iteration 0`. Reference titles and
 source poses remain unchanged; calculation inputs use `CMPID_<id>`. Terminal
 reference failures are recorded and do not cause endless resubmission.
 
@@ -799,7 +799,7 @@ amber-ssh-host = "t41"
 amber-remote-env = "/home1/amber26/envs/AmberTools26"
 amber-conda-init = "/home1/amber26/miniforge3/etc/profile.d/conda.sh"
 amber-remote-work-dir = "/home1/chchae/molnova-amber-runs"
-amber-receptor = "./output/iter00/08-primg_gbsa/receptor.maegz"
+amber-receptor = "./output/iter00/08-prime_gbsa/receptor.maegz"
 amber-charge-method = "bcc"
 ```
 
@@ -838,7 +838,7 @@ still evaluates all eligible references. Use a separate `out-dir` for a fresh
 debug run; existing selections, results and submissions are preserved.
 
 Amber results go to `output/iterN/amber_gbsa/`; Prime keeps
-`output/iterN/primg_gbsa/`. SQLite migrates non-destructively to add
+`output/iterN/prime_gbsa/`. SQLite migrates non-destructively to add
 `amber_gbsa_score`; `prime_gbsa_score` remains Prime's score. `amber_scores.tsv`,
 `amber_top.tsv`, and `prime_candidates.tsv` link names such as `GEN_I07_000481`
 to calculation titles `CMPID_<id>`. Native logs and final score reports are

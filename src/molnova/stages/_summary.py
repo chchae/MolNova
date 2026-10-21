@@ -20,8 +20,8 @@ def _native_times(output, iteration, stage, successful):
     """One duration per original compound, from verified completed run records."""
     directory = iteration_directory(Path(output), iteration)
     times = {}
-    if stage == 'primg_gbsa':
-        root = stage_in_iteration(directory, 'primg_gbsa')
+    if stage == 'prime_gbsa':
+        root = stage_in_iteration(directory, 'prime_gbsa')
         for path in sorted(root.glob('queue-*.completed.json')):
             record = _read_json(path)
             if not isinstance(record, dict) or record.get('mode') != 'compound_queue_v1':
@@ -35,7 +35,7 @@ def _native_times(output, iteration, stage, successful):
                 if entries.get(str(cid)) != 'done':
                     continue
                 try:
-                    log = (root / run_dir / f'CMPID_{cid}' / 'primg_gbsa.log').read_text()
+                    log = (root / run_dir / f'CMPID_{cid}' / 'prime_gbsa.log').read_text()
                 except OSError:
                     continue
                 matches = re.findall(
@@ -64,7 +64,7 @@ def completion_summary(args, iteration, stage, elapsed):
     count = len(successful) + len(failed)
     fields = [f'compounds={count} (ok={len(successful)}, failed={len(failed)})']
     fields.append(f'wall/compound={elapsed / count:.2f}s' if count else 'wall/compound=n/a')
-    if stage in {'primg_gbsa', 'amber-gbsa'}:
+    if stage in {'prime_gbsa', 'amber-gbsa'}:
         values = _native_times(args.output, iteration, stage, successful)
         if values:
             fields.append(f'native job n={len(values)}/{len(successful)} '

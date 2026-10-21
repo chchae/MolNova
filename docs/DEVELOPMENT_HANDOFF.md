@@ -3,16 +3,16 @@
 ## Confirmed calculation naming (2026-10-21)
 
 The user requested fresh projects and waived compatibility with prior work for
-this rename. The Prime stage is `primg_gbsa` (user-specified spelling), with
-`prime_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
-`primg_gbsa`, CLI `molnova primg_gbsa`, and directory `08-primg_gbsa`.
-The score column was subsequently corrected to `prime_gbsa_score` at the
-user's request; stage identifiers retain their existing spelling.
+this rename. All Prime stage identifiers now use `prime_gbsa`, including
+`prime_gbsa_score`, `prime_gbsa_running`, `prime_gbsa_done`, failure stage
+`prime_gbsa`, CLI `molnova prime_gbsa`, and directory `08-prime_gbsa`.
+The user subsequently requested the same corrected spelling everywhere,
+including Python module names, states, CLI, TOML, manifests and output paths.
 TOML uses `prime-gbsa-input-count`, `prime-gbsa-flexdist`,
 `prime-gbsa-license-retry-seconds`, and `prime-gbsa-license-retries`.
-Other renamed Prime keys are `primg-gbsa-elite-count`, `primg-gbsa-receptor`,
-and `primg-gbsa-cpus`. Internal Python settings retain `primg_gbsa_*`.
-Native job basenames are `ligprep`, `glide`, and `primg_gbsa`; new Amber
+Other renamed Prime keys are `prime-gbsa-elite-count`, `prime-gbsa-receptor`,
+and `prime-gbsa-cpus`. Internal Python settings retain `prime_gbsa_*`.
+Native job basenames are `ligprep`, `glide`, and `prime_gbsa`; new Amber
 Slurm names are `amber-<UUID>` without `molnova-` or `run-`.
 The external executable `prime_mmgbsa`, vendor Maestro property names such as
 `r_psp_MMGBSA_dG_Bind`, and native JobServer recognition remain unchanged.
@@ -130,9 +130,9 @@ successfully recovered iteration 2 with this path; backup is in `.previous`.
 ## Native Prime batching (2026-10-20)
 
 SPEC section 17 supersedes individual buffering for new Prime calculations.
-Use `primg_gbsa_batch.py` and `native_batch_v1`: one request for all selected unscored
+Use `prime_gbsa_batch.py` and `native_batch_v1`: one request for all selected unscored
 inputs, one ligand per native subjob, aggregate seven HOST slots. JobDJ owns
-scheduling. Keep legacy `primg_gbsa_queue.py` recovery for submitted individual queues.
+scheduling. Keep legacy `prime_gbsa_queue.py` recovery for submitted individual queues.
 Retain immediate subjob DB imports, JobId recovery, cross-project Glide exclusion,
 and project-wide admission across iterations. Flexible batches use independent
 complex inputs to avoid native PV union-of-receptor-regions behavior. Keep
@@ -210,7 +210,7 @@ MolNova/
 │   │   ├── generate.py
 │   │   ├── ligprep.py
 │   │   ├── glide.py
-│   │   ├── primg_gbsa.py
+│   │   ├── prime_gbsa.py
 │   │   └── fep.py
 │   └── chemistry/
 └── tests/
@@ -235,7 +235,7 @@ Main commands:
     molnova generate project.toml
     molnova ligprep project.toml
     molnova glide project.toml
-    molnova primg_gbsa project.toml
+    molnova prime_gbsa project.toml
     molnova fep project.toml
     molnova status project.toml
 
@@ -269,7 +269,7 @@ SQLite is the workflow source of truth.
 
 The driver uses one thread to supervise independent stage subprocesses in order:
 
-generate → synthetic (if enabled) → ligprep → glide → amber-gbsa (if enabled) → primg_gbsa → fep export (if enabled)
+generate → synthetic (if enabled) → ligprep → glide → amber-gbsa (if enabled) → prime_gbsa → fep export (if enabled)
 
 Only one stage worker subprocess runs at a time. The driver selects an iteration
 once (explicit `--iteration N`, otherwise oldest unfinished or next new) and
@@ -399,8 +399,8 @@ Stable workflow:
     ligprepped
     glide_running
     docked
-    primg_gbsa_running
-    primg_gbsa_done
+    prime_gbsa_running
+    prime_gbsa_done
     fep_running
     fep_done
     failed
@@ -451,7 +451,7 @@ prior; all gates, scientific compatibility and docking constraints remain.
 Optional `elite-mcs` supplies the first new generation core once, including
 when starting at iteration 3. Iteration 4 and later infer their generation cores
 from exactly the selected finite Prime elites of the preceding iteration
-(`primg-gbsa-elite-count`, 20 in EGFR), after completion gates. If `elite-mcs` is absent,
+(`prime-gbsa-elite-count`, 20 in EGFR), after completion gates. If `elite-mcs` is absent,
 store `reference-mcs` as `initial_elite_mcs` in the iteration-0 bootstrap snapshot
 and use it once for the project's first generation. Earlier generated rows or
 scaffold snapshots, including legacy ones, prevent fallback reapplication to
@@ -714,7 +714,7 @@ and enabled Amber screening. Rank by Amber score when enabled, docking otherwise
 Typical configuration:
 
     prime-gbsa-input-count = 50
-    primg-gbsa-elite-count = 10
+    prime-gbsa-elite-count = 10
 
 The worker should:
 
@@ -737,12 +737,12 @@ Lower GBSA score is considered better for ranking.
 ## 16. Next Iteration Eligibility
 
 Do not generate N+1 until generation and LigPrep/Glide in iteration N
-have finished, no compound remains `primg_gbsa_running`, and every compound in
+have finished, no compound remains `prime_gbsa_running`, and every compound in
 the final selected top-N has a Prime GBSA score or a terminal failure. Retryable
 failures and missing scores must finish before advancing. Docked compounds
 outside the top-N do not require MM-GBSA.
 
-At least `primg-gbsa-elite-count` finite GBSA results are required. Select the
+At least `prime-gbsa-elite-count` finite GBSA results are required. Select the
 lowest GBSA scores from iteration N only to drive the next LibInvent TL
 cycle; do not pool elites from older iterations. Terminal failures supply
 no elite. MM-GBSA starts only after Glide finishes within its iteration.
@@ -777,7 +777,7 @@ Preferred long-term TOML organization:
     [structure]
     [ligprep]
     [glide]
-    [primg_gbsa]
+    [prime_gbsa]
     [fep]
 
 Backward compatibility with existing flat TOML files should be
@@ -849,7 +849,7 @@ The primary design principle remains:
 ## Restart recovery update
 
 New MM-GBSA claims accept only `docked` compounds. Under the MM-GBSA stage
-lock, reset unscored `primg_gbsa_running` claims with no saved submission to `docked`;
+lock, reset unscored `prime_gbsa_running` claims with no saved submission to `docked`;
 protect every ID in the saved Prime record. Recover the exact saved job before
 submitting missing final top-N candidates. Do not reset active external jobs.
 LigPrep records submission identity in `ligprep_job.json` before launch and
@@ -867,8 +867,8 @@ this also works after the parent has collected the child's output. Do not use
 `jsc download` for a running parent, nor consume a partially written output.
 Keep cache paths isolated by parent/child JobId. Use the existing score extractor
 and validate all returned compound IDs against the saved submission. Commit scores
-before checkpointing imported child IDs. Mark scored compounds `primg_gbsa_done` and
-keep unfinished compounds `primg_gbsa_running`. A later parent failure must reset only
+before checkpointing imported child IDs. Mark scored compounds `prime_gbsa_done` and
+keep unfinished compounds `prime_gbsa_running`. A later parent failure must reset only
 unscored claims; preserve streamed results and later states. Final parent output
 import remains idempotent. Partial results never bypass the iteration gates.
 
@@ -880,7 +880,7 @@ completed logs. Do not clutter successful idle polls with timing messages.
 
 ## Per-compound MM-GBSA queue
 
-New submissions use `primg_gbsa_queue.py` and manifest mode `compound_queue_v1`.
+New submissions use `prime_gbsa_queue.py` and manifest mode `compound_queue_v1`.
 Claim the final top-N once, split the validated PV without changing titles,
 properties or scientific parameters, and submit receptor + one ligand with
 `-NJOBS 1`. Limit active/uncertain submissions to seven across project iterations.
@@ -972,7 +972,7 @@ the prior vocabulary implicitly. At least two compatible pairs remain required.
 ## Final MM-GBSA coordinates
 
 Confirmed addition requested on 2026-10-12: after MM-GBSA completes, publish
-`iterN/primg_gbsa/primg_gbsa_final.maegz` containing the native final structures from
+`iterN/prime_gbsa/prime_gbsa_final.maegz` containing the native final structures from
 successful results. Keep receptor and ligand entries, CMPID titles, coordinates
 and native score properties unchanged; per-compound receptor structures remain
 paired with their ligands. Merge completed queue manifests plus the finishing
@@ -989,7 +989,7 @@ The 2026-10-12 user change adds optional Amber screening after completed Glide
 and before Prime. See SPEC section 15 for confirmed scope and scientific choices.
 When enabled: select final Glide top 200, minimize/score only those compounds
 with Amber on the configured host (EGFR: t41), and claim its Prime top 50 by Amber score. Store `amber_gbsa_score` separately; keep Prime
-`prime_gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/primg_gbsa/` intact. The example
+`prime_gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/prime_gbsa/` intact. The example
 EGFR config disables it. Set `amber_gbsa = true` to enable it; the legacy
 `amber-gbsa-enabled` key remains supported. Omitted Prime count is 200 without
 Amber and 50 with Amber, and omitted Amber input count is 200. Explicit counts

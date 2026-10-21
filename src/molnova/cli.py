@@ -4,7 +4,7 @@ from pathlib import Path
 
 from molnova import _core
 from molnova.driver import main as driver_main
-from molnova.stages import fep, generate, glide, ligprep, primg_gbsa, druglike
+from molnova.stages import fep, generate, glide, ligprep, prime_gbsa, druglike
 from molnova.stages import synthetic_feasibility, amber_gbsa
 
 
@@ -53,25 +53,25 @@ def _status(project_toml):
 
     print()
     print("Scores")
-    print("iteration docked primg_gbsa fep amber synth synth_yes  best_dock best_primg_gbsa best_fep best_amber")
+    print("iteration docked prime_gbsa fep amber synth synth_yes  best_dock best_prime_gbsa best_fep best_amber")
     print("--------- ------ ---- --- ----- ----- ---------  --------- --------- -------- ----------")
     for (
         iteration,
         n_dock,
-        n_primg_gbsa,
+        n_prime_gbsa,
         n_fep,
         n_amber,
         n_synth,
         n_synth_yes,
         best_dock,
-        best_primg_gbsa,
+        best_prime_gbsa,
         best_fep,
         best_amber,
     ) in scores:
         print(
-            f"{iteration:9d} {n_dock:6d} {n_primg_gbsa:4d} {n_fep:3d} {n_amber:5d} "
+            f"{iteration:9d} {n_dock:6d} {n_prime_gbsa:4d} {n_fep:3d} {n_amber:5d} "
             f"{n_synth:5d} {str(n_synth_yes or 0):>9}  "
-            f"{str(best_dock):>9} {str(best_primg_gbsa):>9} {str(best_fep):>8} {str(best_amber):>10}"
+            f"{str(best_dock):>9} {str(best_prime_gbsa):>9} {str(best_fep):>8} {str(best_amber):>10}"
         )
 
 
@@ -93,7 +93,7 @@ def main(argv=None):
     run.add_argument("--iteration", type=int)
     run.add_argument("--elite-mcs", help="Generation SMARTS override (takes precedence over TOML)")
 
-    for name in ("generate", "druglike", "ligprep", "glide", "amber-gbsa", "primg_gbsa"):
+    for name in ("generate", "druglike", "ligprep", "glide", "amber-gbsa", "prime_gbsa"):
         stage = sub.add_parser(name, help=f"Run {name} stage")
         stage.add_argument("project_toml", type=Path)
         stage.add_argument("--iteration", type=int, required=name in {"amber-gbsa", "druglike"})
@@ -171,8 +171,8 @@ def main(argv=None):
     if ns.command == "amber-gbsa":
         return amber_gbsa.main(_project_args(ns))
 
-    if ns.command == "primg_gbsa":
-        return primg_gbsa.main(_project_args(ns))
+    if ns.command == "prime_gbsa":
+        return prime_gbsa.main(_project_args(ns))
 
     if ns.command == "synthetic-feasibility":
         args = _project_args(ns)

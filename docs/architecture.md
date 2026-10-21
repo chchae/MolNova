@@ -7,7 +7,7 @@ driver
   ├─ generate
   ├─ ligprep
   ├─ glide
-  ├─ primg_gbsa
+  ├─ prime_gbsa
   └─ fep (optional)
          ↕
       SQLite
@@ -15,7 +15,7 @@ driver
 
 Compound state progression:
 
-`reference → generated → ligprep_running → ligprepped → glide_running → docked → primg_gbsa_running → primg_gbsa_done → fep_running → fep_done`
+`reference → generated → ligprep_running → ligprepped → glide_running → docked → prime_gbsa_running → prime_gbsa_done → fep_running → fep_done`
 
 When enabled, the optional AiZynthFinder worker evaluates generated compounds
 before LigPrep. It temporarily uses `synthetic_running` and persists a nullable
