@@ -106,7 +106,7 @@ def test_missing_sa_scores_backfilled_without_changing_scientific_results(monkey
     with sqlite3.connect(args.db_path) as conn:
         conn.execute(
             "UPDATE compound SET synthetic_feasibility=1, state='primg_gbsa_done', "
-            "docking_score=-8, primg_gbsa_score=-40"
+            "docking_score=-8, prime_gbsa_score=-40"
         )
         conn.execute("UPDATE compound SET sa_score=3.25 WHERE name='GEN_1'")
     args.aizynth_config = None  # Backfill must not require route-search dependencies.
@@ -124,7 +124,7 @@ def test_missing_sa_scores_backfilled_without_changing_scientific_results(monkey
     assert synthetic_feasibility.choose_iteration(args, None) is None
     with sqlite3.connect(args.db_path) as conn:
         rows = conn.execute(
-            "SELECT sa_score, synthetic_feasibility, state, docking_score, primg_gbsa_score "
+            "SELECT sa_score, synthetic_feasibility, state, docking_score, prime_gbsa_score "
             "FROM compound ORDER BY id"
         ).fetchall()
     assert rows[0] == (3.25, 1, "primg_gbsa_done", -8, -40)
@@ -197,9 +197,9 @@ def test_aizynth_config_paths_resolve_from_project_toml(tmp_path, flag, enabled)
 def test_import_preserves_completed_and_failed_scientific_results(tmp_path):
     args = _project(tmp_path)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done', docking_score=-8, primg_gbsa_score=-40 WHERE id=1")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done', docking_score=-8, prime_gbsa_score=-40 WHERE id=1")
         conn.execute("UPDATE compound SET state='failed', failed_stage='glide', failure_message='no poses' WHERE id=2")
-        before = conn.execute("SELECT state, docking_score, primg_gbsa_score, failed_stage, failure_message FROM compound ORDER BY id").fetchall()
+        before = conn.execute("SELECT state, docking_score, prime_gbsa_score, failed_stage, failure_message FROM compound ORDER BY id").fetchall()
     results = tmp_path / "results.json"
     results.write_text(json.dumps({"data": [
         {"target": "C", "number_of_solved_routes": 2},
@@ -208,7 +208,7 @@ def test_import_preserves_completed_and_failed_scientific_results(tmp_path):
     assert synthetic_feasibility.import_results(args, 1, results) == 2
     assert synthetic_feasibility.import_results(args, 1, results) == 0
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute("SELECT state, docking_score, primg_gbsa_score, failed_stage, failure_message FROM compound ORDER BY id").fetchall() == before
+        assert conn.execute("SELECT state, docking_score, prime_gbsa_score, failed_stage, failure_message FROM compound ORDER BY id").fetchall() == before
         assert conn.execute("SELECT synthetic_feasibility FROM compound ORDER BY id").fetchall() == [(1,), (0,)]
         assert conn.execute("SELECT COUNT(sa_score) FROM compound").fetchone()[0] == 2
 

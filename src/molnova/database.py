@@ -55,7 +55,7 @@ def distribution_snapshot(path, iteration=None):
         columns = {row[1] for row in conn.execute('PRAGMA table_info(compound)')}
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         wanted = ['id', 'name', 'smiles', 'iteration', 'state', 'failed_stage',
-                  'docking_score', 'amber_gbsa_score', 'primg_gbsa_score', 'fep_score',
+                  'docking_score', 'amber_gbsa_score', 'prime_gbsa_score', 'fep_score',
                   'sa_score', *RDK_DESCRIPTOR_TYPES]
         fields = ','.join(f'c.{name}' if name in columns else f'NULL AS {name}' for name in wanted)
         selected = 's.passed' if 'compound_druglike_selection' in tables else 'NULL'
@@ -219,7 +219,7 @@ _PRE_DOCKING_STATES = {
 
 def _iteration_rows(conn, iteration):
     return conn.execute(
-        "SELECT id,state,docking_score,primg_gbsa_score FROM compound WHERE iteration=?",
+        "SELECT id,state,docking_score,prime_gbsa_score FROM compound WHERE iteration=?",
         (iteration,),
     ).fetchall()
 
@@ -280,7 +280,7 @@ def reset_unsubmitted_primg_gbsa(path, iteration, protected_ids=()):
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         ids = [cid for (cid,) in conn.execute(
-            'SELECT id FROM compound WHERE iteration=? AND state=? AND primg_gbsa_score IS NULL',
+            'SELECT id FROM compound WHERE iteration=? AND state=? AND prime_gbsa_score IS NULL',
             (iteration, State.PRIMG_GBSA_RUNNING)) if cid not in protected]
         for cid in ids:
             conn.execute('UPDATE compound SET state=?, modified_at=CURRENT_TIMESTAMP WHERE id=?',
@@ -294,7 +294,7 @@ def amber_keep_count(args):
 
 def _amber_rows(conn, iteration, keep_count=None):
     rows = conn.execute(
-        'SELECT id,name,state,docking_score,amber_gbsa_score,primg_gbsa_score,fep_score,failed_stage '
+        'SELECT id,name,state,docking_score,amber_gbsa_score,prime_gbsa_score,fep_score,failed_stage '
         'FROM compound WHERE iteration=? AND (iteration=0 OR docking_score IS NOT NULL) ORDER BY id',
         (iteration,),
     ).fetchall()
@@ -388,7 +388,7 @@ def reset_unsubmitted_amber(path, iteration):
         conn.execute('BEGIN IMMEDIATE')
         conn.execute(
             'UPDATE compound SET state=CASE WHEN fep_score IS NOT NULL THEN ? '
-            'WHEN primg_gbsa_score IS NOT NULL THEN ? ELSE ? END,modified_at=CURRENT_TIMESTAMP '
+            'WHEN prime_gbsa_score IS NOT NULL THEN ? ELSE ? END,modified_at=CURRENT_TIMESTAMP '
             'WHERE iteration=? AND state=?',
             (State.FEP_DONE, State.PRIMG_GBSA_DONE, State.REFERENCE if iteration == 0 else State.DOCKED, iteration, State.AMBER_RUNNING))
 
@@ -421,7 +421,7 @@ def store_amber_results(path, iteration, results, allowed_ids):
             if isinstance(cid, bool) or not isinstance(cid, int) or cid < 1:
                 raise ValueError(f'Invalid Amber compound ID: {cid}')
             row = conn.execute(
-                'SELECT amber_gbsa_score,state,primg_gbsa_score,fep_score FROM compound WHERE id=? AND iteration=?',
+                'SELECT amber_gbsa_score,state,prime_gbsa_score,fep_score FROM compound WHERE id=? AND iteration=?',
                 (cid, iteration),
             ).fetchone()
             if cid not in allowed or row is None:
@@ -544,9 +544,9 @@ def iteration_primg_gbsa_elites(path, iteration, count):
     """Select lowest finite GBSA scores from exactly the completed iteration."""
     with connect(path) as conn:
         rows = conn.execute(
-            "SELECT id,name,smiles,iteration,docking_score,primg_gbsa_score FROM compound "
-            "WHERE iteration=? AND primg_gbsa_score IS NOT NULL "
-            "ORDER BY primg_gbsa_score ASC, docking_score ASC, id ASC",
+            "SELECT id,name,smiles,iteration,docking_score,prime_gbsa_score FROM compound "
+            "WHERE iteration=? AND prime_gbsa_score IS NOT NULL "
+            "ORDER BY prime_gbsa_score ASC, docking_score ASC, id ASC",
             (iteration,),
         ).fetchall()
     return [row for row in rows if math.isfinite(row[5])][:count]
@@ -1143,7 +1143,7 @@ def apply_sa_filter(path, iteration, target_count, ratio):
         if saved:
             return saved
         rows = conn.execute(
-            'SELECT id,COALESCE(rdk_sa_score,sa_score),state,docking_score,amber_gbsa_score,primg_gbsa_score,fep_score '
+            'SELECT id,COALESCE(rdk_sa_score,sa_score),state,docking_score,amber_gbsa_score,prime_gbsa_score,fep_score '
             'FROM compound WHERE iteration=? ORDER BY COALESCE(rdk_sa_score,sa_score),id', (iteration,),
         ).fetchall()
         if len(rows) < target_count:
@@ -1173,7 +1173,7 @@ def ligprep_pending_rows(path, iteration, synthetic_enabled):
             "SELECT id,name,smiles FROM compound WHERE iteration=? "
             "AND (state IN (?,?) OR (state=? AND failed_stage='glide' "
             "AND failure_message='No LigPrep structures for reference group' "
-            "AND docking_score IS NULL AND primg_gbsa_score IS NULL AND fep_score IS NULL)) "
+            "AND docking_score IS NULL AND prime_gbsa_score IS NULL AND fep_score IS NULL)) "
             "AND (?=0 OR synthetic_feasibility IS NOT NULL) ORDER BY id",
             (iteration, State.GENERATED, State.LIGPREP_RUNNING, State.FAILED, int(synthetic_enabled)),
         ).fetchall()
@@ -1239,7 +1239,7 @@ def mark_primg_gbsa_atomtyping_failures(path, compound_ids, message):
         cursor = conn.execute(
             f"UPDATE compound SET state=?, failed_stage='primg_gbsa', failure_message=?, "
             f"modified_at=CURRENT_TIMESTAMP WHERE id IN ({marks}) "
-            "AND primg_gbsa_score IS NULL AND state IN (?, ?)",
+            "AND prime_gbsa_score IS NULL AND state IN (?, ?)",
             [State.FAILED, message, *ids, State.DOCKED, State.PRIMG_GBSA_RUNNING],
         )
         return cursor.rowcount
@@ -1254,7 +1254,7 @@ def primg_gbsa_submission_rows(path, compound_ids):
             batch = ids[start:start + 500]
             marks = ",".join("?" for _ in batch)
             for cid, iteration, state, score in conn.execute(
-                f"SELECT id,iteration,state,primg_gbsa_score FROM compound WHERE id IN ({marks})", batch
+                f"SELECT id,iteration,state,prime_gbsa_score FROM compound WHERE id IN ({marks})", batch
             ):
                 rows[cid] = (iteration, state, score)
     return rows
@@ -1269,17 +1269,17 @@ def has_running_primg_gbsa(path, iteration):
 def primg_gbsa_progress_counts(path, iteration):
     """Read iteration-wide running claims and finite persisted GBSA results."""
     with connect(path) as conn:
-        rows = conn.execute('SELECT state,primg_gbsa_score FROM compound WHERE iteration=?',
+        rows = conn.execute('SELECT state,prime_gbsa_score FROM compound WHERE iteration=?',
                             (iteration,)).fetchall()
     running = sum(state == State.PRIMG_GBSA_RUNNING for state, _ in rows)
     saved = sum(score is not None and math.isfinite(score) for _, score in rows)
     return running, saved
 
 
-def primg_gbsa_scored_ids(path, iteration):
+def prime_gbsa_scored_ids(path, iteration):
     """IDs whose finite Prime scores may be paired with native coordinates."""
     with connect(path) as conn:
-        rows = conn.execute('SELECT id,primg_gbsa_score FROM compound WHERE iteration=? ORDER BY id',
+        rows = conn.execute('SELECT id,prime_gbsa_score FROM compound WHERE iteration=? ORDER BY id',
                             (iteration,)).fetchall()
     return [cid for cid, score in rows if score is not None and math.isfinite(score)]
 
@@ -1340,7 +1340,7 @@ def stage_summary_results(path, iteration, stage):
     """Read result identities for display only; never claim or change work."""
     with connect(path) as conn:
         rows = conn.execute(
-            'SELECT id,state,failed_stage,docking_score,amber_gbsa_score,primg_gbsa_score '
+            'SELECT id,state,failed_stage,docking_score,amber_gbsa_score,prime_gbsa_score '
             'FROM compound WHERE iteration=?', (iteration,),
         ).fetchall()
     failure_stage = {'primg_gbsa': 'primg_gbsa', 'amber-gbsa': 'amber_gbsa'}.get(stage, stage)
@@ -1462,7 +1462,7 @@ def fep_candidate_iterations(path):
     with connect(path) as conn:
         return [row[0] for row in conn.execute(
             'SELECT DISTINCT iteration FROM compound WHERE iteration>0 AND '
-            '(primg_gbsa_score IS NOT NULL OR amber_gbsa_score IS NOT NULL OR docking_score IS NOT NULL) ORDER BY iteration')]
+            '(prime_gbsa_score IS NOT NULL OR amber_gbsa_score IS NOT NULL OR docking_score IS NOT NULL) ORDER BY iteration')]
 
 
 def fep_selection_pending(path, iteration, count):
@@ -1474,7 +1474,7 @@ def fep_selection_pending(path, iteration, count):
                 ids = {item['id'] for item in json.loads(saved[0])}
                 return any(cid in ids and score is None for cid, score in conn.execute(
                     'SELECT id,fep_score FROM compound WHERE iteration=?', (iteration,)))
-        for column in ('primg_gbsa_score', 'amber_gbsa_score', 'docking_score'):
+        for column in ('prime_gbsa_score', 'amber_gbsa_score', 'docking_score'):
             rows = conn.execute(f'SELECT id,{column},fep_score FROM compound WHERE iteration=?', (iteration,)).fetchall()
             ranked = sorted((row for row in rows if row[1] is not None and math.isfinite(row[1])),
                             key=lambda row: (row[1], row[0]))
@@ -1495,7 +1495,7 @@ def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
                      'iteration INTEGER PRIMARY KEY,ranking_source TEXT NOT NULL,candidates TEXT NOT NULL)')
         saved = conn.execute('SELECT ranking_source,candidates FROM iteration_fep_selection WHERE iteration=?',
                              (iteration,)).fetchone()
-        rows = conn.execute('SELECT id,name,smiles,docking_score,amber_gbsa_score,primg_gbsa_score,fep_score,state '
+        rows = conn.execute('SELECT id,name,smiles,docking_score,amber_gbsa_score,prime_gbsa_score,fep_score,state '
                             'FROM compound WHERE iteration=? ORDER BY id', (iteration,)).fetchall()
         if saved:
             source, selected = saved[0], json.loads(saved[1])
@@ -1531,7 +1531,7 @@ def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
             conn.execute('INSERT INTO iteration_fep_selection VALUES (?,?,?)',
                          (iteration, source, json.dumps(selected)))
         by_id = {row[0]: row for row in rows}
-        fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'primg_gbsa_score', 'fep_score', 'state']
+        fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'prime_gbsa_score', 'fep_score', 'state']
         result = []
         for item in selected:
             if item['id'] not in by_id:

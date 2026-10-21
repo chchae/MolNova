@@ -124,7 +124,7 @@ def test_partial_amber_results_are_not_filled_with_docking(ranked_project):
     assert database.claim_primg_gbsa_candidates(args.db_path, 1, 2, 6, 4) == [3]
 
 
-@pytest.mark.parametrize('source,column', [('prime','primg_gbsa_score'),('amber','amber_gbsa_score'),('docking','docking_score')])
+@pytest.mark.parametrize('source,column', [('prime','prime_gbsa_score'),('amber','amber_gbsa_score'),('docking','docking_score')])
 def test_fep_source_fallback_freeze_and_atomic_import(ranked_project, source, column):
     args = ranked_project
     with database.connect(args.db_path) as conn:
@@ -140,7 +140,7 @@ def test_fep_source_fallback_freeze_and_atomic_import(ranked_project, source, co
     expected = [6, 5] if source == 'docking' else [1]
     assert [int(r['id']) for r in rows] == expected
     with database.connect(args.db_path) as conn:
-        conn.execute('UPDATE compound SET primg_gbsa_score=-999 WHERE id=2')
+        conn.execute('UPDATE compound SET prime_gbsa_score=-999 WHERE id=2')
     args.fep_input_count = 5
     assert [r['id'] for r in database.fep_candidates(args.db_path, 1, 5)] == expected
     scores = args.output/'fep.tsv'
@@ -158,7 +158,7 @@ def test_fep_waits_for_pending_prime_and_ignores_nonfinite_scores(ranked_project
     with pytest.raises(RuntimeError, match='unfinished Prime'):
         fep.export_candidates(args, 1)
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='failed',failed_stage='primg_gbsa',primg_gbsa_score=?", (float('inf'),))
+        conn.execute("UPDATE compound SET state='failed',failed_stage='primg_gbsa',prime_gbsa_score=?", (float('inf'),))
     rows = database.fep_candidates(args.db_path, 1, 2, target_count=6, prime_count=2)
     assert [row['id'] for row in rows] == [6,5]
     assert {row['ranking_source'] for row in rows} == {'docking'}
@@ -183,8 +183,8 @@ def test_amber_failure_history_survives_prime_retry_and_completion(ranked_projec
     assert database.claim_amber_candidates(args.db_path, 1, 6, 4) == []
     assert database.claim_primg_gbsa_candidates(args.db_path, 1, 2, 6, 4) == [6,5]
     score_file = args.output/'prime.tsv'
-    score_file.write_text('id\tprimg_gbsa_score\n6\t-50\n5\t-40\n')
-    _core.update_primg_gbsa_scores(score_file, args.db_path, [6,5])
+    score_file.write_text('id\tprime_gbsa_score\n6\t-50\n5\t-40\n')
+    _core.update_prime_gbsa_scores(score_file, args.db_path, [6,5])
     assert database.iteration_completion_reason(args.db_path, 1, 6, 2, 1, 4) is None
     with database.connect(args.db_path) as conn:
         assert conn.execute('SELECT COUNT(*) FROM amber_failure').fetchone()[0] == 4
@@ -227,7 +227,7 @@ def test_saved_uncertain_job_blocks_fep_before_any_snapshot(ranked_project):
 def test_import_without_iteration_ignores_other_unexported_raw_iteration(ranked_project):
     args = ranked_project
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-id")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-id")
     fep.export_candidates(args, 1)
     database.mark_iteration_workspace_prepared(args.db_path, 2)
     with database.connect(args.db_path) as conn:
@@ -240,7 +240,7 @@ def test_import_without_iteration_ignores_other_unexported_raw_iteration(ranked_
 def test_fep_import_rejects_conflicting_scores_without_partial_update(ranked_project):
     args = ranked_project
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-id")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-id")
     fep.export_candidates(args, 1)
     with database.connect(args.db_path) as conn:
         conn.execute('UPDATE compound SET fep_score=-10 WHERE id=6')

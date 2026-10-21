@@ -131,7 +131,7 @@ def test_failed_native_parent_keeps_streamed_result_and_retries_only_unscored(tm
     monkeypatch.setattr(prime, '_current_diagnostics', lambda *a: 'insufficient licenses')
     monkeypatch.setattr(prime, '_run_attempt', lambda *a: pytest.fail('completed compounds resubmitted'))
     def extract(command, **kw):
-        Path(command[-1]).write_text('id\tprimg_gbsa_score\n1\t-40\n')
+        Path(command[-1]).write_text('id\tprime_gbsa_score\n1\t-40\n')
     monkeypatch.setattr(_core, 'run_command', extract)
     published = []
     monkeypatch.setattr(batch, 'publish_coordinates', lambda *a: published.append(a[-1]))
@@ -157,8 +157,8 @@ def test_final_coordinate_failure_keeps_job_and_retries_without_submission(tmp_p
     monkeypatch.setattr(prime, '_run_attempt', lambda *a: pytest.fail('duplicate calculation'))
     def finish(iteration, args, directory, ids):
         scores = directory / 'scores.tsv'
-        scores.write_text('id\tprimg_gbsa_score\n1\t-40\n2\t-30\n')
-        return _core.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=ids)
+        scores.write_text('id\tprime_gbsa_score\n1\t-40\n2\t-30\n')
+        return _core.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=ids)
     monkeypatch.setattr(_core, 'finish_iteration_primg_gbsa', finish)
     def fail(*a):
         raise OSError('merge interrupted')
@@ -193,7 +193,7 @@ def test_failed_parent_does_not_retire_when_completed_child_output_is_unavailabl
 def test_coordinates_keep_previous_scored_pose_deduplicate_and_put_receptor_first(tmp_path, monkeypatch):
     args, root, _ = project(tmp_path, monkeypatch)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute('UPDATE compound SET primg_gbsa_score=-40')
+        conn.execute('UPDATE compound SET prime_gbsa_score=-40')
     previous = root / 'previous-1/primg_gbsa_final.maegz'
     child = root / 'subjobs/parent/child/result.maegz'
     combined = root / 'primg_gbsa_input-out.maegz'

@@ -27,7 +27,7 @@ def export_candidates(args, iteration):
     outdir = stage_directory(args.output, iteration, 'fep')
     outdir.mkdir(parents=True, exist_ok=True)
     outfile = outdir / 'fep_candidates.tsv'
-    fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'primg_gbsa_score',
+    fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'prime_gbsa_score',
               'fep_score', 'state', 'ranking_source', 'ranking_score']
     fd, temporary = tempfile.mkstemp(dir=outdir, prefix='candidates-')
     try:

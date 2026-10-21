@@ -128,7 +128,7 @@ def test_new_ligprep_submission_saves_job_id_before_wait_finishes(tmp_path, monk
 def test_primg_gbsa_recovers_job_record_after_scores_committed(tmp_path, monkeypatch):
     args = project(tmp_path, [State.DOCKED, State.DOCKED])
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40")
     directory = tmp_path/'iter1/primg_gbsa'; directory.mkdir(parents=True)
     primg_gbsa_async._save(directory, {'command':['/suite/prime_mmgbsa'], 'compound_ids':[1,2], 'job_id':'done'})
     def recover(**kw):
@@ -139,7 +139,7 @@ def test_primg_gbsa_recovers_job_record_after_scores_committed(tmp_path, monkeyp
     primg_gbsa._run_stage(args, 1)
     assert primg_gbsa_async.load_job(directory) is None
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound').fetchall() == [('primg_gbsa_done',-40),('primg_gbsa_done',-40)]
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound').fetchall() == [('primg_gbsa_done',-40),('primg_gbsa_done',-40)]
 
 
 def test_ligprep_status_failure_retains_record(tmp_path, monkeypatch):

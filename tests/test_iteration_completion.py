@@ -14,7 +14,7 @@ def project(tmp_path):
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         conn.executemany(
-            'INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) '
+            'INSERT INTO compound(name,smiles,iteration,docking_score,prime_gbsa_score,state) '
             "VALUES (?, 'C', 1, ?, ?, ?)",
             [('BEST', -10, -40, State.PRIMG_GBSA_DONE),
              ('SECOND', -9, -35, State.PRIMG_GBSA_DONE),
@@ -29,10 +29,10 @@ def reason(args):
         args.db_path, 1, args.target_count, args.primg_gbsa_input_count, args.primg_gbsa_elite_count)
 
 
-def update(args, name, state, docking_score, primg_gbsa_score):
+def update(args, name, state, docking_score, prime_gbsa_score):
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute('UPDATE compound SET state=?,docking_score=?,primg_gbsa_score=? WHERE name=?',
-                     (state, docking_score, primg_gbsa_score, name))
+        conn.execute('UPDATE compound SET state=?,docking_score=?,prime_gbsa_score=? WHERE name=?',
+                     (state, docking_score, prime_gbsa_score, name))
 
 
 def test_complete_top_n_does_not_require_scores_outside_top_n(project):
@@ -93,7 +93,7 @@ def test_stage_blocks_tl_and_sampling_until_completed(project, monkeypatch, requ
 def test_elites_are_lowest_scores_from_immediately_previous_iteration(project):
     with sqlite3.connect(project.db_path) as conn:
         conn.executemany(
-            'INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) '
+            'INSERT INTO compound(name,smiles,iteration,docking_score,prime_gbsa_score,state) '
             "VALUES (?, 'C', 2, ?, ?, 'primg_gbsa_done')",
             [('NEW_A', -5, -20), ('NEW_B', -4, -30), ('INVALID', -6, float('-inf'))],
         )
@@ -131,7 +131,7 @@ def test_old_database_cannot_advance_while_earlier_iteration_is_running(project,
     update(project, 'OUTSIDE', State.PRIMG_GBSA_RUNNING, -8, None)
     with sqlite3.connect(project.db_path) as conn:
         conn.executemany(
-            'INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) '
+            'INSERT INTO compound(name,smiles,iteration,docking_score,prime_gbsa_score,state) '
             "VALUES (?, 'C', 2, -5, -20, 'primg_gbsa_done')", [('A',), ('B',), ('C',)])
     generate._run_stage(project, None)
     assert 'Iteration 3 not ready: iteration 1' in capsys.readouterr().out

@@ -17,7 +17,7 @@ def project(tmp_path, state=State.GENERATED, iteration=3):
         _core.create_sqlite_schema(conn)
         _core.ensure_schema_columns(conn)
         conn.execute(
-            "INSERT INTO compound(name,smiles,iteration,state,docking_score,primg_gbsa_score) "
+            "INSERT INTO compound(name,smiles,iteration,state,docking_score,prime_gbsa_score) "
             "VALUES ('CMP','C',?,?,?,?)",
             (iteration, state, -10 if state in {State.DOCKED, State.PRIMG_GBSA_DONE} else None,
              -20 if state == State.PRIMG_GBSA_DONE else None),
@@ -37,7 +37,7 @@ def test_sequential_workers_share_iteration_and_wait_for_real_completion(tmp_pat
         'synthetic': "UPDATE compound SET synthetic_feasibility=1,sa_score=2",
         'ligprep': "UPDATE compound SET state='ligprepped'",
         'glide': "UPDATE compound SET state='docked',docking_score=-10",
-        'primg_gbsa': "UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-20",
+        'primg_gbsa': "UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-20",
     }
 
     class Stop(driver.StopFlag):
@@ -108,7 +108,7 @@ def test_terminal_failures_are_processed_and_top_n_excludes_others(tmp_path):
     assert database.stage_completion_reason(args.db_path, 3, 'ligprep', 1, 1, True) is None
     assert database.stage_completion_reason(args.db_path, 3, 'primg_gbsa', 1, 1) is None
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,primg_gbsa_score=-20")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,prime_gbsa_score=-20")
         conn.execute("INSERT INTO compound(name,smiles,iteration,state,docking_score) "
                      "VALUES ('outside','C',3,'docked',-5)")
     assert database.stage_completion_reason(args.db_path, 3, 'primg_gbsa', 2, 1) is None
@@ -117,7 +117,7 @@ def test_terminal_failures_are_processed_and_top_n_excludes_others(tmp_path):
 def test_later_iteration_cannot_mask_requested_iteration(tmp_path):
     args = project(tmp_path)
     with database.connect(args.db_path) as conn:
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score,docking_score) "
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score,docking_score) "
                      "VALUES ('later','C',4,'primg_gbsa_done',-30,-15)")
     assert database.stage_completion_reason(args.db_path, 3, 'primg_gbsa', 1, 1)
 
@@ -183,7 +183,7 @@ with sqlite3.connect(root/'project.sqlite') as c:
     state=c.execute('SELECT state FROM compound WHERE iteration=?',(a.iteration,)).fetchone()[0]
     transitions={'generated':('ligprepped',None,None),'ligprepped':('docked',-10,None),'docked':('primg_gbsa_done',-10,-20)}
     new,dock,primg_gbsa=transitions[state]
-    c.execute('UPDATE compound SET state=?,docking_score=?,primg_gbsa_score=? WHERE iteration=?',(new,dock,primg_gbsa,a.iteration))
+    c.execute('UPDATE compound SET state=?,docking_score=?,prime_gbsa_score=? WHERE iteration=?',(new,dock,primg_gbsa,a.iteration))
 with (root/'order.log').open('a') as f:f.write(str(a.iteration)+':'+new+'\n')
 """)
     monkeypatch.setenv('PYTHONPATH', str(tmp_path))
@@ -256,7 +256,7 @@ def test_legacy_iteration_timing_is_labelled_estimated(tmp_path, monkeypatch):
     assert database.start_iteration_timer(args.db_path, 3) == 600
     assert database.finish_iteration_timer(args.db_path, 3) == (1200, True)
     with database.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound').fetchone() == ('primg_gbsa_done', -20)
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound').fetchone() == ('primg_gbsa_done', -20)
 
 
 @pytest.mark.parametrize('completed', [True, False])

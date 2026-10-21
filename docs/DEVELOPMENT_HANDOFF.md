@@ -4,8 +4,10 @@
 
 The user requested fresh projects and waived compatibility with prior work for
 this rename. The Prime stage is `primg_gbsa` (user-specified spelling), with
-`primg_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
+`prime_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
 `primg_gbsa`, CLI `molnova primg_gbsa`, and directory `08-primg_gbsa`.
+The score column was subsequently corrected to `prime_gbsa_score` at the
+user's request; stage identifiers retain their existing spelling.
 TOML uses `prime-gbsa-input-count`, `prime-gbsa-flexdist`,
 `prime-gbsa-license-retry-seconds`, and `prime-gbsa-license-retries`.
 Other renamed Prime keys are `primg-gbsa-elite-count`, `primg-gbsa-receptor`,
@@ -371,7 +373,7 @@ Core fields:
     iteration
     dG_exp
     docking_score
-    primg_gbsa_score
+    prime_gbsa_score
     fep_score
     similar_to
     similarity
@@ -720,8 +722,8 @@ The worker should:
    (`generated`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`),
 2. rank final Amber scores when enabled (docking otherwise), using stable ties,
 3. take the first `prime-gbsa-input-count` compounds, including already scored compounds,
-4. atomically claim only eligible candidates without `primg_gbsa_score`,
-5. calculate those and persist `primg_gbsa_score`.
+4. atomically claim only eligible candidates without `prime_gbsa_score`,
+5. calculate those and persist `prime_gbsa_score`.
 
 Readiness, ranking and claiming occur in one SQLite write transaction.
 Terminal upstream failures count as processed. Retryable failures, unfinished
@@ -942,7 +944,7 @@ on reruns, and preserve scientific results.
 
 ## Reference MM-GBSA
 
-Iteration 0 is eligible for MM-GBSA when references lack `primg_gbsa_score`. Use all
+Iteration 0 is eligible for MM-GBSA when references lack `prime_gbsa_score`. Use all
 unscored reference poses, independent of docking scores, target-count and top-N.
 Claim `reference` rows atomically, recover saved iter0 queues, and restore orphan
 claims to `reference`. Use the same receptor source and per-compound queue as
@@ -987,7 +989,7 @@ The 2026-10-12 user change adds optional Amber screening after completed Glide
 and before Prime. See SPEC section 15 for confirmed scope and scientific choices.
 When enabled: select final Glide top 200, minimize/score only those compounds
 with Amber on the configured host (EGFR: t41), and claim its Prime top 50 by Amber score. Store `amber_gbsa_score` separately; keep Prime
-`primg_gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/primg_gbsa/` intact. The example
+`prime_gbsa_score`. Use `iterN/amber_gbsa/` and leave `iterN/primg_gbsa/` intact. The example
 EGFR config disables it. Set `amber_gbsa = true` to enable it; the legacy
 `amber-gbsa-enabled` key remains supported. Omitted Prime count is 200 without
 Amber and 50 with Amber, and omitted Amber input count is 200. Explicit counts

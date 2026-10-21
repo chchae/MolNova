@@ -14,7 +14,7 @@ def _project(tmp_path):
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         conn.executemany(
-            "INSERT INTO compound(name, smiles, iteration, docking_score, primg_gbsa_score, state) "
+            "INSERT INTO compound(name, smiles, iteration, docking_score, prime_gbsa_score, state) "
             "VALUES (?, 'C', 1, ?, ?, ?)",
             [("DONE", -10, -40, "primg_gbsa_done"), ("PENDING", -9, None, "docked"),
              ("OUTSIDE", -8, None, "docked")],
@@ -27,7 +27,7 @@ def test_primg_gbsa_ranks_all_docked_compounds_before_excluding_done(tmp_path):
     args, ids = _project(tmp_path)
     assert database.primg_gbsa_candidates(args.db_path, 1, 2) == [ids["PENDING"]]
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-35, state='primg_gbsa_done' WHERE id=?", (ids["PENDING"],))
+        conn.execute("UPDATE compound SET prime_gbsa_score=-35, state='primg_gbsa_done' WHERE id=?", (ids["PENDING"],))
     assert database.primg_gbsa_candidates(args.db_path, 1, 2) == []
     assert primg_gbsa.eligible_iteration(args) is None
 
@@ -97,7 +97,7 @@ def test_final_top_200_selection_keeps_completed_scores_in_ranking(tmp_path, mon
             "VALUES (?,'C',1,?,?)",
             [(f"C{i}", -i, State.DOCKED) for i in range(205)],
         )
-        conn.execute("UPDATE compound SET state=?,primg_gbsa_score=-50 WHERE name='C204'",
+        conn.execute("UPDATE compound SET state=?,prime_gbsa_score=-50 WHERE name='C204'",
                      (State.PRIMG_GBSA_DONE,))
         expected = [row[0] for row in conn.execute(
             "SELECT id FROM compound WHERE name!='C204' AND docking_score<=-5 "
@@ -140,8 +140,8 @@ def test_license_retry_exhaustion_restores_only_pending_compounds(monkeypatch, t
     with pytest.raises(RuntimeError, match="license unavailable"):
         primg_gbsa._run_stage(args, 1)
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute("SELECT state,primg_gbsa_score FROM compound WHERE id=?", (ids["DONE"],)).fetchone() == ("primg_gbsa_done", -40)
-        assert conn.execute("SELECT state,primg_gbsa_score,failed_stage FROM compound WHERE id=?", (ids["PENDING"],)).fetchone() == ("docked", None, "primg_gbsa")
+        assert conn.execute("SELECT state,prime_gbsa_score FROM compound WHERE id=?", (ids["DONE"],)).fetchone() == ("primg_gbsa_done", -40)
+        assert conn.execute("SELECT state,prime_gbsa_score,failed_stage FROM compound WHERE id=?", (ids["PENDING"],)).fetchone() == ("docked", None, "primg_gbsa")
 
 
 def test_primg_gbsa_recovers_running_candidates_and_skips_completed_results(monkeypatch, tmp_path):
@@ -156,15 +156,15 @@ def test_primg_gbsa_recovers_running_candidates_and_skips_completed_results(monk
         with sqlite3.connect(args.db_path) as conn:
             assert conn.execute("SELECT state FROM compound WHERE id=?", (ids["PENDING"],)).fetchone()[0] == "primg_gbsa_running"
         scores = tmp_path / "scores.tsv"
-        scores.write_text(f"id\tprimg_gbsa_score\n{ids['PENDING']}\t-35\n")
-        return _core.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=kwargs["compound_ids"])
+        scores.write_text(f"id\tprime_gbsa_score\n{ids['PENDING']}\t-35\n")
+        return _core.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=kwargs["compound_ids"])
 
     monkeypatch.setattr(_core, "run_iteration_primg_gbsa", calculate)
     primg_gbsa._run_stage(args, None)
     primg_gbsa._run_stage(args, None)
     assert calls == [[ids["PENDING"]]]
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute("SELECT primg_gbsa_score, state FROM compound ORDER BY id").fetchall() == [
+        assert conn.execute("SELECT prime_gbsa_score, state FROM compound ORDER BY id").fetchall() == [
             (-40, "primg_gbsa_done"), (-35, "primg_gbsa_done"), (None, "docked")
         ]
 
@@ -174,21 +174,21 @@ def test_primg_gbsa_import_preserves_existing_scores_and_later_states(tmp_path):
     with sqlite3.connect(args.db_path) as conn:
         conn.execute("UPDATE compound SET state='fep_done', fep_score=-5 WHERE id=?", (ids["DONE"],))
     scores = tmp_path / "scores.tsv"
-    scores.write_text(f"id\tprimg_gbsa_score\n{ids['DONE']}\t-99\n{ids['PENDING']}\t-35\n")
-    assert _core.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=ids.values()) == 1
+    scores.write_text(f"id\tprime_gbsa_score\n{ids['DONE']}\t-99\n{ids['PENDING']}\t-35\n")
+    assert _core.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=ids.values()) == 1
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute("SELECT primg_gbsa_score, state, fep_score FROM compound WHERE id=?", (ids["DONE"],)).fetchone() == (-40, "fep_done", -5)
+        assert conn.execute("SELECT prime_gbsa_score, state, fep_score FROM compound WHERE id=?", (ids["DONE"],)).fetchone() == (-40, "fep_done", -5)
 
 
 @pytest.mark.parametrize("score,compound", [("-30", "OUTSIDE"), ("nan", "PENDING")])
 def test_invalid_primg_gbsa_batch_is_rejected_before_any_write(tmp_path, score, compound):
     args, ids = _project(tmp_path)
     scores = tmp_path / "scores.tsv"
-    scores.write_text(f"id\tprimg_gbsa_score\n{ids['PENDING']}\t-35\n{ids[compound]}\t{score}\n")
+    scores.write_text(f"id\tprime_gbsa_score\n{ids['PENDING']}\t-35\n{ids[compound]}\t{score}\n")
     with pytest.raises(ValueError):
-        _core.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=[ids["PENDING"]])
+        _core.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=[ids["PENDING"]])
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute("SELECT primg_gbsa_score FROM compound WHERE id=?", (ids["PENDING"],)).fetchone() == (None,)
+        assert conn.execute("SELECT prime_gbsa_score FROM compound WHERE id=?", (ids["PENDING"],)).fetchone() == (None,)
 
 
 def test_best_pose_publication_is_atomic_and_precedes_scores(monkeypatch, tmp_path):
@@ -294,8 +294,8 @@ def test_prime_mmgbsa_input_command_and_results(monkeypatch, tmp_path, capsys, c
             Path(command[5]).write_text("receptor plus selected poses")
         elif Path(command[1]).name == "_split_primg_gbsa_queue.py":
             pytest.fail('New calculations must use native batching')
-        elif Path(command[1]).name == "_extract_primg_gbsa_scores.py":
-            Path(command[3]).write_text('id\tprimg_gbsa_score\n' + ''.join(f'{cid}\t-35\n' for cid in pending))
+        elif Path(command[1]).name == "_extract_prime_gbsa_scores.py":
+            Path(command[3]).write_text('id\tprime_gbsa_score\n' + ''.join(f'{cid}\t-35\n' for cid in pending))
         elif Path(command[1]).name == "_merge_primg_gbsa_batch.py":
             Path(command[2]).write_text('merged final coordinates')
         else:

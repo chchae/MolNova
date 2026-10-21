@@ -42,7 +42,7 @@ def mock_results(monkeypatch, ids=(1,), unavailable=False):
         if not unavailable:kw['stdout'].write(b'immutable completed child result')
         return SimpleNamespace(returncode=1 if unavailable else 0,stderr=b'')
     def extract(command,cwd):
-        Path(command[-1]).write_text('id\tprimg_gbsa_score\n'+''.join(f'{cid}\t-40\n' for cid in ids))
+        Path(command[-1]).write_text('id\tprime_gbsa_score\n'+''.join(f'{cid}\t-40\n' for cid in ids))
     monkeypatch.setattr(primg_gbsa_streaming.subprocess,'run',run)
     monkeypatch.setattr(_core,'run_command',extract)
     return calls
@@ -54,7 +54,7 @@ def test_running_parent_imports_completed_child_once_and_survives_restart(tmp_pa
     monkeypatch.setattr(primg_gbsa_async,'_run_attempt',lambda *a:pytest.fail('duplicate submission'))
     primg_gbsa._run_stage(args,1)
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound ORDER BY id').fetchall()==[
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound ORDER BY id').fetchall()==[
             ('primg_gbsa_done',-40),('primg_gbsa_running',None)]
     assert database.iteration_completion_reason(args.db_path,1,2,2,1) is not None
     assert primg_gbsa_async.load_job(directory)['imported_subjobs']==['child-1']
@@ -70,7 +70,7 @@ def test_output_not_yet_available_retains_claim_and_retries_next_poll(tmp_path,m
     assert primg_gbsa_streaming.collect_completed_subjobs(args,1,directory,record,jobs())==0
     assert not record.get('imported_subjobs')
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT primg_gbsa_score FROM compound').fetchall()==[(None,),(None,)]
+        assert conn.execute('SELECT prime_gbsa_score FROM compound').fetchall()==[(None,),(None,)]
     mock_results(monkeypatch)
     assert primg_gbsa_streaming.collect_completed_subjobs(args,1,directory,record,jobs())==1
 
@@ -93,7 +93,7 @@ def test_unsubmitted_ids_rejected_before_db_write_or_checkpoint(tmp_path,monkeyp
         primg_gbsa_streaming.collect_completed_subjobs(args,1,directory,record,jobs())
     assert not record.get('imported_subjobs')
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT primg_gbsa_score FROM compound').fetchall()==[(None,),(None,)]
+        assert conn.execute('SELECT prime_gbsa_score FROM compound').fetchall()==[(None,),(None,)]
 
 
 def test_db_commit_before_checkpoint_failure_is_idempotent(tmp_path,monkeypatch):
@@ -108,15 +108,15 @@ def test_db_commit_before_checkpoint_failure_is_idempotent(tmp_path,monkeypatch)
     assert primg_gbsa_streaming.collect_completed_subjobs(args,1,directory,recovered,jobs())==0
     assert recovered['imported_subjobs']==['child-1']
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound WHERE id=1').fetchone()==('primg_gbsa_done',-40)
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound WHERE id=1').fetchone()==('primg_gbsa_done',-40)
 
 
 @pytest.mark.parametrize('error',[RuntimeError('batch failed'),primg_gbsa_async.PrimeAtomTypingError(2)])
 def test_later_batch_failure_preserves_streamed_score_and_state(tmp_path,monkeypatch,error):
     args,directory,record=project(tmp_path)
     def fail(**kw):
-        scores=tmp_path/'scores.tsv';scores.write_text('id\tprimg_gbsa_score\n1\t-40\n')
-        _core.update_primg_gbsa_scores(scores,args.db_path,allowed_ids=[1,2])
+        scores=tmp_path/'scores.tsv';scores.write_text('id\tprime_gbsa_score\n1\t-40\n')
+        _core.update_prime_gbsa_scores(scores,args.db_path,allowed_ids=[1,2])
         primg_gbsa_async.job_file(directory).unlink()
         raise error
     monkeypatch.setattr(_core,'run_iteration_primg_gbsa',fail)
@@ -124,7 +124,7 @@ def test_later_batch_failure_preserves_streamed_score_and_state(tmp_path,monkeyp
     else:
         with pytest.raises(RuntimeError):primg_gbsa._run_stage(args,1)
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound WHERE id=1').fetchone()==('primg_gbsa_done',-40)
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound WHERE id=1').fetchone()==('primg_gbsa_done',-40)
 
 
 def test_parent_completion_uses_final_output_without_child_transfers(tmp_path,monkeypatch):

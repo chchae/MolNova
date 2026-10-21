@@ -10,7 +10,7 @@ def project(tmp_path):
     db = tmp_path/'project.sqlite'
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,docking_score,amber_gbsa_score,primg_gbsa_score) "
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,docking_score,amber_gbsa_score,prime_gbsa_score) "
                      "VALUES ('CMP','CCO',1,'primg_gbsa_done',-10,-30,-40)")
     return SimpleNamespace(db_path=db, output=tmp_path, target_count=1, primg_gbsa_input_count=1,
                            synthetic_feasibility_enabled=False, amber_gbsa_enabled=True,
@@ -34,7 +34,7 @@ def test_each_calculation_stage_reports_total_after_verified_completion(tmp_path
     assert 'compounds=1 (ok=1, failed=0); wall/compound=3661.50s' in output
     with database.connect(args.db_path) as conn:
         assert conn.execute('SELECT iteration,stage,started_at,finished_at FROM stage_timing').fetchone() == (1,stage,1000,4661.5)
-        assert conn.execute('SELECT state,docking_score,amber_gbsa_score,primg_gbsa_score FROM compound').fetchone() == ('primg_gbsa_done',-10,-30,-40)
+        assert conn.execute('SELECT state,docking_score,amber_gbsa_score,prime_gbsa_score FROM compound').fetchone() == ('primg_gbsa_done',-10,-30,-40)
 
 
 @pytest.mark.parametrize('blocked', ['worker_failure','db_pending','external_pending','stop'])
@@ -90,14 +90,14 @@ def test_polling_waits_are_included_in_full_stage_total(tmp_path, monkeypatch, c
     clock = [1000.0]
     monkeypatch.setattr(database.time,'time',lambda:clock[0])
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='docked',primg_gbsa_score=NULL")
+        conn.execute("UPDATE compound SET state='docked',prime_gbsa_score=NULL")
     passes = []
     def process(*a):
         passes.append(1)
         clock[0] += 10
         if len(passes) == 2:
             with database.connect(args.db_path) as conn:
-                conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40")
+                conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40")
         return 0
     class Stop(driver.StopFlag):
         def wait(self, seconds):

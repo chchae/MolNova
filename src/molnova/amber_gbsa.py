@@ -328,7 +328,7 @@ def write_rankings(args, iteration, directory):
         pending = directory / (name + '.pending')
         with pending.open('w', newline='') as stream:
             writer = csv.writer(stream, delimiter='\t')
-            writer.writerow(['id', 'result_title', 'name', 'docking_score', 'amber_gbsa_score', 'primg_gbsa_score'])
+            writer.writerow(['id', 'result_title', 'name', 'docking_score', 'amber_gbsa_score', 'prime_gbsa_score'])
             writer.writerows((cid, f'CMPID_{cid}', name, dock, amber, prime)
                              for cid, name, dock, amber, prime in selected)
         os.replace(pending, directory / name)

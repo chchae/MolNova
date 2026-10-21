@@ -72,7 +72,7 @@ def test_atomic_claims_never_refill_from_outside_glide_top_500(population):
 def test_scores_failures_and_ties_keep_their_glide_positions(population):
     db = population
     with database.connect(db) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-50,amber_gbsa_score=-20 WHERE id=1000")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-50,amber_gbsa_score=-20 WHERE id=1000")
         conn.execute("UPDATE compound SET state='failed',failed_stage='amber_gbsa' WHERE id=999")
         conn.execute('UPDATE compound SET docking_score=-998 WHERE id IN (997,998)')
     assert database.claim_amber_candidates(db, 1, 1000, 3) == [997]
@@ -87,7 +87,7 @@ def test_scores_failures_and_ties_keep_their_glide_positions(population):
 def test_legacy_outside_scores_are_preserved_but_not_selected(population, tmp_path):
     db = population
     with database.connect(db) as conn:
-        conn.execute("UPDATE compound SET amber_gbsa_score=-999,primg_gbsa_score=-100,state='primg_gbsa_done' WHERE id=1")
+        conn.execute("UPDATE compound SET amber_gbsa_score=-999,prime_gbsa_score=-100,state='primg_gbsa_done' WHERE id=1")
     ids = database.claim_amber_candidates(db, 1, 1000, 500)
     finish(db, ids)
     assert [r[0] for r in database.prime_selection_rows(db, 1, 200, 500)] == list(range(501,701))
@@ -98,7 +98,7 @@ def test_legacy_outside_scores_are_preserved_but_not_selected(population, tmp_pa
     assert len((tmp_path/'prime_candidates.tsv').read_text().splitlines()) == 201
     assert not any(line.startswith('1\t') for line in (tmp_path/'prime_candidates.tsv').read_text().splitlines()[1:])
     with database.connect(db) as conn:
-        assert conn.execute('SELECT amber_gbsa_score,primg_gbsa_score,state FROM compound WHERE id=1').fetchone() == (-999,-100,'primg_gbsa_done')
+        assert conn.execute('SELECT amber_gbsa_score,prime_gbsa_score,state FROM compound WHERE id=1').fetchone() == (-999,-100,'primg_gbsa_done')
 
 
 def test_legacy_outside_running_claim_still_blocks_prime(population):
@@ -116,7 +116,7 @@ def test_generation_gate_needs_only_selected_amber_and_prime_results(population)
     finish(db, database.claim_amber_candidates(db, 1, 1000, 500))
     assert 'unfinished primg_gbsa' in database.iteration_completion_reason(db,1,1000,200,1,500)
     with database.connect(db) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-40,state='primg_gbsa_done' WHERE id BETWEEN 501 AND 700")
+        conn.execute("UPDATE compound SET prime_gbsa_score=-40,state='primg_gbsa_done' WHERE id BETWEEN 501 AND 700")
     assert database.iteration_completion_reason(db,1,1000,200,20,500) is None
     with database.connect(db) as conn:
         assert conn.execute('SELECT COUNT(*) FROM compound WHERE amber_gbsa_score IS NULL').fetchone()[0] == 500

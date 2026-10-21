@@ -113,7 +113,7 @@ def publish_coordinates(args, directory, compound_ids=()):
         return
     iteration = int(directory.parent.name.removeprefix('iter'))
     # Keep all SQL in database.py; this query also rejects nonfinite scores.
-    ids = database.primg_gbsa_scored_ids(args.db_path, iteration)
+    ids = database.prime_gbsa_scored_ids(args.db_path, iteration)
     ids_file = directory / 'final_ids.txt'
     ids_file.write_text('\n'.join(map(str, ids)) + '\n')
     required = sorted(set(ids) & set(compound_ids))

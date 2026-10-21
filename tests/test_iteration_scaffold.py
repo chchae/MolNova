@@ -21,7 +21,7 @@ def project(tmp_path):
              ('R3', 'CCOc1ccc(CN)cc1')],
         )
         conn.executemany(
-            'INSERT INTO compound(name,smiles,iteration,state,docking_score,primg_gbsa_score) '
+            'INSERT INTO compound(name,smiles,iteration,state,docking_score,prime_gbsa_score) '
             'VALUES (?,?,1,\'primg_gbsa_done\',-10,?)',
             [('E1', 'COc1ccc(CC)cc1', -40), ('E2', 'CCOc1ccc(CN)cc1', -30),
              ('OUTSIDE', 'NCc1ccc(Cl)cc1', -20)],
@@ -55,7 +55,7 @@ def test_reference_first_then_previous_elites_and_restart(project, monkeypatch):
 
     # Neither changed scores nor missing derivative files change a saved core.
     with database.connect(project.db_path) as conn:
-        conn.execute('UPDATE compound SET primg_gbsa_score=-100 WHERE name=\'OUTSIDE\'')
+        conn.execute('UPDATE compound SET prime_gbsa_score=-100 WHERE name=\'OUTSIDE\'')
     project.libinvent_scaffold_file.unlink()
     monkeypatch.setattr(_core, 'prepare_libinvent_scaffold',
                         lambda *a, **k: pytest.fail('MCS recomputed during recovery'))
@@ -200,7 +200,7 @@ def test_existing_iteration_keeps_legacy_scaffold(project, monkeypatch):
     assert project.mcs_smarts == 'c1ccccc1'
     assert database.iteration_scaffold(project.db_path, 1)['source'] == 'legacy_project_scaffold'
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT primg_gbsa_score FROM compound WHERE name=\'E1\'').fetchone()[0] == -40
+        assert conn.execute('SELECT prime_gbsa_score FROM compound WHERE name=\'E1\'').fetchone()[0] == -40
 
 
 def test_missing_legacy_core_does_not_recompute(project):
@@ -228,7 +228,7 @@ def test_mcs_failure_does_not_save_core_or_change_results(project, monkeypatch, 
         prepare_iteration_scaffold(project, 2, elites, create=True)
     assert database.iteration_scaffold(project.db_path, 2) is None
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT primg_gbsa_score,state FROM compound WHERE name=\'E1\'').fetchone() == (-40, 'primg_gbsa_done')
+        assert conn.execute('SELECT prime_gbsa_score,state FROM compound WHERE name=\'E1\'').fetchone() == (-40, 'primg_gbsa_done')
 
 
 def test_scaffold_snapshot_is_atomic_and_immutable(project):
@@ -273,7 +273,7 @@ def test_insufficient_automatic_attachments_reuse_previous_scaffold_and_resume(
     assert 'reusing validated scaffold from iteration 1' in capsys.readouterr().out
     assert all(_core.decompose_elite_for_libinvent(row[2], snapshot['scaffold_smiles']) for row in elites)
     with database.connect(project.db_path) as conn:
-        assert conn.execute("SELECT primg_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'primg_gbsa_done')
+        assert conn.execute("SELECT prime_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'primg_gbsa_done')
 
     project.libinvent_scaffold_file.unlink()
     project.elite_mcs_smarts = '[*:0]Nc1ccc([*:1])cc1'
@@ -314,7 +314,7 @@ def test_rejected_previous_scaffold_stops_without_snapshot_or_result_changes(
     assert database.iteration_scaffold(project.db_path, 2) is None
     assert not (project.output / 'iter02/01-scaffold').exists()
     with database.connect(project.db_path) as conn:
-        assert conn.execute("SELECT primg_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'primg_gbsa_done')
+        assert conn.execute("SELECT prime_gbsa_score,state FROM compound WHERE name='E1'").fetchone() == (-40, 'primg_gbsa_done')
 
 
 @pytest.mark.parametrize('problem', ['timeout', 'supplied', 'sanitization'])

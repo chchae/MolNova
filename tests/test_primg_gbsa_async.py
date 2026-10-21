@@ -161,7 +161,7 @@ def test_atomtyping_failure_stops_retries_and_allows_next_iteration(tmp_path, mo
     db = tmp_path / "project.sqlite"
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) "
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,prime_gbsa_score,state) "
                          "VALUES (?,'C',?,?,?,?)", [
                              ("bad", 1, -9, None, State.DOCKED),
                              ("done", 1, -10, -40, State.PRIMG_GBSA_DONE),
@@ -179,7 +179,7 @@ def test_atomtyping_failure_stops_retries_and_allows_next_iteration(tmp_path, mo
     assert calls == [1, 2, 2]
     assert database.primg_gbsa_candidates(db, 1, 2) == []
     with sqlite3.connect(db) as conn:
-        rows = conn.execute("SELECT state,docking_score,primg_gbsa_score,failed_stage,failure_message "
+        rows = conn.execute("SELECT state,docking_score,prime_gbsa_score,failed_stage,failure_message "
                             "FROM compound ORDER BY id").fetchall()
     assert rows[0][:4] == (State.FAILED, -9, None, "primg_gbsa")
     assert "atom typing failed" in rows[0][4]
@@ -261,7 +261,7 @@ def test_batch_worker_failure_excludes_bad_compounds_preserving_other_results(tm
     db=tmp_path/'project.sqlite'
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,primg_gbsa_score,state) "
+        conn.executemany("INSERT INTO compound(name,smiles,iteration,docking_score,prime_gbsa_score,state) "
                          "VALUES (?,'C',1,-9,?,?)",[
                              ('bad1',None,'docked'),('bad2',None,'docked'),
                              ('unknown',None,'docked'),('done',-40,'primg_gbsa_done')])
@@ -271,7 +271,7 @@ def test_batch_worker_failure_excludes_bad_compounds_preserving_other_results(tm
     primg_gbsa._run_stage(args,1)
     assert database.primg_gbsa_candidates(db,1,4)==[3]
     with sqlite3.connect(db) as conn:
-        rows=conn.execute('SELECT state,docking_score,primg_gbsa_score,failed_stage FROM compound ORDER BY id').fetchall()
+        rows=conn.execute('SELECT state,docking_score,prime_gbsa_score,failed_stage FROM compound ORDER BY id').fetchall()
     assert rows==[('failed',-9,None,'primg_gbsa'),('failed',-9,None,'primg_gbsa'),
                   ('docked',-9,None,'primg_gbsa'),('primg_gbsa_done',-9,-40,None)]
 
@@ -288,13 +288,13 @@ def test_partial_batch_scores_import_before_permanent_failures(tmp_path,monkeypa
                            'atomtyping_failed_ids':[2]})
     monkeypatch.setattr(prime,'submit_or_poll',lambda *a,**kw:True)
     def finish(iteration,args,directory,ids):
-        scores=directory/'scores.tsv';scores.write_text('id\tprimg_gbsa_score\n1\t-40\n')
-        return _core.update_primg_gbsa_scores(scores,args.db_path,allowed_ids=ids)
+        scores=directory/'scores.tsv';scores.write_text('id\tprime_gbsa_score\n1\t-40\n')
+        return _core.update_prime_gbsa_scores(scores,args.db_path,allowed_ids=ids)
     monkeypatch.setattr(_core,'finish_iteration_primg_gbsa',finish)
     args=SimpleNamespace(db_path=db,output=tmp_path,primg_gbsa_input_count=2)
     primg_gbsa._run_stage(args,1)
     with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound ORDER BY id').fetchall()==[
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound ORDER BY id').fetchall()==[
             ('primg_gbsa_done',-40),('failed',None)]
     assert prime.load_job(directory) is None
 
@@ -304,11 +304,11 @@ def test_permanent_failure_recording_preserves_existing_scores(tmp_path):
     db=tmp_path/'project.sqlite'
     with sqlite3.connect(db) as conn:
         _core.create_sqlite_schema(conn)
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score,fep_score) "
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score,fep_score) "
                      "VALUES ('done','C',1,'fep_done',-40,-5)")
     assert database.mark_primg_gbsa_atomtyping_failures(db,[1],'error')==0
     with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score,fep_score FROM compound').fetchone()==('fep_done',-40,-5)
+        assert conn.execute('SELECT state,prime_gbsa_score,fep_score FROM compound').fetchone()==('fep_done',-40,-5)
 
 
 def _reconcile_project(tmp_path, ids=(99,), job_id='old-job', launching=False):

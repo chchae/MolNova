@@ -4,8 +4,10 @@
 
 The user requested fresh projects and waived compatibility with prior work for
 this rename. The Prime stage is `primg_gbsa` (user-specified spelling), with
-`primg_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
+`prime_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
 `primg_gbsa`, CLI `molnova primg_gbsa`, and directory `08-primg_gbsa`.
+The score column was subsequently corrected to `prime_gbsa_score` at the
+user's request; stage identifiers retain their existing spelling.
 TOML uses `prime-gbsa-input-count`, `prime-gbsa-flexdist`,
 `prime-gbsa-license-retry-seconds`, and `prime-gbsa-license-retries`.
 Other renamed Prime keys are `primg-gbsa-elite-count`, `primg-gbsa-receptor`,
@@ -287,7 +289,8 @@ this pass's newly persisted results. Level 2 retains detailed recovery/pending
 messages, and errors/reconciliation diagnostics remain visible at every level.
 
 The same setting applies to standalone stages. Amber native logs display after download rather than during remote execution. Native logs are retained;
-suppressed helper output is saved in `molnova_commands.log`, with launch output
+suppressed helper output is saved in `molnova_commands.log` under `out-dir` for reference import,
+and under the corresponding stage directory for calculations and generation. Launch output is saved
 in `prime_launch.log` and `glide_launch.log` in their work directories.
 Failures and tracebacks remain visible at every level. Polling, JobId recovery
 and calculation eligibility are unchanged.
@@ -836,7 +839,7 @@ debug run; existing selections, results and submissions are preserved.
 
 Amber results go to `output/iterN/amber_gbsa/`; Prime keeps
 `output/iterN/primg_gbsa/`. SQLite migrates non-destructively to add
-`amber_gbsa_score`; `primg_gbsa_score` remains Prime's score. `amber_scores.tsv`,
+`amber_gbsa_score`; `prime_gbsa_score` remains Prime's score. `amber_scores.tsv`,
 `amber_top.tsv`, and `prime_candidates.tsv` link names such as `GEN_I07_000481`
 to calculation titles `CMPID_<id>`. Native logs and final score reports are
 retrieved locally; full topologies remain in the recorded remote run folder.

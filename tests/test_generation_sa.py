@@ -40,16 +40,16 @@ def test_legacy_generation_stores_real_sa_scores_without_aizynth(project, monkey
 def test_completed_generation_backfills_only_missing_scores(project, monkeypatch):
     with database.connect(project.db_path) as conn:
         conn.executemany(
-            "INSERT INTO compound(name,smiles,iteration,state,sa_score,docking_score,primg_gbsa_score,failed_stage,failure_message) "
+            "INSERT INTO compound(name,smiles,iteration,state,sa_score,docking_score,prime_gbsa_score,failed_stage,failure_message) "
             "VALUES (?, ?, 1, ?, ?, -8, -40, 'primg_gbsa', 'diagnostic')",
             [('a', 'CCO', 'primg_gbsa_done', 3.25), ('b', 'CC', 'failed', None)],
         )
         conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('ref','C',0,'reference')")
-        before = conn.execute('SELECT id,state,docking_score,primg_gbsa_score,failed_stage,failure_message FROM compound').fetchall()
+        before = conn.execute('SELECT id,state,docking_score,prime_gbsa_score,failed_stage,failure_message FROM compound').fetchall()
     monkeypatch.setattr(_core, 'run_libinvent_sampling', lambda **kw: pytest.fail('resampled'))
     generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT id,state,docking_score,primg_gbsa_score,failed_stage,failure_message FROM compound').fetchall() == before
+        assert conn.execute('SELECT id,state,docking_score,prime_gbsa_score,failed_stage,failure_message FROM compound').fetchall() == before
         assert conn.execute('SELECT sa_score FROM compound ORDER BY id').fetchall() == [
             (3.25,), (pytest.approx(calculate_sa_score('CC')),), (None,)]
     monkeypatch.setattr(generate, 'calculate_rdkit_descriptors_batch', lambda *a: pytest.fail('rescored'))

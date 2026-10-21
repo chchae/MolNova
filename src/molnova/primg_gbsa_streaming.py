@@ -49,10 +49,10 @@ def collect_completed_subjobs(args, iteration, directory, record, jobs):
         if not output.exists() and not _fetch_output(jsc, directory, record, child, output):
             print(f"Prime subjob {child['jobId']}: output not yet available; retrying on next poll.")
             continue
-        extractor = _core.create_primg_gbsa_score_extractor(folder)
+        extractor = _core.create_prime_gbsa_score_extractor(folder)
         scores = folder / 'scores.tsv'
         _core.run_command([args.schrodinger / 'run', extractor, output, scores], cwd=folder)
-        updated = _core.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=record['compound_ids'])
+        updated = _core.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=record['compound_ids'])
         # Commit succeeded. Repeating this import after a crash preserves scores.
         processed.add(child['jobId'])
         record['imported_subjobs'] = sorted(processed)

@@ -583,14 +583,14 @@ def test_reference_timeout_recovery_preserves_existing_prime_and_fep(project, mo
     record, native, snapshot = timeout_run(project, monkeypatch)
     with database.connect(project.db_path) as conn:
         conn.execute('UPDATE compound SET iteration=0,docking_score=NULL')
-        conn.execute('UPDATE compound SET primg_gbsa_score=-20,fep_score=-30 WHERE id=1')
+        conn.execute('UPDATE compound SET prime_gbsa_score=-20,fep_score=-30 WHERE id=1')
     project.reference_poses = project.output / 'iter1/glide/best_poses.maegz'
     record['iteration'] = 0
     record['source_fingerprints'] = amber.source_fingerprints(project, 0)
     amber.save(project.output / 'amber_job.json', record)
     assert amber.poll(project, 0, project.output, record)
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score,fep_score,failed_stage FROM compound WHERE id=1').fetchone() == (
+        assert conn.execute('SELECT state,prime_gbsa_score,fep_score,failed_stage FROM compound WHERE id=1').fetchone() == (
             'fep_done', -20, -30, 'amber_gbsa')
     assert database.amber_completion_reason(project.db_path, 0, 10000) is None
     assert database.claim_primg_gbsa_candidates(project.db_path, 0, 50, 10000, 500) == [2, 3, 4]

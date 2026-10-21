@@ -16,7 +16,7 @@ def _fep_args(tmp_path, fep_input_count=2):
         _core.ensure_schema_columns(conn)
         conn.executemany(
             """
-            INSERT INTO compound(name, smiles, iteration, primg_gbsa_score, state)
+            INSERT INTO compound(name, smiles, iteration, prime_gbsa_score, state)
             VALUES (?, ?, ?, ?, ?)
             """,
             [

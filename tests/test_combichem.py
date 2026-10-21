@@ -336,7 +336,7 @@ def test_concurrent_attachment_switches_install_only_one_round(adaptive_project)
 def test_generation_switches_after_tenth_empty_batch_and_restores_compound_origin(adaptive_project, monkeypatch):
     args = adaptive_project
     with database.connect(args.db_path) as conn:
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score) VALUES ('preserved','CCO',2,'primg_gbsa_done',-40)")
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES ('preserved','CCO',2,'primg_gbsa_done',-40)")
     original_filter = generate.filter_druglike
     calls = []
     def reject(rows):
@@ -359,7 +359,7 @@ def test_generation_switches_after_tenth_empty_batch_and_restores_compound_origi
     monkeypatch.setattr(combichem, 'refill_plan', original_refill)
     generate._run_combichem(args, 2, args.output / 'iter02/02-generate')
     with database.connect(args.db_path) as conn:
-        assert conn.execute("SELECT state,primg_gbsa_score FROM compound WHERE name='preserved'").fetchone() == ('primg_gbsa_done', -40)
+        assert conn.execute("SELECT state,prime_gbsa_score FROM compound WHERE name='preserved'").fetchone() == ('primg_gbsa_done', -40)
         cid, name, smiles = conn.execute("SELECT id,name,smiles FROM compound WHERE iteration=2 AND name<>'preserved'").fetchone()
     assert database.combichem_compound_scaffold(args.db_path, cid) == active['attachment_selection']
     # The origin survives archiving its producing round and is used for N+1.
@@ -715,7 +715,7 @@ def test_refill_cannot_install_new_round_after_target_is_met(project, monkeypatc
 def test_new_iteration_uses_only_immediately_preceding_elites_without_tl(project, monkeypatch):
     generate._run_stage(project, 1)
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,primg_gbsa_score=-id WHERE iteration=1")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,prime_gbsa_score=-id WHERE iteration=1")
     selected = database.iteration_primg_gbsa_elites(project.db_path, 1, 2)
     seen = []
     monkeypatch.setattr(generate, '_run_combichem', lambda args, iteration, directory: seen.append(iteration))
@@ -944,7 +944,7 @@ def test_single_elite_generation_preserves_completion_gate_and_skips_tl(project,
     assert not started
     assert database.iteration_scaffold(project.db_path, 2) is None
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,primg_gbsa_score=-id WHERE iteration=1")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',docking_score=-10,prime_gbsa_score=-id WHERE iteration=1")
     elite = database.iteration_primg_gbsa_elites(project.db_path, 1, 1)[0]
     generate._run_stage(project, 2)
     assert started == [2]

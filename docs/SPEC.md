@@ -4,8 +4,10 @@
 
 The user requested fresh projects and waived compatibility with prior work for
 this rename. The Prime stage is `primg_gbsa` (user-specified spelling), with
-`primg_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
+`prime_gbsa_score`, `primg_gbsa_running`, `primg_gbsa_done`, failure stage
 `primg_gbsa`, CLI `molnova primg_gbsa`, and directory `08-primg_gbsa`.
+The score column was subsequently corrected to `prime_gbsa_score` at the
+user's request; stage identifiers retain their existing spelling.
 TOML uses `prime-gbsa-input-count`, `prime-gbsa-flexdist`,
 `prime-gbsa-license-retry-seconds`, and `prime-gbsa-license-retries`.
 Other renamed Prime keys are `primg-gbsa-elite-count`, `primg-gbsa-receptor`,
@@ -168,7 +170,7 @@ Synthetic assessment requires `aizynth-config` when enabled. CPU overrides and `
 
 Connection settings: `journal_mode=WAL`, `busy_timeout=30000`, `foreign_keys=ON`.
 
-`compound`: `id INTEGER PRIMARY KEY AUTOINCREMENT`; unique non-null `name`; non-null `smiles`; integer `iteration` default 0; nullable real `dG_exp`, `docking_score`, `primg_gbsa_score`, `amber_gbsa_score`, `fep_score`, `sa_score`, `similarity`; nullable `synthetic_feasibility` restricted to 0/1; non-null `state`; nullable `failed_stage`, `failure_message`; nullable `similar_to` referencing `compound(id)`; creation/modification timestamps. Index iteration, state, and similar_to. The application ensures reference selection points to iteration 0.
+`compound`: `id INTEGER PRIMARY KEY AUTOINCREMENT`; unique non-null `name`; non-null `smiles`; integer `iteration` default 0; nullable real `dG_exp`, `docking_score`, `prime_gbsa_score`, `amber_gbsa_score`, `fep_score`, `sa_score`, `similarity`; nullable `synthetic_feasibility` restricted to 0/1; non-null `state`; nullable `failed_stage`, `failure_message`; nullable `similar_to` referencing `compound(id)`; creation/modification timestamps. Index iteration, state, and similar_to. The application ensures reference selection points to iteration 0.
 
 States: `reference`, `generated`, `sa_rejected`, `synthetic_running`, `ligprep_running`, `ligprepped`, `glide_running`, `docked`, `amber_running`, `primg_gbsa_running`, `primg_gbsa_done`, `fep_running`, `fep_done`, `failed`.
 
@@ -428,7 +430,7 @@ No production docking/GBSA or target-ranking validation follows from RDKit tests
 
 Import iteration-0 ligands from multi-structure MAEGZ via Schrödinger `utilities/structconvert` to SDF and RDKit canonical isomeric SMILES. Titles become names; empty titles use `REF_<four-digit index>`. Reject duplicate titles and zero usable references. Diagnose unreadable structures; the current receptor guard skips structures with >200 heavy atoms. Preserve experimental values and finite preexisting reference GBSA.
 
-Reference properties: docking `r_i_docking_score`/`docking_score`; experimental `r_csv_dG\_exp`/`r_csv_dG_exp`/`dG_exp`/`r_user_dG_exp`/`r_i_dG_exp` (first readable numeric value, in this order); GBSA `r_psp_MMGBSA_dG_Bind`/`r_psp_MMGBSA_dG_Bind(NS)`/`primg_gbsa_score`. Nonfinite reference GBSA is unscored. No experimental-unit conversion is specified.
+Reference properties: docking `r_i_docking_score`/`docking_score`; experimental `r_csv_dG\_exp`/`r_csv_dG_exp`/`dG_exp`/`r_user_dG_exp`/`r_i_dG_exp` (first readable numeric value, in this order); GBSA `r_psp_MMGBSA_dG_Bind`/`r_psp_MMGBSA_dG_Bind(NS)`/`prime_gbsa_score`. Nonfinite reference GBSA is unscored. No experimental-unit conversion is specified.
 
 Scaffold cases: infer MCS and attachments when no core supplied; add attachment sites to a supplied dummy-free core; accept a complete scaffold with `[*:0]` and `[*:1]` without adding dummy atoms again. Exclude incompatible references from pose candidates; no compatible reference is an error.
 
@@ -824,7 +826,7 @@ Before Prime launch save host/start time; checkpoint JobId from each output line
 
 ## 11. FEP and CLI — documented baseline
 
-FEP export selects lowest GBSA, ties by ID, top `fep-input-count`, writing `iterN/fep/fep_candidates.tsv` columns: `id`, `name`, `smiles`, `docking_score`, `primg_gbsa_score`, `fep_score`, `state`. Import TSV requires `id`, `fep_score`; reject out-of-candidate-set IDs, duplicates, and nonfinite values before updates. Valid imports set `fep_done`; current importer can update a selected candidate's existing FEP value. Export alone is the supervisor's completed final stage; no automated FEP calculation or wait is defined.
+FEP export selects lowest GBSA, ties by ID, top `fep-input-count`, writing `iterN/fep/fep_candidates.tsv` columns: `id`, `name`, `smiles`, `docking_score`, `prime_gbsa_score`, `fep_score`, `state`. Import TSV requires `id`, `fep_score`; reject out-of-candidate-set IDs, duplicates, and nonfinite values before updates. Valid imports set `fep_done`; current importer can update a selected candidate's existing FEP value. Export alone is the supervisor's completed final stage; no automated FEP calculation or wait is defined.
 
 Commands below assume cwd `examples/`, an installed package, and available configured calculators:
 
@@ -864,7 +866,7 @@ id	fep_score
 
 Output DB: `output/<project>.sqlite`. Iteration artifacts include `iter0/primg_gbsa/`, `iterN/reinvent/generated.csv`, sampling/TL TOML, `elite_selected.tsv`, `elite_train.smi`, `elite_valid.smi`, `TL_libinvent.model`, synthetic directory/results, LigPrep directory, Glide group files and `best_poses.maegz`, MM-GBSA queue/manifests, FEP candidate TSV, native logs, and SSH reproduction records. These are output contracts; score values depend on real calculations and are not supplied as fabricated expected results.
 
-`status` reports iteration/state counts; docking/GBSA/FEP counts and minima; synthetic assessed and solved counts. Supervisor prints startup configuration once, suppresses repeated initialization noise, and prints concise idle skip reasons. **Confirmed console verbosity change (2026-10-13):** flat TOML `log_level` defaults to 1 (`log-level` is an alias; conflicting values are rejected). Accept integers >=1, excluding bool. Level 1 shows stage/iteration summaries and total completion times; level 2 also shows worker invocation timing and stage-internal progress; level >=3 displays individual compound/reference-group docking, Prime and external-command output. Amber native per-compound logs display at level >=3 after artifact download; they are not a live remote stream. Failure summaries and tracebacks remain visible at every level. This applies to supervised and standalone stages; filtering never changes result persistence, JobId checkpointing, queue refill or scientific state. Retain native logs and save suppressed helper-command output in `molnova_commands.log`, Prime launch output in `prime_launch.log`, and Glide launch output in `glide_launch.log` in the corresponding work directory. Concise pose-merge logging is an observed uncommitted change, not a scientific constraint.
+`status` reports iteration/state counts; docking/GBSA/FEP counts and minima; synthetic assessed and solved counts. Supervisor prints startup configuration once, suppresses repeated initialization noise, and prints concise idle skip reasons. **Confirmed console verbosity change (2026-10-13):** flat TOML `log_level` defaults to 1 (`log-level` is an alias; conflicting values are rejected). Accept integers >=1, excluding bool. Level 1 shows stage/iteration summaries and total completion times; level 2 also shows worker invocation timing and stage-internal progress; level >=3 displays individual compound/reference-group docking, Prime and external-command output. Amber native per-compound logs display at level >=3 after artifact download; they are not a live remote stream. Failure summaries and tracebacks remain visible at every level. This applies to supervised and standalone stages; filtering never changes result persistence, JobId checkpointing, queue refill or scientific state. Retain native logs and save suppressed helper-command output in `molnova_commands.log` under the configured output directory (reference import) or the stage work directory (including generation); never use the project root for these logs. Save Prime launch output in `prime_launch.log`, and Glide launch output in `glide_launch.log` in the corresponding work directory. Concise pose-merge logging is an observed uncommitted change, not a scientific constraint.
 
 **Confirmed terse MM-GBSA polling (2026-10-16):** each normal level-1 compound
 queue pass prints one line containing iteration-wide `running` (PRIMG_GBSA_RUNNING
@@ -972,7 +974,7 @@ send its 50 lowest finite Amber scores to Prime MM-GBSA. `amber-keep-count`
 `prime-gbsa-input-count` sets the Prime count. This supersedes the former all-docked-pose
 Amber calculation and Amber-based top-500 reduction. Keep the current EGFR host
 on t41 and 124 parallel single-core calculations; omission defaults remain unchanged.
-Store `compound.amber_gbsa_score` separately from Prime `primg_gbsa_score`, and preserve
+Store `compound.amber_gbsa_score` separately from Prime `prime_gbsa_score`, and preserve
 all scientific results and saved jobs. Use the prepared receptor at
 `output/iter0/primg_gbsa/receptor.maegz`, each iteration's
 `iterN/glide/best_poses.maegz`, and `CMPID_<id>` calculation identity.

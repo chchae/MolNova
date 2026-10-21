@@ -41,11 +41,11 @@ def scores(project):
 
 def test_non_destructive_amber_migration(project):
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_running',primg_gbsa_score=-31 WHERE id=1")
+        conn.execute("UPDATE compound SET state='primg_gbsa_running',prime_gbsa_score=-31 WHERE id=1")
         conn.execute('ALTER TABLE compound DROP COLUMN amber_gbsa_score')
         _core.ensure_schema_columns(conn)
         _core.ensure_schema_columns(conn)
-        assert conn.execute('SELECT state,primg_gbsa_score,amber_gbsa_score FROM compound WHERE id=1').fetchone() == ('primg_gbsa_running',-31,None)
+        assert conn.execute('SELECT state,prime_gbsa_score,amber_gbsa_score FROM compound WHERE id=1').fetchone() == ('primg_gbsa_running',-31,None)
 
 
 def test_atomic_amber_claims_do_not_overlap(project):
@@ -69,7 +69,7 @@ def test_all_amber_work_precedes_prime_and_generation(project):
 def test_prime_uses_amber_order_keeps_scored_positions_and_ties(project):
     scores(project)
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-50,state='primg_gbsa_done' WHERE id=4")
+        conn.execute("UPDATE compound SET prime_gbsa_score=-50,state='primg_gbsa_done' WHERE id=4")
         conn.execute('UPDATE compound SET amber_gbsa_score=-30,docking_score=-3 WHERE id=2')
     assert database.primg_gbsa_candidates(project.db_path, 1, 2, 4, 3) == [2]
     assert [r[0] for r in database.prime_selection_rows(project.db_path,1,2,3)] == [4,2]
@@ -100,13 +100,13 @@ def test_invalid_batch_rolls_back_all_results(project, bad):
 
 def test_import_preserves_prime_fep_and_replays_idempotently(project):
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='fep_done',primg_gbsa_score=-40,fep_score=-9 WHERE id=1")
+        conn.execute("UPDATE compound SET state='fep_done',prime_gbsa_score=-40,fep_score=-9 WHERE id=1")
     ids=database.claim_amber_candidates(project.db_path,1,4)
     results=[{'id':1,'score':-25},{'id':2,'error':'parameterization failed'}]
     assert database.store_amber_results(project.db_path,1,results,ids) == 1
     assert database.store_amber_results(project.db_path,1,results,ids) == 0
     with database.connect(project.db_path) as conn:
-        assert conn.execute('SELECT state,amber_gbsa_score,primg_gbsa_score,fep_score FROM compound WHERE id=1').fetchone() == ('fep_done',-25,-40,-9)
+        assert conn.execute('SELECT state,amber_gbsa_score,prime_gbsa_score,fep_score FROM compound WHERE id=1').fetchone() == ('fep_done',-25,-40,-9)
         assert conn.execute('SELECT state,failed_stage,failure_message FROM compound WHERE id=2').fetchone() == ('failed','amber_gbsa','parameterization failed')
 
 
@@ -120,7 +120,7 @@ def test_amber_failures_are_terminal_but_cannot_rank(project):
 
 def test_orphan_claim_recovery_restores_scored_state(project):
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-40,state='primg_gbsa_done' WHERE id=1")
+        conn.execute("UPDATE compound SET prime_gbsa_score=-40,state='primg_gbsa_done' WHERE id=1")
     database.claim_amber_candidates(project.db_path,1,4)
     database.reset_unsubmitted_amber(project.db_path,1)
     with database.connect(project.db_path) as conn:
@@ -157,7 +157,7 @@ def test_driver_recovers_saved_amber_even_with_complete_scores(project):
     make_record(project)
     database.store_amber_results(project.db_path,1,[{'id':i,'score':-i} for i in range(1,5)],range(1,5))
     with database.connect(project.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40")
     assert driver.choose_iteration(project) == 1
 
 
@@ -288,7 +288,7 @@ os._exit(0)
 def references(project):
     with database.connect(project.db_path) as conn:
         conn.execute("UPDATE compound SET iteration=0,state='reference',docking_score=NULL")
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40 WHERE id=4")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40 WHERE id=4")
     project.reference_poses = project.output / 'references.maegz'
     project.reference_poses.write_bytes(b'reference poses')
     return project
@@ -305,7 +305,7 @@ def test_reference_amber_precedes_prime_without_counts_or_docking(references):
         [{'id':i,'score':-i} for i in (2,3,4)], range(1,5))
     assert database.amber_completion_reason(args.db_path, 0, 1000) is None
     with database.connect(args.db_path) as conn:
-        assert conn.execute('SELECT state,primg_gbsa_score FROM compound ORDER BY id').fetchall() == [
+        assert conn.execute('SELECT state,prime_gbsa_score FROM compound ORDER BY id').fetchall() == [
             ('reference',None), ('reference',None), ('reference',None), ('primg_gbsa_done',-40)]
     assert database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000, 1) == [1,2,3]
 
@@ -328,7 +328,7 @@ def test_reference_orphan_claims_and_terminal_failures(references):
 def test_reference_driver_selects_missing_amber_and_recovers_prime_first(references):
     args = references
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-40,state='primg_gbsa_done'")
+        conn.execute("UPDATE compound SET prime_gbsa_score=-40,state='primg_gbsa_done'")
     assert driver.choose_iteration(args) == 0
     assert [s for s,_ in driver.reference_stages(args)] == ['amber-gbsa','primg_gbsa']
     directory = args.output / 'iter0/primg_gbsa'

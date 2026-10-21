@@ -186,4 +186,4 @@ def test_obsolete_queue_reconciles_interrupted_child_without_submitting(tmp_path
         assert primg_gbsa_async.load_job(root) == record
         assert not list(tmp_path.glob('primg_gbsa.stale-*'))
     with database.connect(db) as conn:
-        assert conn.execute('SELECT state,docking_score,primg_gbsa_score FROM compound').fetchone() == ('docked', -9, None)
+        assert conn.execute('SELECT state,docking_score,prime_gbsa_score FROM compound').fetchone() == ('docked', -9, None)

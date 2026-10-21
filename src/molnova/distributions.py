@@ -23,7 +23,7 @@ from molnova.config import distribution_project
 METRICS = {
     'rdk_mw': 'Molecular weight', 'rdk_clogp': 'cLogP', 'rdk_tpsa': 'TPSA',
     'rdk_qed': 'QED', 'rdk_sa_score': 'SA', 'docking_score': 'Glide',
-    'amber_gbsa_score': 'Amber GBSA', 'primg_gbsa_score': 'primg_gbsa', 'fep_score': 'FEP',
+    'amber_gbsa_score': 'Amber GBSA', 'prime_gbsa_score': 'primg_gbsa', 'fep_score': 'FEP',
 }
 MAP_LIMIT = 2000
 DIVERSITY_LIMIT = 200
@@ -215,13 +215,13 @@ def build_report(rows, scaffolds, directory, through, elite_count=10):
         if low == high:
             low, high = low - .5, high + .5
         bounds[metric] = [low, high]
-    elites = {iteration: sorted((row for row in group if finite(row['primg_gbsa_score'])),
-                               key=lambda row: (row['primg_gbsa_score'], row['id']))[:elite_count]
+    elites = {iteration: sorted((row for row in group if finite(row['prime_gbsa_score'])),
+                               key=lambda row: (row['prime_gbsa_score'], row['id']))[:elite_count]
               for iteration, group in groups.items()}
     summaries = []
     for iteration, group in sorted(groups.items()):
         cohorts = {'all': group, 'selected': [row for row in group if row['druglike_selected'] == 1],
-                   'primg_gbsa_scored': [row for row in group if finite(row['primg_gbsa_score'])]}
+                   'prime_gbsa_scored': [row for row in group if finite(row['prime_gbsa_score'])]}
         summaries.append({'iteration': iteration, 'n': len(group),
             'states': dict(Counter(row['state'] for row in group)),
             'selection_unknown': sum(row['druglike_selected'] is None for row in group),

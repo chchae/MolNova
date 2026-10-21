@@ -145,6 +145,16 @@ def test_helper_command_output_and_failures(tmp_path, verbosity, capfd, level):
     assert 'failed calculation' in capfd.readouterr().out
 
 
+def test_helper_log_directory_does_not_change_command_working_directory(tmp_path, monkeypatch, verbosity):
+    from molnova import _core
+    verbosity(1)
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / 'output'
+    _core.run_command([sys.executable, '-c', 'import os; print(os.getcwd())'], log_dir=output)
+    assert not (tmp_path / 'molnova_commands.log').exists()
+    assert str(tmp_path) in (output / 'molnova_commands.log').read_text()
+
+
 @pytest.mark.parametrize('level', [1, 2, 3])
 def test_amber_download_preserves_artifacts_and_filters_console(tmp_path, monkeypatch, verbosity, capsys, level):
     import io

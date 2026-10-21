@@ -144,7 +144,7 @@ def _run_stage(args, requested_iteration):
         missing = [
             row[0] for row in conn.execute(
                 f"SELECT id FROM compound WHERE id IN ({','.join('?' for _ in pending)}) "
-                "AND primg_gbsa_score IS NULL AND state=?",
+                "AND prime_gbsa_score IS NULL AND state=?",
                 [*pending, State.PRIMG_GBSA_RUNNING],
             )
         ] if pending else []

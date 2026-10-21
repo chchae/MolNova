@@ -14,7 +14,7 @@ def population(tmp_path):
     with database.connect(db) as conn:
         _core.create_sqlite_schema(conn)
         _core.ensure_schema_columns(conn)
-        conn.executemany('INSERT INTO compound(id,name,smiles,iteration,state,rdk_mw,docking_score,primg_gbsa_score) '
+        conn.executemany('INSERT INTO compound(id,name,smiles,iteration,state,rdk_mw,docking_score,prime_gbsa_score) '
                          'VALUES (?,?,?,?,?,?,?,?)', [
             (1, 'reference', 'CC', 0, 'reference', 30., None, -10.),
             (2, 'first', 'COc1ccc(Cl)cc1', 1, 'primg_gbsa_done', 142., -8., -25.),
@@ -44,7 +44,7 @@ def test_report_is_cumulative_read_only_and_preserves_missing_values(population)
     current = result['iterations'][1]
     assert current['n'] == 4 and current['selection_unknown'] == 1
     assert current['cohorts']['selected']['n'] == 2
-    assert current['cohorts']['primg_gbsa_scored']['n'] == 1
+    assert current['cohorts']['prime_gbsa_scored']['n'] == 1
     stats = current['cohorts']['all']['metrics']['docking_score']
     assert stats['n'] == 2 and stats['missing'] == 2
     assert stats['median'] == -7.5 and sum(stats['hist']) == 2
@@ -80,19 +80,19 @@ def test_repeated_unchanged_snapshot_does_not_duplicate_log(population):
     read_report(population)
     assert path.read_bytes() == previous
     with database.connect(population.db_path) as conn:
-        conn.execute('UPDATE compound SET primg_gbsa_score=-20 WHERE id=3')
+        conn.execute('UPDATE compound SET prime_gbsa_score=-20 WHERE id=3')
     result = read_report(population)
-    assert result['iterations'][1]['cohorts']['primg_gbsa_scored']['n'] == 2
+    assert result['iterations'][1]['cohorts']['prime_gbsa_scored']['n'] == 2
     assert path.read_bytes().startswith(previous) and path.read_bytes() != previous
 
 
 def test_nonfinite_scores_are_missing_not_serialized_as_nan(population):
     with database.connect(population.db_path) as conn:
-        conn.execute('UPDATE compound SET primg_gbsa_score=?,docking_score=? WHERE id=3', (float('inf'), float('-inf')))
+        conn.execute('UPDATE compound SET prime_gbsa_score=?,docking_score=? WHERE id=3', (float('inf'), float('-inf')))
     result = read_report(population)
     stats = result['iterations'][1]['cohorts']['all']['metrics']['docking_score']
     assert stats['n'] == 1 and stats['missing'] == 3
-    assert result['iterations'][1]['cohorts']['primg_gbsa_scored']['n'] == 1
+    assert result['iterations'][1]['cohorts']['prime_gbsa_scored']['n'] == 1
 
 
 def test_invalid_smiles_and_empty_or_reference_only_populations(population):
@@ -116,7 +116,7 @@ def test_report_failure_retains_published_html_and_log(population, monkeypatch):
     root = population.output / 'analysis'
     before = {name: (root / name).read_bytes() for name in ('index.html', 'summary.json', 'distribution.log')}
     with database.connect(population.db_path) as conn:
-        conn.execute('UPDATE compound SET primg_gbsa_score=-26 WHERE id=2')
+        conn.execute('UPDATE compound SET prime_gbsa_score=-26 WHERE id=2')
     def fail(*args):
         raise OSError('cannot render')
     monkeypatch.setattr(reports, 'build_report', fail)
@@ -140,7 +140,7 @@ def test_sampling_is_balanced_bounded_and_independent_of_scores():
     assert sum(row['id'] < 100 for row in chosen) == 10
     for group in groups.values():
         for row in group:
-            row['primg_gbsa_score'] = -row['id']
+            row['prime_gbsa_score'] = -row['id']
     assert reports.balanced_sample(groups, 20) == chosen
     assert reports.diversity([{'id': 1, 'smiles': 'CC'}], [])['internal_diversity'] is None
 
@@ -174,7 +174,7 @@ def test_old_read_only_schema_has_nullable_diagnostic_columns(tmp_path):
         conn.execute('CREATE TABLE compound(id INTEGER,name TEXT,smiles TEXT,iteration INTEGER,state TEXT)')
         conn.execute("INSERT INTO compound VALUES (1,'old','C',1,'generated')")
     rows, scaffolds = database.distribution_snapshot(path)
-    assert rows[0]['primg_gbsa_score'] is None and rows[0]['rdk_mw'] is None
+    assert rows[0]['prime_gbsa_score'] is None and rows[0]['rdk_mw'] is None
     assert scaffolds == {}
     with sqlite3.connect(path) as conn:
         assert len(conn.execute('PRAGMA table_info(compound)').fetchall()) == 5

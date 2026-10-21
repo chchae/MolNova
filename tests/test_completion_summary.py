@@ -13,7 +13,7 @@ def project(tmp_path):
     with database.connect(args.db_path) as conn:
         _core.create_sqlite_schema(conn)
         conn.executemany(
-            'INSERT INTO compound(id,name,smiles,iteration,state,failed_stage,docking_score,amber_gbsa_score,primg_gbsa_score) '
+            'INSERT INTO compound(id,name,smiles,iteration,state,failed_stage,docking_score,amber_gbsa_score,prime_gbsa_score) '
             "VALUES (?,?,'CC',1,?,?,?,?,?)",
             [(1,'one','primg_gbsa_done',None,-10,-20,-30),
              (2,'two','failed','glide',None,None,None),

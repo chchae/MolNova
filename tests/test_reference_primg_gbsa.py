@@ -15,7 +15,7 @@ def project(tmp_path):
     with sqlite3.connect(db) as conn:
         c.create_sqlite_schema(conn)
         conn.executemany(
-            "INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score) VALUES (?,'C',0,'reference',?)",
+            "INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES (?,'C',0,'reference',?)",
             [('existing', -40), ('missing', None), ('missing2', None)],
         )
     return SimpleNamespace(db_path=db, output=tmp_path, primg_gbsa_input_count=1,
@@ -32,12 +32,12 @@ def test_references_ignore_docking_count_and_target_and_preserve_existing_scores
     assert database.claim_primg_gbsa_candidates(args.db_path, 0, 1, 1000) == []
     assert 'running for 2' in database.stage_completion_reason(args.db_path, 0, 'primg_gbsa', 1000, 1)
     scores = tmp_path / 'scores.tsv'
-    scores.write_text('id\tprimg_gbsa_score\n1\t-99\n2\t-35\n3\t-30\n')
-    assert c.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=[1, 2, 3]) == 2
+    scores.write_text('id\tprime_gbsa_score\n1\t-99\n2\t-35\n3\t-30\n')
+    assert c.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=[1, 2, 3]) == 2
     assert database.reference_primg_gbsa_completion_reason(args.db_path) is None
     assert len(c.get_reference_compounds(args.db_path)) == 3
     with sqlite3.connect(args.db_path) as conn:
-        assert conn.execute('SELECT primg_gbsa_score FROM compound ORDER BY id').fetchall() == [(-40,), (-35,), (-30,)]
+        assert conn.execute('SELECT prime_gbsa_score FROM compound ORDER BY id').fetchall() == [(-40,), (-35,), (-30,)]
 
 
 @pytest.mark.parametrize('requested', [None, 0])
@@ -49,8 +49,8 @@ def test_worker_handles_zero_explicitly_and_only_calculates_missing_references(t
         assert kw['iteration'] == 0 and kw['compound_ids'] == [2, 3]
         assert kw['iteration_dir'] == tmp_path / 'iter00'
         scores = tmp_path / 'scores.tsv'
-        scores.write_text('id\tprimg_gbsa_score\n2\t-35\n3\t-30\n')
-        return c.update_primg_gbsa_scores(scores, args.db_path, allowed_ids=kw['compound_ids'])
+        scores.write_text('id\tprime_gbsa_score\n2\t-35\n3\t-30\n')
+        return c.update_prime_gbsa_scores(scores, args.db_path, allowed_ids=kw['compound_ids'])
     monkeypatch.setattr(c, 'run_iteration_primg_gbsa', calculate)
     primg_gbsa._run_stage(args, requested)
     assert len(calls) == 1
@@ -155,7 +155,7 @@ def test_initial_reference_import_stores_experimental_activity(tmp_path, monkeyp
         ).fetchall() == [(0, expected, -4.0, 'reference')]
 
 
-def test_new_reference_import_retains_input_primg_gbsa_score(tmp_path, monkeypatch):
+def test_new_reference_import_retains_input_prime_gbsa_score(tmp_path, monkeypatch):
     from rdkit import Chem
     suite = tmp_path / 'suite'
     (suite / 'utilities').mkdir(parents=True)
@@ -168,7 +168,7 @@ def test_new_reference_import_retains_input_primg_gbsa_score(tmp_path, monkeypat
     monkeypatch.setattr(Chem, 'SDMolSupplier', lambda *a, **kw: [known, missing])
     c.import_reference_poses_to_sqlite(tmp_path / 'db.sqlite', tmp_path / 'poses.maegz', suite)
     with sqlite3.connect(tmp_path / 'db.sqlite') as conn:
-        assert conn.execute('SELECT name,primg_gbsa_score FROM compound ORDER BY id').fetchall() == [('known', -42), ('missing', None)]
+        assert conn.execute('SELECT name,prime_gbsa_score FROM compound ORDER BY id').fetchall() == [('known', -42), ('missing', None)]
         columns = ','.join(database.RDK_DESCRIPTOR_TYPES)
         rows = conn.execute(f'SELECT {columns},sa_score,state FROM compound ORDER BY id').fetchall()
         assert len(rows) == 2
@@ -190,7 +190,7 @@ def test_driver_reference_stage_runs_without_generation(tmp_path, monkeypatch, r
         if iteration == 0:
             assert stages == [('primg_gbsa', 'molnova.stages.primg_gbsa')]
             with database.connect(args.db_path) as conn:
-                conn.execute("UPDATE compound SET primg_gbsa_score=-30 WHERE iteration=0 AND primg_gbsa_score IS NULL")
+                conn.execute("UPDATE compound SET prime_gbsa_score=-30 WHERE iteration=0 AND prime_gbsa_score IS NULL")
         return True
     monkeypatch.setattr(driver, 'supervise_iteration', supervise)
     driver.main([str(tmp_path / 'ref.toml'), '--iteration', str(requested)])

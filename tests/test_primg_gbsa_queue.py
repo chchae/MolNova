@@ -44,8 +44,8 @@ def fixture(tmp_path, monkeypatch, count=10, flexdist=0.0):
     def finish(iteration, args, folder, compound_ids):
         cid = compound_ids[0]
         score = folder / 'scores.tsv'
-        score.write_text(f'id\tprimg_gbsa_score\n{cid}\t-35\n')
-        updated = c.update_primg_gbsa_scores(score, args.db_path, allowed_ids=compound_ids)
+        score.write_text(f'id\tprime_gbsa_score\n{cid}\t-35\n')
+        updated = c.update_prime_gbsa_scores(score, args.db_path, allowed_ids=compound_ids)
         (folder / 'primg_gbsa_top.tsv').write_text('elites')
         (folder / 'primg_gbsa_input-out.maegz').write_text(f'receptor\nCMPID_{cid}\n')
         return updated
@@ -319,7 +319,7 @@ def test_obsolete_unsubmitted_queue_is_archived_for_fresh_calculation(tmp_path, 
 def test_committed_score_without_child_record_is_not_calculated_again(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=1)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-41,state='primg_gbsa_done'")
+        conn.execute("UPDATE compound SET prime_gbsa_score=-41,state='primg_gbsa_done'")
     (q._folder(root, record, 1) / 'primg_gbsa_input-out.maegz').write_text('receptor\nCMPID_1\n')
     assert q.poll_queue(1, args, root, record) == 0
     assert not launches
@@ -418,7 +418,7 @@ def test_missing_completed_coordinates_keep_queue_recoverable(tmp_path, monkeypa
     record['entries']['1'] = 'done'
     prime._save(root, record)
     with sqlite3.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET primg_gbsa_score=-35,state='primg_gbsa_done'")
+        conn.execute("UPDATE compound SET prime_gbsa_score=-35,state='primg_gbsa_done'")
     with pytest.raises(RuntimeError, match='final primg_gbsa coordinates are missing'):
         q.poll_queue(1, args, root, prime.load_job(root))
     assert prime.load_job(root) is not None
@@ -512,7 +512,7 @@ def test_supervised_queue_poll_has_one_terse_line_with_all_progress_counts(tmp_p
 def test_progress_counts_exclude_nonfinite_scores_and_other_iterations(tmp_path, monkeypatch):
     args, root, record, launches, completed = fixture(tmp_path, monkeypatch, count=3)
     with database.connect(args.db_path) as conn:
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=-40 WHERE id=1")
-        conn.execute("UPDATE compound SET state='primg_gbsa_done',primg_gbsa_score=? WHERE id=2", (float('inf'),))
-        conn.execute("INSERT INTO compound(name,smiles,iteration,state,primg_gbsa_score) VALUES ('other','C',2,'primg_gbsa_done',-50)")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=-40 WHERE id=1")
+        conn.execute("UPDATE compound SET state='primg_gbsa_done',prime_gbsa_score=? WHERE id=2", (float('inf'),))
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state,prime_gbsa_score) VALUES ('other','C',2,'primg_gbsa_done',-50)")
     assert database.primg_gbsa_progress_counts(args.db_path, 1) == (1, 1)

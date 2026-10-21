@@ -33,9 +33,9 @@ def _status(project_toml):
         scores = conn.execute(
             """
             SELECT iteration,
-                   COUNT(docking_score), COUNT(primg_gbsa_score), COUNT(fep_score), COUNT(amber_gbsa_score),
+                   COUNT(docking_score), COUNT(prime_gbsa_score), COUNT(fep_score), COUNT(amber_gbsa_score),
                    COUNT(synthetic_feasibility), SUM(synthetic_feasibility),
-                   MIN(docking_score), MIN(primg_gbsa_score), MIN(fep_score), MIN(amber_gbsa_score)
+                   MIN(docking_score), MIN(prime_gbsa_score), MIN(fep_score), MIN(amber_gbsa_score)
             FROM compound
             GROUP BY iteration
             ORDER BY iteration

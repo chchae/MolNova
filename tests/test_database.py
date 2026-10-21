@@ -15,7 +15,7 @@ def test_database_location_migration_preserves_wal_results_and_original(tmp_path
         _core.create_sqlite_schema(conn)
         _core.ensure_schema_columns(conn)
         conn.execute(
-            "INSERT INTO compound(name,smiles,iteration,state,docking_score,primg_gbsa_score,"
+            "INSERT INTO compound(name,smiles,iteration,state,docking_score,prime_gbsa_score,"
             "sa_score,synthetic_feasibility,failed_stage,failure_message) "
             "VALUES ('CMP','CC',1,'primg_gbsa_done',-8,-40,2.5,1,NULL,NULL)"
         )
@@ -58,7 +58,7 @@ def test_schema_contains_scores_and_state(tmp_path):
         cols = {row[1] for row in conn.execute("PRAGMA table_info(compound)")}
     assert {
         "docking_score",
-        "primg_gbsa_score",
+        "prime_gbsa_score",
         "fep_score",
         "sa_score",
         "synthetic_feasibility",
@@ -66,6 +66,7 @@ def test_schema_contains_scores_and_state(tmp_path):
     } <= cols
     assert 'amber_gbsa_score' in cols
     assert 'gbsa_score' not in cols
+    assert 'primg_gbsa_score' not in cols
 
 
 @pytest.mark.parametrize("state", ["failed", "primg_gbsa_running"])
@@ -127,7 +128,7 @@ def test_legacy_state_is_inferred_once(tmp_path):
                 smiles TEXT NOT NULL,
                 iteration INTEGER NOT NULL,
                 docking_score REAL,
-                primg_gbsa_score REAL,
+                prime_gbsa_score REAL,
                 fep_score REAL,
                 docking_status TEXT,
                 ligprep_status TEXT
