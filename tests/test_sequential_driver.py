@@ -287,9 +287,10 @@ def test_driver_reports_total_time_only_after_verified_completion(tmp_path, monk
         assert finished is None
 
 
+@pytest.mark.parametrize('iteration', [0, 3])
 @pytest.mark.parametrize('initial_stages', ['prime-fep', 'prime', 'fep'])
-def test_enabling_md_at_runtime_supervises_it_before_fep_or_exit(tmp_path, monkeypatch, initial_stages):
-    args = project(tmp_path, state=State.PRIME_GBSA_DONE)
+def test_enabling_md_at_runtime_supervises_it_before_fep_or_exit(tmp_path, monkeypatch, initial_stages, iteration):
+    args = project(tmp_path, state=State.PRIME_GBSA_DONE, iteration=iteration)
     args.md_gbsa_enabled = False
     config = tmp_path/'project.toml'
     config.write_text('md-gbsa = '+('true' if initial_stages=='fep' else 'false')+'\n')
@@ -307,16 +308,16 @@ def test_enabling_md_at_runtime_supervises_it_before_fep_or_exit(tmp_path, monke
         if stage=='prime_gbsa':
             config.write_text('md-gbsa = true\n')
         elif stage=='md-gbsa' and calls.count('md-gbsa')==2:
-            database.freeze_md_gbsa_selection(args.db_path,3,
+            database.freeze_md_gbsa_selection(args.db_path,iteration,
                 dict(protocol=dict(snapshots=20),replicates=1),count=1,target_count=1,prime_count=1)
-            database.store_md_gbsa_result(args.db_path,3,1,dict(id=1,mean=-40.,std=0.,
+            database.store_md_gbsa_result(args.db_path,iteration,1,dict(id=1,mean=-40.,std=0.,
                 snapshots=[dict(frame=i,score=-40.) for i in range(20)]))
         elif stage=='fep':
-            assert database.md_gbsa_completion_reason(args.db_path,3) is None
+            assert database.md_gbsa_completion_reason(args.db_path,iteration) is None
         return 0
     monkeypatch.setattr(driver,'stream_process',process)
     monkeypatch.setattr(guard,'active_jobs',lambda suite:[])
-    assert driver.supervise_iteration(args,config,3,stages,30,Stop())
+    assert driver.supervise_iteration(args,config,iteration,stages,30,Stop())
     assert calls==(['prime_gbsa'] if initial_stages.startswith('prime') else [])+['md-gbsa','md-gbsa']+(['fep'] if 'fep' in initial_stages else [])
 
 

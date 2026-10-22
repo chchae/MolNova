@@ -254,3 +254,48 @@ def test_deleted_compounds_do_not_release_durable_remote_md_work(db,tmp_path):
     with pytest.raises(RuntimeError,match='durable MD work'):
         database.reset_deleted_iteration(db,1,tmp_path/'backup.sqlite')
     assert database.md_gbsa_selection(db,1)['ids']==[1,2]
+
+
+@pytest.mark.parametrize('state', [State.REFERENCE, State.PRIME_GBSA_DONE])
+def test_reference_md_is_scheduled_recovered_and_preserves_prime_scores(db, state):
+    with database.connect(db) as conn:
+        conn.execute('UPDATE compound SET iteration=0,state=?,docking_score=NULL', (state,))
+    args=SimpleNamespace(db_path=db,output=db.parent,target_count=10000,
+                         prime_gbsa_input_count=100,max_iteration=3,md_gbsa_enabled=True)
+    assert driver.choose_iteration(args)==0
+    assert [s for s,_ in driver.reference_stages(args)]==['prime_gbsa','md-gbsa']
+    saved=database.freeze_md_gbsa_selection(db,0,
+        dict(protocol=dict(snapshots=20),replicates=1),target_count=10000,prime_count=100)
+    assert saved['ids']==[1,2]
+    args.md_gbsa_enabled=False
+    assert driver.choose_iteration(args)==0
+    assert [s for s,_ in driver.reference_stages(args)]==['prime_gbsa','md-gbsa']
+    for cid in saved['ids']:
+        database.store_md_gbsa_result(db,0,cid,result(cid,-80))
+    assert database.md_gbsa_completion_reason(db,0) is None
+    assert driver.choose_iteration(args)==1
+    with database.connect(db) as conn:
+        assert conn.execute('SELECT prime_gbsa_score FROM compound ORDER BY id').fetchall()==[
+            (-60,),(-59,),(-58,),(-57,)]
+        assert conn.execute('SELECT name FROM compound ORDER BY id').fetchall()==[
+            ('cmp0',),('cmp1',),('cmp2',),('cmp3',)]
+
+
+def test_reference_md_waits_for_every_prime_result_before_freezing(db):
+    with database.connect(db) as conn:
+        conn.execute('UPDATE compound SET iteration=0,docking_score=NULL')
+        conn.execute('UPDATE compound SET state=?,prime_gbsa_score=NULL WHERE id=4', (State.REFERENCE,))
+    with pytest.raises(RuntimeError,match='all reference Prime results'):
+        database.freeze_md_gbsa_selection(db,0,{},count=1)
+    assert database.md_gbsa_selection(db,0) is None
+    with database.connect(db) as conn:
+        conn.execute('UPDATE compound SET state=?,failed_stage=? WHERE id=4', (State.FAILED,'prime_gbsa'))
+    assert database.freeze_md_gbsa_selection(db,0,{},count=1)['ids']==[1]
+
+
+def test_completed_references_skip_md_when_disabled(db):
+    with database.connect(db) as conn:
+        conn.execute('UPDATE compound SET iteration=0')
+    args=SimpleNamespace(db_path=db,output=db.parent,max_iteration=3,md_gbsa_enabled=False)
+    assert driver.choose_iteration(args)==1
+    assert [s for s,_ in driver.reference_stages(args)]==['prime_gbsa']

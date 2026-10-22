@@ -1636,6 +1636,9 @@ def freeze_md_gbsa_selection(path, iteration, settings, *, count=None, ratio=.5,
         saved = conn.execute('SELECT candidates,settings FROM iteration_md_gbsa_selection WHERE iteration=?', (iteration,)).fetchone()
         if saved:
             return dict(ids=json.loads(saved[0]), settings=json.loads(saved[1]))
+        if iteration == 0 and any(state != State.FAILED and score is None
+                                  for _, state, _, score in _iteration_rows(conn, 0)):
+            raise RuntimeError('MD-GBSA waiting for all reference Prime results')
         if iteration > 0:
             reason = _docking_completion_reason(_iteration_rows(conn, iteration), target_count)
             if reason:
@@ -1655,7 +1658,10 @@ def freeze_md_gbsa_selection(path, iteration, settings, *, count=None, ratio=.5,
             raise RuntimeError('MD-GBSA waiting for active upstream claims')
         rows = conn.execute('SELECT id,prime_gbsa_score,state FROM compound WHERE iteration=? '
                             'AND prime_gbsa_score IS NOT NULL ORDER BY prime_gbsa_score,id', (iteration,)).fetchall()
-        rows = [r for r in rows if math.isfinite(r[1]) and r[2] in (State.PRIME_GBSA_DONE, State.FEP_DONE, State.MD_GBSA_DONE)]
+        completed_states = (State.PRIME_GBSA_DONE, State.FEP_DONE, State.MD_GBSA_DONE)
+        if iteration == 0:
+            completed_states += (State.REFERENCE,)
+        rows = [r for r in rows if math.isfinite(r[1]) and r[2] in completed_states]
         if not rows:
             raise RuntimeError('MD-GBSA requires finite completed Prime results')
         ids = [r[0] for r in rows[:count if count is not None else max(1, math.ceil(len(rows)*ratio))]]

@@ -3,10 +3,21 @@
 ## Optional Desmond / Prime MD-GBSA (2026-10-21)
 
 **Confirmed user requirements, implemented:** strict boolean TOML `md-gbsa`
-(default `false`) enables `prime_gbsa -> md-gbsa -> FEP` for generated iterations.
+(default `false`) enables `prime_gbsa -> md-gbsa -> FEP` for generated iterations
+and `prime_gbsa -> md-gbsa` for iteration-0 reference compounds.
 Without this flag, legacy scheduling/ranking remains unchanged. Saved MD work is
 recovered even if the flag is subsequently disabled; an existing frozen MD
 policy continues to govern that iteration's downstream selection.
+
+**Iteration-0 scheduling repair (2026-10-22, user-requested):** references also
+run optional MD after all reference Prime calculations retire. Apply the same
+finite-Prime ranking and input ratio/count (default best half), using final
+optimized Prime complexes. References with imported finite Prime scores are
+eligible. No generation, LigPrep, Glide or FEP is added to iteration 0. The
+supervisor completes pending reference MD before advancing to generated work;
+saved selections recover even with the flag disabled. Preserve all scores,
+reference identities, native jobs and frozen protocols. Existing drivers must
+restart to load this repair; no running process or job is reset automatically.
 
 After the final Prime candidate set and all saved upstream jobs retire, freeze
 finite completed Prime results in ascending score/ID order: the best half

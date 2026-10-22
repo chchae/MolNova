@@ -142,6 +142,11 @@ def reference_work_pending(args):
     if (database.reference_prime_gbsa_completion_reason(args.db_path) is not None
             or (stage_directory(args.output, 0, 'prime_gbsa') / 'prime_gbsa_job.json').exists()):
         return True
+    saved_md = database.md_gbsa_selection(args.db_path, 0)
+    if (saved_md is not None or (getattr(args, 'md_gbsa_enabled', False)
+                                and database.md_gbsa_rows(args.db_path, 0))):
+        if database.md_gbsa_completion_reason(args.db_path, 0) is not None:
+            return True
     if getattr(args, 'amber_gbsa_enabled', False):
         from molnova.amber_gbsa import load_job
         return (database.amber_completion_reason(args.db_path, 0, args.target_count) is not None
@@ -157,6 +162,9 @@ def reference_stages(args):
         if (load_job(stage_directory(args.output, 0, 'prime_gbsa')) is not None
                 or database.has_running_prime_gbsa(args.db_path, 0)):
             stages.insert(0, ('prime_gbsa-recovery', 'molnova.stages.prime_gbsa'))
+    if (getattr(args, 'md_gbsa_enabled', False)
+            or database.md_gbsa_selection(args.db_path, 0) is not None):
+        stages.append(('md-gbsa', 'molnova.stages.md_gbsa'))
     return stages
 
 
@@ -257,7 +265,7 @@ def refresh_distribution_report(args, project_toml, iteration, event, stop):
 
 def md_stage_required(args, project_toml, iteration):
     """Read opt-in at stage boundaries; saved ownership always requires recovery."""
-    if iteration <= 0:
+    if iteration < 0:
         return False
     if Path(project_toml).is_file():
         import tomllib
