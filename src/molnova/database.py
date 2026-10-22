@@ -310,6 +310,12 @@ def amber_keep_count(args):
     return getattr(args, 'amber_keep_count', 500) if getattr(args, 'amber_gbsa_enabled', False) else None
 
 
+def generation_completion_reason(args, iteration, elite_count):
+    options = {} if getattr(args, 'prime_gbsa_enabled', True) else {'prime_enabled': False}
+    return iteration_completion_reason(args.db_path, iteration, args.target_count,
+                                       args.prime_gbsa_input_count, elite_count, amber_keep_count(args), **options)
+
+
 def _amber_rows(conn, iteration, keep_count=None):
     rows = conn.execute(
         'SELECT id,name,state,docking_score,amber_gbsa_score,prime_gbsa_score,fep_score,failed_stage '
@@ -519,7 +525,8 @@ def claim_prime_gbsa_candidates(path, iteration, count, target_count, amber_keep
         return ids
 
 
-def iteration_completion_reason(path, iteration, target_count, input_count, elite_count, amber_keep_count=None):
+def iteration_completion_reason(path, iteration, target_count, input_count, elite_count, amber_keep_count=None,
+                                *, prime_enabled=True):
     """Return a blocking reason until docking and all selected GBSA work finish.
 
     Terminal failures count as processed, but cannot supply an elite. Docked
@@ -545,6 +552,11 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
     running = sum(state == State.PRIME_GBSA_RUNNING for _, state, _, _ in rows)
     if running:
         return f"prime_gbsa still running for {running} compounds"
+    if not prime_enabled:
+        if any(state == State.MD_GBSA_RUNNING for _, state, _, _ in rows):
+            return 'Existing MD-GBSA claims still running'
+        valid = sum(score is not None and math.isfinite(score) for _, _, score, _ in rows)
+        return f'only {valid}/{elite_count} finite Glide scores for elite selection' if valid < elite_count else None
     pending = sum(
         (state != State.FAILED or cid in amber_failed) and (score is None or not math.isfinite(score))
         for cid, state, _, score in docked[:input_count]
@@ -568,6 +580,16 @@ def iteration_prime_gbsa_elites(path, iteration, count):
             (iteration,),
         ).fetchall()
     return [row for row in rows if math.isfinite(row[5])][:count]
+
+
+def iteration_docking_elites(path, iteration, count):
+    """Final finite Glide scores only; preserve the six-field elite interface."""
+    with connect(path) as conn:
+        rows = conn.execute(
+            'SELECT id,name,smiles,iteration,docking_score,docking_score FROM compound '
+            'WHERE iteration=? AND docking_score IS NOT NULL ORDER BY docking_score,id',
+            (iteration,)).fetchall()
+    return [row for row in rows if math.isfinite(row[4])][:count]
 
 
 def iteration_scaffold(path, iteration, snapshot=None):
@@ -1321,6 +1343,10 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
         return md_gbsa_completion_reason(path, iteration)
     if stage == 'prime_gbsa-recovery':
         return 'Existing Prime claims still running' if has_running_prime_gbsa(path, iteration) else None
+    if stage == 'amber-gbsa-recovery':
+        with connect(path) as conn:
+            return ('Existing Amber claims still running' if any(
+                state == State.AMBER_RUNNING for _, state, _, _ in _iteration_rows(conn, iteration)) else None)
     if stage == 'amber-gbsa':
         return amber_completion_reason(path, iteration, target_count,
                                        amber_keep_count if amber_keep_count is not None else 500)
@@ -1516,7 +1542,7 @@ def fep_selection_pending(path, iteration, count):
 
 
 def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
-                   amber_keep_count=None, for_import=False):
+                   amber_keep_count=None, for_import=False, docking_only=False):
     """Freeze one score source and candidate list; never compare unlike energies."""
     import json
     if iteration <= 0:
@@ -1536,7 +1562,7 @@ def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
                             'FROM compound WHERE iteration=? ORDER BY id', (iteration,)).fetchall()
         if saved:
             source, selected = saved[0], json.loads(saved[1])
-            if md is not None and source != 'md' and not for_import:
+            if md is not None and source != 'md' and not for_import and not docking_only:
                 raise RuntimeError('Existing frozen FEP selection predates MD; explicit reconciliation required')
         else:
             if for_import and _uses_raw_generation(conn, iteration):
@@ -1560,12 +1586,14 @@ def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
                     raise RuntimeError('FEP waiting for unfinished Prime candidates')
             selected, source = [], 'docking'
             sources = [('prime', 5)] if for_import else [('prime', 5), ('amber', 4), ('docking', 3)]
-            if md is not None:
+            if docking_only and not for_import:
+                sources = [('docking', 3)]
+            elif md is not None:
                 source = 'md'
                 sources = [('md',8)]
             for name, column in sources:
                 eligible = [row for row in rows if row[column] is not None and math.isfinite(row[column])
-                            and (md is None or row[0] in md['ids'])]
+                            and (md is None or docking_only or row[0] in md['ids'])]
                 if eligible:
                     eligible.sort(key=lambda row: (row[column], row[0]))
                     source = name

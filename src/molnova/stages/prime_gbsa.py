@@ -53,6 +53,12 @@ def _run_stage(args, requested_iteration):
         return
 
     directory = stage_directory(args.output, iteration, 'prime_gbsa')
+    enabled = getattr(args, 'prime_gbsa_enabled', True)
+    if not enabled and load_job(directory) is None:
+        if database.has_running_prime_gbsa(args.db_path, iteration):
+            raise RuntimeError('Prime disabled but running claims have no saved submission; reconcile before advancing')
+        print('Prime GBSA disabled; no saved submission to recover.')
+        return
     target_count = getattr(args, "target_count", 1)
     reason = database.docking_completion_reason(args.db_path, iteration, target_count) if iteration > 0 else None
     if reason is not None:
@@ -63,9 +69,10 @@ def _run_stage(args, requested_iteration):
     except PrimeReconciliationPending as exc:
         print(str(exc))
         return
-    database.reset_unsubmitted_prime_gbsa(
-        args.db_path, iteration, active["compound_ids"] if active else (),
-    )
+    if enabled:
+        database.reset_unsubmitted_prime_gbsa(
+            args.db_path, iteration, active["compound_ids"] if active else (),
+        )
     if active is not None:
         # Recover the exact saved submission, including jobs from the former
         # streaming policy. Never overwrite an external job or erase its scores.
@@ -75,6 +82,9 @@ def _run_stage(args, requested_iteration):
             claimed_state=State.PRIME_GBSA_RUNNING,
         )
     else:
+        if not enabled:
+            print('Prime GBSA disabled; saved submission retired; no new candidates claimed.')
+            return
         # Disabling future Amber screening must not bypass saved/live work.
         from molnova.amber_gbsa import load_job as load_amber
         if (load_amber(stage_directory(args.output, iteration, 'amber_gbsa')) is not None

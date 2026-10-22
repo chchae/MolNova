@@ -12,6 +12,14 @@ from rdkit import Chem, rdBase
 from molnova import _core, database
 
 
+class NonSingleAttachmentBoundaryError(RuntimeError):
+    """An inferred core would require replacing a non-single bond."""
+
+    def __init__(self, mcs_smarts):
+        super().__init__('Combichem inferred attachment boundary is not a single bond')
+        self.mcs_smarts = mcs_smarts
+
+
 def attachment_atoms(mol):
     """Return terminal single-bond dummy indices in stable atom order."""
     if mol is None or len(Chem.GetMolFrags(mol)) != 1:
@@ -54,7 +62,7 @@ def prepare_scaffold(inputs, supplied, *, mcs_timeout=60):
             if any(bond.GetBondType() != Chem.BondType.SINGLE
                    for index in match for bond in mol.GetAtomWithIdx(index).GetBonds()
                    if (bond.GetBeginAtomIdx() in core) != (bond.GetEndAtomIdx() in core)):
-                raise RuntimeError('Combichem inferred attachment boundary is not a single bond')
+                raise NonSingleAttachmentBoundaryError(smarts)
         scaffold_smiles = _core.build_libinvent_scaffold(matched, smarts, sites, require_two=False)
     attachment_atoms(Chem.MolFromSmiles(scaffold_smiles))
     return {'mcs_smarts': smarts, 'scaffold_smiles': scaffold_smiles}
@@ -183,6 +191,64 @@ def prepare_single_elite_scaffold(elite, previous, docking_smarts, *, selected_c
                 source='single_elite_sidechain_replacement', source_ids=[elite['id']],
                 replacement_cuts=cuts, replacement_elite_smiles=smiles,
                 replacement_candidates=candidate_groups)
+
+
+def prepare_ranked_elite_scaffold(ranked_inputs, previous, docking_smarts, *,
+                                  mcs_timeout=60, single_previous=None):
+    """Halve a score-ranked prefix until its MCS safely extends the saved core."""
+    if not ranked_inputs or previous is None:
+        raise RuntimeError('Adaptive combichem requires ranked elites and the preceding scaffold')
+    old_scaffold = Chem.MolFromSmiles(previous['scaffold_smiles'])
+    attachment_atoms(old_scaffold)
+    old_core = _retained_core_query(old_scaffold)
+    docking = Chem.MolFromSmarts(docking_smarts)
+    if docking is None or not docking.GetNumHeavyAtoms() or not old_scaffold.HasSubstructMatch(docking):
+        raise RuntimeError('Preceding combichem scaffold does not retain the fixed docking core')
+    attempts = []
+    count = len(ranked_inputs)
+    while count > 1:
+        selected = ranked_inputs[:count]
+        attempt = dict(elite_count=count, source_ids=[ref['id'] for ref in selected])
+        try:
+            info = prepare_scaffold(selected, None, mcs_timeout=mcs_timeout)
+        except (NonSingleAttachmentBoundaryError, _core.InsufficientAttachmentSitesError) as error:
+            attempt.update(status=('non_single_attachment_boundary' if isinstance(
+                error, NonSingleAttachmentBoundaryError) else 'insufficient_attachment_sites'),
+                mcs_smarts=error.mcs_smarts)
+        else:
+            scaffold = Chem.MolFromSmiles(info['scaffold_smiles'])
+            # Compare chemical graphs, independent of dummy labels, SMARTS atom
+            # ordering and RDKit ring-query spelling. No bonds are converted.
+            core = _retained_core_query(scaffold)
+            attempt.update(mcs_smarts=info['mcs_smarts'], core_heavy_atoms=core.GetNumHeavyAtoms())
+            if core.GetNumHeavyAtoms() <= old_core.GetNumHeavyAtoms():
+                attempt['status'] = 'core_not_larger'
+            elif not core.HasSubstructMatch(old_core, useChirality=False):
+                attempt['status'] = 'previous_core_not_retained'
+            elif not scaffold.HasSubstructMatch(docking, useChirality=False):
+                attempt['status'] = 'docking_core_not_retained'
+            elif any(_core.decompose_elite_for_libinvent(
+                    Chem.MolToSmiles(ref['mol'], isomericSmiles=True), info['scaffold_smiles']) is None
+                    for ref in selected):
+                attempt['status'] = 'elite_decomposition_failed'
+            else:
+                attempt['status'] = 'expanded_core'
+                attempts.append(attempt)
+                result = dict(info, source='previous_iteration_elites' if count == len(ranked_inputs)
+                              else 'ranked_elite_subset_mcs', source_ids=attempt['source_ids'])
+                break
+        attempts.append(attempt)
+        count = max(1, count // 2)
+    else:
+        # A one-molecule MCS has no variable boundary. Preserve the existing
+        # terminal-sidechain replacement protocol and its durable cut choices.
+        result = prepare_single_elite_scaffold(ranked_inputs[0], single_previous or previous, docking_smarts)
+        attempts.append(dict(elite_count=1, source_ids=[ranked_inputs[0]['id']],
+                             status='single_elite_replacement'))
+    result.update(elite_mcs_policy='ranked_halving_v1', elite_mcs_attempts=attempts,
+                  ranked_elite_ids=[ref['id'] for ref in ranked_inputs],
+                  previous_core_heavy_atoms=old_core.GetNumHeavyAtoms())
+    return result
 
 
 def load_library(path, report, max_heavy_atoms=None):

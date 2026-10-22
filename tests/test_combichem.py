@@ -722,20 +722,24 @@ def test_new_iteration_uses_only_immediately_preceding_elites_without_tl(project
     generate._run_stage(project, 2)
     snapshot = database.iteration_scaffold(project.db_path, 2)
     assert seen == [2]
-    assert snapshot['source_ids'] == [row[0] for row in selected]
+    assert snapshot['ranked_elite_ids'] == [row[0] for row in selected]
+    assert snapshot['source_ids'] == snapshot['ranked_elite_ids'][:len(snapshot['source_ids'])]
     assert snapshot['generation_method'] == 'combichem'
     assert snapshot['docking_mcs_smarts'] == 'c1ccccc1'
 
 
-def test_zero_attachment_combichem_core_reuses_previous_scaffold(project):
+def test_zero_attachment_combichem_core_reduces_to_single_elite(project):
     prepare_iteration_scaffold(project, 1, create=True)
     elites = [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40),
               (101, 'B', 'CCc1ccc(CC)cc1', 1, -9, -30)]
     prepare_iteration_scaffold(project, 2, elites, create=True)
     snapshot = database.iteration_scaffold(project.db_path, 2)
-    assert snapshot['source'] == 'previous_iteration_scaffold_fallback'
+    assert snapshot['source'] == 'single_elite_sidechain_replacement'
     assert snapshot['generation_method'] == 'combichem'
-    assert snapshot['fallback_from_iteration'] == 1
+    assert snapshot['replacement_from_iteration'] == 1
+    assert snapshot['source_ids'] == [100]
+    assert [a['elite_count'] for a in snapshot['elite_mcs_attempts']] == [2, 1]
+    assert snapshot['elite_mcs_attempts'][0]['status'] == 'insufficient_attachment_sites'
 
 
 @pytest.mark.parametrize('smiles', ['CCc1ccc(CC)cc1', 'C[C@H](F)c1ccc(CC)cc1',
@@ -1064,3 +1068,81 @@ def test_symmetric_attachment_uses_valid_decomposition_and_same_replacement_matc
 ])
 def test_alternative_scaffold_matches_do_not_relax_decomposition_constraints(smiles, scaffold):
     assert _core.decompose_elite_for_libinvent(smiles, scaffold) is None
+
+
+def test_automatic_non_single_boundary_reduces_subset_and_resumes_saved_choice(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    previous = database.iteration_scaffold(project.db_path, 1)
+    project.elite_mcs_smarts = None
+    attempted = 'Cc1ccc(C)cc1'
+    monkeypatch.setattr(_core, 'infer_mcs_smarts_from_iteration0', lambda *a, **kw: attempted)
+    elites = [(100, 'ketone', 'CC(=O)c1ccc(CC)cc1', 1, -10, -40),
+              (101, 'alkyl', 'CCCc1ccc(CN)cc1', 1, -9, -30)]
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    assert saved['elite_mcs_attempts'][0]['status'] == 'non_single_attachment_boundary'
+    assert saved['elite_mcs_attempts'][0]['mcs_smarts'] == attempted
+    assert saved['replacement_from_iteration'] == 1
+    assert saved['source_ids'] == [100]
+    assert saved['ranked_elite_ids'] == [100, 101]
+    assert _core.decompose_elite_for_libinvent(elites[0][2], saved['scaffold_smiles']) is not None
+    assert saved['docking_mcs_smarts'] == 'c1ccccc1'
+    monkeypatch.setattr(_core, 'infer_mcs_smarts_from_iteration0',
+                        lambda *a, **kw: pytest.fail('Recomputed a saved scaffold'))
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) == saved
+
+
+def test_supplied_non_single_boundary_is_not_replaced(project):
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.elite_mcs_smarts = 'Cc1ccc(C)cc1'
+    elites = [(100, 'ketone', 'CC(=O)c1ccc(CC)cc1', 1, -10, -40),
+              (101, 'alkyl', 'CCCc1ccc(CN)cc1', 1, -9, -30)]
+    with pytest.raises(combichem.NonSingleAttachmentBoundaryError):
+        prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) is None
+
+
+def test_single_elite_fallback_rejects_incompatible_highest_ranked_elite(project, monkeypatch):
+    prepare_iteration_scaffold(project, 1, create=True)
+    project.elite_mcs_smarts = None
+    monkeypatch.setattr(_core, 'infer_mcs_smarts_from_iteration0', lambda *a, **kw: 'Cc1ccccc1')
+    elites = [(100, 'meta', 'CC(=O)c1cccc(CC)c1', 1, -10, -40),
+              (101, 'para', 'CC(=O)c1ccc(CC)cc1', 1, -9, -30)]
+    with pytest.raises(RuntimeError, match='incompatible with the preceding scaffold'):
+        prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) is None
+
+
+def test_glide_only_generation_advances_without_any_gbsa_results(project,monkeypatch):
+    prepare_iteration_scaffold(project,1,create=True)
+    project.prime_gbsa_enabled=False
+    project.schrodinger=Path('/suite')
+    monkeypatch.setattr(driver,'external_completion_reason',lambda *a:None)
+    with database.connect(project.db_path) as conn:
+        conn.executemany('INSERT INTO compound(name,smiles,iteration,state,docking_score) '
+                         'VALUES (?,?,1,?,?)',
+                         [('a','CCc1ccc(OC)cc1','docked',-10),
+                          ('b','CCCc1ccc(N(C)C)cc1','docked',-9),
+                          ('c','CCc1ccc(CC)cc1','docked',-8),
+                          ('d','CCc1ccc(CC)cc1','failed',None)])
+        expected=[r[0] for r in conn.execute('SELECT id FROM compound WHERE iteration=1 ORDER BY docking_score IS NULL,docking_score,id LIMIT 2')]
+    generate._run_stage(project,2)
+    saved=database.iteration_scaffold(project.db_path,2)
+    assert saved['ranked_elite_ids']==expected
+    assert saved['source_ids']==expected[:len(saved['source_ids'])]
+    assert saved['elite_score_source']=='glide'
+    assert database.iteration_compound_count(project.db_path,2)==4
+    with database.connect(project.db_path) as conn:
+        assert not conn.execute('SELECT 1 FROM compound WHERE prime_gbsa_score IS NOT NULL OR md_gbsa_score IS NOT NULL').fetchone()
+
+
+def test_combichem_halving_uses_score_order_and_keeps_configured_elite_count(project):
+    prepare_iteration_scaffold(project,1,create=True)
+    ranked=[(101,'worse','CCc1ccc(CC)cc1',1,-9,-30),
+            (100,'best','CCc1ccc(CC)cc1',1,-10,-40)]
+    prepare_iteration_scaffold(project,2,ranked,create=True)
+    saved=database.iteration_scaffold(project.db_path,2)
+    assert saved['ranked_elite_ids']==[100,101]
+    assert saved['source_ids']==[100]
+    assert project.prime_gbsa_elite_count==2

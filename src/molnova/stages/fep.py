@@ -22,8 +22,10 @@ def export_candidates(args, iteration):
     rows = database.fep_candidates(
         args.db_path, iteration, args.fep_input_count,
         target_count=getattr(args, 'target_count', 1),
-        prime_count=getattr(args, 'prime_gbsa_input_count', None),
-        amber_keep_count=database.amber_keep_count(args))
+        prime_count=(getattr(args, 'prime_gbsa_input_count', None)
+                     if getattr(args, 'prime_gbsa_enabled', True) else None),
+        amber_keep_count=database.amber_keep_count(args),
+        docking_only=not getattr(args, 'prime_gbsa_enabled', True))
     outdir = stage_directory(args.output, iteration, 'fep')
     outdir.mkdir(parents=True, exist_ok=True)
     outfile = outdir / 'fep_candidates.tsv'

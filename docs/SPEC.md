@@ -1,5 +1,89 @@
 # MolNova specification
 
+## Combichem ranked-elite MCS reduction (2026-10-23)
+
+**Confirmed user request, superseding the earlier automatic combichem fallback:**
+for each new automatic combichem iteration N>1, sort the selected N-1 elites by
+its active score, then ID. Infer the MCS of all elites first. If it does not
+safely extend the preceding generation core, repeat on the highest-ranked floor
+half, stopping at one: e.g. `10 -> 5 -> 2 -> 1`, or `7 -> 3 -> 1`.
+
+A multi-elite candidate must have strictly more retained heavy atoms and contain
+the previous retained core. Compare chemical graphs after removing attachment
+dummies, independent of atom maps, serialization order and SMARTS ring-query
+spelling. Require valid terminal single-bond attachments, the fixed docking core,
+and successful decomposition of every elite in that candidate subset. A valid
+extension is accepted immediately; otherwise halve again. Non-single boundaries
+and zero attachments reject that attempt; timeout/invalid MCS errors still stop
+rather than silently using an incomplete search.
+
+At one elite, use the existing terminal-sidechain replacement protocol rather
+than a whole-molecule MCS. Preserve actual per-compound scaffold provenance for
+this parent and the existing saved-cut/empty-batch recovery. Missing/incompatible
+history still stops. This does not guarantee MW or ROT increases every cycle.
+
+The configured elite count is unchanged; only the MCS input prefix shrinks.
+Persist the complete ranked ID list, actual subset IDs, each attempt's count,
+SMARTS and outcome, `elite_mcs_policy=ranked_halving_v1`, and the accepted scaffold
+in the immutable iteration snapshot. Log the reduction on creation/resume.
+Explicitly supplied/fixed saved cores, iteration 1, mol2mol/LibInvent behavior,
+prior restarts, docking protocols, scores/results/jobs and all previously saved
+iteration scaffolds remain unchanged. Apply this policy only to new snapshots.
+
+## Optional Prime and Glide elite mode (2026-10-23)
+
+**Confirmed user request:** support strict boolean `amber-gbsa = false` and
+`prime-gbsa = false`, and select elites using Glide when Prime is disabled.
+Prime defaults to true. `amber-gbsa` aliases `amber_gbsa` and the legacy
+`amber-gbsa-enabled`; conflicting aliases are errors. `md-gbsa=true` requires
+Prime enabled for new MD work; the current combichem project disables MD too.
+
+With Prime off, finish the full generation/druglike/LigPrep/Glide population,
+retire saved upstream submissions and require enough finite docking scores.
+Select exactly the preceding iteration's lowest finite Glide scores, breaking
+ties by compound ID. Continue to use `prime-gbsa-elite-count` for the elite count
+(default 10); it is not a requirement to calculate Prime. New generation snapshots
+record `elite_score_source=glide`; saved snapshots retain their selection source.
+LibInvent still starts TL from the original prior, validates decomposition and
+vocabulary, and exports a distinct `glide_score` column. Never write docking
+scores into Prime/MD score columns. Terminal downstream GBSA failures do not
+invalidate a retained finite final docking score in this explicitly chosen mode.
+The docking constraint and constrained SP pose selection remain unchanged.
+
+The driver omits disabled new Amber/Prime work, including unscored reference
+calculations, but recovers existing Amber manifests, Prime submissions/claims,
+and frozen MD work before advancing. Disabling a flag never cancels native jobs
+or deletes results. Uncertain/orphan claims remain blocked for reconciliation;
+no automatic reset. New FEP exports use docking scores in Glide mode, with no
+unfinished-Prime requirement; existing frozen FEP selections/imports are retained.
+Restart an existing driver once after changing Amber/Prime switches; MD's existing
+runtime opt-in handling remains supported. This mode explicitly supersedes the
+GBSA-required generation baseline when `prime-gbsa=false`; default GBSA behavior
+remains unchanged. Glide ranking alone is not validated as an affinity estimate.
+
+```toml
+amber-gbsa = false
+prime-gbsa = false
+md-gbsa = false
+prime-gbsa-elite-count = 10
+```
+
+## Automatic combichem boundary recovery (2026-10-23)
+
+**Implementation repair for the reported blocked run:** an automatically inferred
+MCS can end at a carbonyl carbon, placing a C=O double bond across the generation
+boundary. Never convert that bond to a single bond or discard the offending
+elite. For a new automatic combichem iteration N>1 only, reuse exactly N-1's
+saved scaffold through the existing validation: valid terminal single-bond
+attachments, containment of its generation core and the fixed docking core,
+and successful decomposition of every selected elite. Missing/incompatible
+history still stops. Explicitly supplied cores and iteration 1 still reject
+non-single boundaries. Record `fallback_reason=non_single_attachment_boundary`,
+attempted MCS, preceding iteration and current elite IDs in the immutable snapshot;
+log the fallback on creation/resume. Existing snapshots, results, jobs and
+scientific bond orders remain unchanged. This execution repair does not establish
+that the resulting scaffold improves target affinity.
+
 ## Optional Desmond / Prime MD-GBSA (2026-10-21)
 
 **Confirmed user requirements, implemented:** strict boolean TOML `md-gbsa`
@@ -24,6 +108,11 @@ finite completed Prime results in ascending score/ID order: the best half
 (rounded up), or `md-gbsa-input-count` when supplied. Freeze ownership, protocol,
 remote paths, source/helper hashes and candidate IDs in one SQLite transaction.
 Do not refill failures or change this selection when TOML/ranking changes.
+**EGFR configuration update (2026-10-22, user-requested):** both active EGFR
+project TOMLs explicitly set `md-gbsa-input-count = 20`, overriding the 50%
+ratio. Select the best 20 finite eligible Prime results (all if fewer than 20).
+This applies to new selections, including iteration 0; frozen selections and
+submitted work remain unchanged.
 Use the published final optimized per-ligand Prime receptor/ligand pair, preserving
 `CMPID_<id>` and original atom IDs, bonds, ligand identity and ions/metals/cofactors.
 Unsupported parameters or identity changes fail that compound; no silent removal.
@@ -122,7 +211,7 @@ md-gbsa-equilibration-ns = 1.0
 md-gbsa-snapshots = 20
 md-gbsa-analysis-start-fraction = 0.2
 md-gbsa-input-ratio = 0.5
-# md-gbsa-input-count = 10  # overrides ratio
+md-gbsa-input-count = 20  # overrides ratio
 md-gbsa-replicates = 1
 md-gbsa-seed = 20261021
 md-gbsa-gpus = 20

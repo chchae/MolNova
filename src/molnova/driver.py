@@ -31,13 +31,16 @@ CALCULATION_LABELS = {
 }
 
 
-def build_stages(synthetic_feasibility_enabled, fep_enabled, amber_gbsa_enabled=False, md_gbsa_enabled=False):
+def build_stages(synthetic_feasibility_enabled, fep_enabled, amber_gbsa_enabled=False, md_gbsa_enabled=False,
+                 prime_gbsa_enabled=True):
     stages = [BASE_STAGES[0], ('druglike', 'molnova.stages.druglike')]
     if synthetic_feasibility_enabled:
         stages.append(("synthetic", "molnova.stages.synthetic_feasibility"))
     stages.extend(BASE_STAGES[1:])
     if amber_gbsa_enabled:
         stages.insert(stages.index(BASE_STAGES[-1]), ('amber-gbsa', 'molnova.stages.amber_gbsa'))
+    if not prime_gbsa_enabled:
+        stages.remove(BASE_STAGES[-1])
     if md_gbsa_enabled:
         stages.append(("md-gbsa", "molnova.stages.md_gbsa"))
     if fep_enabled:
@@ -139,7 +142,10 @@ class StopFlag:
 
 
 def reference_work_pending(args):
-    if (database.reference_prime_gbsa_completion_reason(args.db_path) is not None
+    if ((getattr(args, 'prime_gbsa_enabled', True)
+         and database.reference_prime_gbsa_completion_reason(args.db_path) is not None)
+            or (not getattr(args, 'prime_gbsa_enabled', True)
+                and database.has_running_prime_gbsa(args.db_path, 0))
             or (stage_directory(args.output, 0, 'prime_gbsa') / 'prime_gbsa_job.json').exists()):
         return True
     saved_md = database.md_gbsa_selection(args.db_path, 0)
@@ -147,23 +153,38 @@ def reference_work_pending(args):
                                 and database.md_gbsa_rows(args.db_path, 0))):
         if database.md_gbsa_completion_reason(args.db_path, 0) is not None:
             return True
+    from molnova.amber_gbsa import load_job
+    if load_job(stage_directory(args.output, 0, 'amber_gbsa')) is not None:
+        return True
     if getattr(args, 'amber_gbsa_enabled', False):
-        from molnova.amber_gbsa import load_job
         return (database.amber_completion_reason(args.db_path, 0, args.target_count) is not None
                 or load_job(stage_directory(args.output, 0, 'amber_gbsa')) is not None)
     return False
 
 
 def reference_stages(args):
-    stages = [('prime_gbsa', 'molnova.stages.prime_gbsa')]
-    if getattr(args, 'amber_gbsa_enabled', False):
+    return iteration_stages(args, 0)
+
+
+def iteration_stages(args, iteration):
+    prime = getattr(args, 'prime_gbsa_enabled', True)
+    amber = getattr(args, 'amber_gbsa_enabled', False)
+    md = (getattr(args, 'md_gbsa_enabled', False)
+          or database.md_gbsa_selection(args.db_path, iteration) is not None)
+    stages = ([('prime_gbsa', 'molnova.stages.prime_gbsa')] if prime else []) if iteration == 0 else build_stages(
+        args.synthetic_feasibility_enabled, args.fep_enabled, amber, md, prime)
+    from molnova.prime_gbsa_async import load_job as load_prime
+    from molnova.amber_gbsa import load_job as load_amber
+    saved_amber = load_amber(stage_directory(args.output, iteration, 'amber_gbsa')) is not None
+    if iteration == 0 and amber:
         stages.insert(0, ('amber-gbsa', 'molnova.stages.amber_gbsa'))
-        from molnova.prime_gbsa_async import load_job
-        if (load_job(stage_directory(args.output, 0, 'prime_gbsa')) is not None
-                or database.has_running_prime_gbsa(args.db_path, 0)):
-            stages.insert(0, ('prime_gbsa-recovery', 'molnova.stages.prime_gbsa'))
-    if (getattr(args, 'md_gbsa_enabled', False)
-            or database.md_gbsa_selection(args.db_path, 0) is not None):
+    if saved_amber and not amber:
+        stages.insert(0, ('amber-gbsa-recovery', 'molnova.stages.amber_gbsa'))
+    if ((amber or not prime or saved_amber)
+            and (load_prime(stage_directory(args.output, iteration, 'prime_gbsa')) is not None
+                 or database.has_running_prime_gbsa(args.db_path, iteration))):
+        stages.insert(0, ('prime_gbsa-recovery', 'molnova.stages.prime_gbsa'))
+    if iteration == 0 and md:
         stages.append(('md-gbsa', 'molnova.stages.md_gbsa'))
     return stages
 
@@ -187,9 +208,14 @@ def choose_iteration(args, requested=None):
         from molnova.amber_gbsa import load_job
         if load_job(stage_directory(args.output, iteration, 'amber_gbsa')) is not None:
             return iteration
-        if database.iteration_completion_reason(
-            args.db_path, iteration, args.target_count, args.prime_gbsa_input_count, 0, database.amber_keep_count(args)
-        ) is not None:
+        from molnova.prime_gbsa_async import load_job as load_prime
+        if (not getattr(args, 'prime_gbsa_enabled', True)
+                and load_prime(stage_directory(args.output, iteration, 'prime_gbsa')) is not None):
+            return iteration
+        if database.generation_completion_reason(args, iteration, 0) is not None:
+            return iteration
+        if (not getattr(args, 'prime_gbsa_enabled', True) and getattr(args, 'schrodinger', None) is not None
+                and external_completion_reason(args, iteration, 'glide') is not None):
             return iteration
     latest = max(iterations, default=0)
     if latest and getattr(args,'md_gbsa_enabled',False) and database.md_gbsa_selection(args.db_path,latest) is None:
@@ -200,8 +226,11 @@ def choose_iteration(args, requested=None):
 
 def external_completion_reason(args, iteration, stage):
     """Do not advance past live or uncertain native work, even with stale scores."""
+    recovering_prime = stage == 'prime_gbsa-recovery'
     if stage == 'prime_gbsa-recovery':
         stage = 'prime_gbsa'
+    if stage == 'amber-gbsa-recovery':
+        stage = 'amber-gbsa'
     if stage == 'amber-gbsa':
         from molnova.amber_gbsa import load_job
         if load_job(stage_directory(args.output, iteration, 'amber_gbsa')) is not None:
@@ -216,7 +245,7 @@ def external_completion_reason(args, iteration, stage):
 
     directory = iteration_directory(args.output, iteration)
     try:
-        if stage == 'prime_gbsa' and load_amber(stage_in_iteration(directory, 'amber_gbsa')) is not None:
+        if stage == 'prime_gbsa' and not recovering_prime and load_amber(stage_in_iteration(directory, 'amber_gbsa')) is not None:
             return 'Amber remote submission still requires recovery'
         if stage == "ligprep" and load_ligprep(stage_in_iteration(directory, 'ligprep')) is not None:
             return "LigPrep submission still requires recovery"
@@ -325,7 +354,10 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                     # Recovery alone does not finish the final Prime candidate set.
                     print(f"[driver  ] iteration {iteration}: {stage} complete "
                           f"({time.monotonic() - started:.1f} s including recovery/polling).", flush=True)
-                report_stage = 'fep' if getattr(args, 'fep_enabled', False) else ('md-gbsa' if getattr(args,'md_gbsa_enabled',False) else 'prime_gbsa')
+                report_stage = ('fep' if getattr(args, 'fep_enabled', False) else
+                                'md-gbsa' if getattr(args, 'md_gbsa_enabled', False) else
+                                'prime_gbsa' if getattr(args, 'prime_gbsa_enabled', True) else
+                                'amber-gbsa' if getattr(args, 'amber_gbsa_enabled', False) else 'glide')
                 if iteration > 0 and stage == report_stage:
                     refresh_distribution_report(args, project_toml, iteration, f'{stage}-complete', stop)
                 break
@@ -399,16 +431,7 @@ def main(argv=None):
         if iteration is None:
             print("[driver  ] All configured iterations are complete.")
             return
-        stages = (reference_stages(args) if iteration == 0 else
-                  build_stages(args.synthetic_feasibility_enabled, args.fep_enabled,
-                               getattr(args, 'amber_gbsa_enabled', False),
-                               getattr(args, 'md_gbsa_enabled', False) or
-                               database.md_gbsa_selection(args.db_path,iteration) is not None))
-        if iteration > 0 and getattr(args, 'amber_gbsa_enabled', False):
-            from molnova.prime_gbsa_async import load_job
-            if (load_job(stage_directory(args.output, iteration, 'prime_gbsa')) is not None
-                    or database.has_running_prime_gbsa(args.db_path, iteration)):
-                stages.insert(0, ('prime_gbsa-recovery', 'molnova.stages.prime_gbsa'))
+        stages = iteration_stages(args, iteration)
         print("=" * 70)
         print("SEQUENTIAL SINGLE-ITERATION DRIVER")
         print(f"Project        : {args.project}")

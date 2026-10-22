@@ -90,6 +90,7 @@ prime-gbsa-license-retries = 3
 
 
 md-gbsa = true
+md-gbsa-input-count = 20  # Prime 점수 상위 20개; 비율 설정보다 우선
 md-gbsa-snapshots = 20
 md-gbsa-production-ns = 5.0
 md-gbsa-schrodinger = "/share/opt/schrodinger/2026-1"

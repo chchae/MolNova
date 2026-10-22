@@ -166,6 +166,13 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
             source = f"single elite terminal sidechain replacement from iteration {snapshot['replacement_from_iteration']}"
         elif source == 'previous_attachment_guided_mcs':
             source = f"two-site MCS adjustment from iteration {snapshot['attachment_from_iteration']}"
+        elif source == 'ranked_elite_subset_mcs':
+            source = f"top-{len(snapshot['source_ids'])} preceding elites after MCS subset reduction"
+        if snapshot.get('elite_mcs_attempts'):
+            attempts = snapshot['elite_mcs_attempts']
+            print(f"[MCS] Iteration {iteration} combichem elite subsets: "
+                  + ' -> '.join(str(attempt['elite_count']) for attempt in attempts)
+                  + f"; result={attempts[-1]['status']}.", flush=True)
         if snapshot.get('fallback_reason') == 'insufficient_attachment_sites':
             problem = ('no attachment sites' if snapshot.get('generation_method') == 'combichem' else
                        'fewer than two attachment sites')
@@ -173,6 +180,9 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
                   f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
         elif snapshot.get('fallback_reason') == 'excess_attachment_sites':
             print(f"[MCS] Iteration {iteration}: automatic MCS exceeded two attachment boundaries; "
+                  f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
+        elif snapshot.get('fallback_reason') == 'non_single_attachment_boundary':
+            print(f"[MCS] Iteration {iteration}: automatic MCS crosses a non-single attachment bond; "
                   f"reusing validated scaffold from iteration {snapshot['fallback_from_iteration']}.", flush=True)
         summary = mcs_display_summary(snapshot['mcs_smarts'])
         label = 'generation core summary' if summary != snapshot['mcs_smarts'] else 'generation core'
@@ -242,14 +252,16 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
             original_iteration, original = pinned
             snapshot = dict(original)
             snapshot['fixed_from_iteration'] = original.get('fixed_from_iteration', original_iteration)
-        elif method == 'combichem' and iteration > 1 and len(inputs) == 1 and not use_supplied:
-            from molnova.chemistry.combichem import prepare_single_elite_scaffold
-            previous = (database.combichem_compound_scaffold(args.db_path, inputs[0]['id'])
-                        or database.iteration_scaffold(args.db_path, iteration - 1))
-            snapshot = prepare_single_elite_scaffold(
-                inputs[0], previous, initial['mcs_smarts'],
+        elif method == 'combichem' and iteration > 1 and not use_supplied:
+            from molnova.chemistry.combichem import prepare_ranked_elite_scaffold
+            inputs = [ref for row, ref in sorted(zip(elites, inputs), key=lambda pair: (pair[0][5], pair[0][0]))]
+            previous = database.iteration_scaffold(args.db_path, iteration - 1)
+            snapshot = prepare_ranked_elite_scaffold(
+                inputs, previous, initial['mcs_smarts'], mcs_timeout=args.mcs_timeout,
+                single_previous=database.combichem_compound_scaffold(args.db_path, inputs[0]['id']),
             )
-            snapshot['replacement_from_iteration'] = iteration - 1
+            if snapshot['source'] == 'single_elite_sidechain_replacement':
+                snapshot['replacement_from_iteration'] = iteration - 1
             if fixed:
                 snapshot['fixed_from_iteration'] = iteration
         else:
@@ -301,6 +313,8 @@ def prepare_iteration_scaffold(args, iteration, elites=None, *, create=False, in
             snapshot['elite_mcs_fixed'] = True
         snapshot['docking_mcs_smarts'] = initial['mcs_smarts']
         snapshot['generation_method'] = method
+        if iteration > 1 and getattr(args, 'elite_score_source', None) is not None:
+            snapshot['elite_score_source'] = args.elite_score_source
 
     _, scaffold = _validate(snapshot)
     if snapshot.get('generation_method') == 'combichem':

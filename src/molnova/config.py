@@ -21,6 +21,8 @@ def md_gbsa_settings(config: dict[str, Any]) -> dict[str, Any]:
     enabled = config.get('md-gbsa', False)
     if not isinstance(enabled, bool):
         raise ValueError('md-gbsa must be a boolean')
+    if enabled and config.get('prime-gbsa', True) is False:
+        raise ValueError('md-gbsa=true requires prime-gbsa=true')
     result = {'md_gbsa_enabled': enabled}
     for suffix, default, minimum, maximum in [
         ('snapshots', 20, 20, 100), ('replicates', 1, 1, 100),
@@ -122,17 +124,18 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     use_slurm = config.get('use-slurm', False)
     if not isinstance(use_slurm, bool):
         raise ValueError('use-slurm must be a boolean')
-    for key in ('amber_gbsa', 'amber-gbsa-enabled'):
+    for key in ('amber_gbsa', 'amber-gbsa', 'amber-gbsa-enabled', 'prime-gbsa'):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f'{key} must be a boolean')
-    if ('amber_gbsa' in config and 'amber-gbsa-enabled' in config
-            and config['amber_gbsa'] != config['amber-gbsa-enabled']):
-        raise ValueError('amber_gbsa and amber-gbsa-enabled must agree')
-    enabled = config.get('amber_gbsa', config.get('amber-gbsa-enabled', False))
+    switches = [config[key] for key in ('amber_gbsa', 'amber-gbsa', 'amber-gbsa-enabled') if key in config]
+    if switches and any(value != switches[0] for value in switches):
+        raise ValueError('amber_gbsa, amber-gbsa and amber-gbsa-enabled must agree')
+    enabled = switches[0] if switches else False
     prime_count = config.get('prime-gbsa-input-count', 50)
     if isinstance(prime_count, bool) or not isinstance(prime_count, int) or prime_count < 1:
         raise ValueError('prime-gbsa-input-count must be a positive integer')
-    settings = {'amber_gbsa_enabled': enabled, 'prime_gbsa_input_count': prime_count,
+    settings = {'amber_gbsa_enabled': enabled, 'prime_gbsa_enabled': config.get('prime-gbsa', True),
+                'prime_gbsa_input_count': prime_count,
                 'use_slurm': use_slurm}
     time_limit = config.get('amber-slurm-time-limit', 600)
     if isinstance(time_limit, bool) or not isinstance(time_limit, int) or time_limit < 1:

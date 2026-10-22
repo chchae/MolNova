@@ -21,9 +21,9 @@ sidechain-library = "./input/edges-50k.smi"
 sidechain-max-heavy-atoms = 8      # 각 입력 fragment의 non-H 원자 상한; 결합용 * 제외
 elite-mcs-fixed = false
 # elite-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
-# 첫 cycle은 reference-mcs, 이후는 직전 iteration의 Prime elite에서 generation core 결정
-# 다음 cycle도 Prime elite가 필요하며 FEP 후보 fallback이 이 조건을 대체하지 않습니다.
-prime-gbsa-elite-count = 1
+# 첫 cycle은 reference-mcs, 이후는 직전 iteration의 점수순 elite로 generation core 결정
+# prime-gbsa=false이면 Glide 점수 사용; combichem은 필요 시 MCS 입력 elite를 절반씩 축소합니다.
+prime-gbsa-elite-count = 10
 
 # REINVENT4를 사용할 때만 적용; combichem은 prior/REINVENT runtime을 사용하지 않습니다.
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
@@ -57,7 +57,7 @@ tail-timeout = 300                # 대기 제한; native job을 취소하지 �
 glide-job-timeout = 1800          # 0이면 native Glide timeout 비활성화
 
 # 5. Amber GBSA: 모든 Glide 작업이 끝난 뒤 최종 Glide best 500 평가
-amber_gbsa = true
+amber-gbsa = false
 amber-input-count = 500
 # true: Amber만 slurm:cpu로 제출. false 또는 생략: 아래 t41 설정 사용
 use-slurm = true
@@ -79,6 +79,7 @@ amber-ssh-config = "/home1/chchae/.ssh/config"
 # 6. Prime GBSA: 유효 Amber 결과 best 50; 유효 Amber 결과가 0개이면 Glide best 50
 # 진행 중·복구 대기·재시도 가능 작업은 기다립니다. 서로 다른 score를 섞어 순위를 만들지 않습니다.
 # 유효 결과가 일부만 있으면 그 집합에서 최대 50개만 선택하며 다른 tier로 보충하지 않습니다.
+prime-gbsa = false
 prime-gbsa-input-count = 100
 prime-gbsa-flexdist = 6.0
 prime-gbsa-license-retry-seconds = 300
@@ -86,6 +87,14 @@ prime-gbsa-license-retries = 3
 # Prime은 선택한 화합물 전체를 한 batch로 제출하고 JobDJ가 최대 7개 subjob을 동시에 실행합니다.
 # 유연한 receptor는 화합물별 complex 입력으로 처리하여 각 ligand 주변 6 Å 설정을 유지합니다.
 # Iteration 0은 입력 reference 전체를 평가하므로 500/50 제한을 적용하지 않습니다.
+
+
+md-gbsa = false
+md-gbsa-input-count = 50  # Prime 점수 상위 개수; 비율 설정보다 우선
+md-gbsa-snapshots = 20
+md-gbsa-production-ns = 5.0
+md-gbsa-schrodinger = "/share/opt/schrodinger/2026-1"
+
 
 # 7. FEP 후보 export / 결과 import; 실제 FEP 계산은 외부 protocol로 별도 수행
 # Prime 결과가 있으면 Prime best 20, 없으면 Amber best 20, 둘 다 없으면 Glide best 20
