@@ -222,13 +222,8 @@ def poll_job(folder, phase, command, suite):
     return dict(status='done', native=record, jobs=rows)
 
 
-def extract_frames(root, protocol):
-    from schrodinger import structure
-    from schrodinger.application.desmond.packages import topo, traj_util
-    from schrodinger.structutils import analyze
-    import numpy as np
-    _, cms, trajectory = traj_util.read_cms_and_traj(str(root/'md'/'md-out.cms'))
-    times = [float(frame.time) for frame in trajectory]
+def snapshot_indices(times, protocol):
+    """Select distinct production frames; one snapshot uses the final frame."""
     duration = protocol['production_ns'] * 1000
     if not times or times[-1]-times[0] < duration * .99:
         raise ValueError('Production trajectory is incomplete')
@@ -236,7 +231,18 @@ def extract_frames(root, protocol):
     count = protocol['snapshots']
     if len(eligible) < count:
         raise ValueError('Not enough distinct production snapshots')
-    indices = [eligible[round(i*(len(eligible)-1)/(count-1))] for i in range(count)]
+    return ([eligible[-1]] if count == 1 else
+            [eligible[round(i*(len(eligible)-1)/(count-1))] for i in range(count)])
+
+
+def extract_frames(root, protocol):
+    from schrodinger import structure
+    from schrodinger.application.desmond.packages import topo, traj_util
+    from schrodinger.structutils import analyze
+    import numpy as np
+    _, cms, trajectory = traj_util.read_cms_and_traj(str(root/'md'/'md-out.cms'))
+    times = [float(frame.time) for frame in trajectory]
+    indices = snapshot_indices(times,protocol)
     identity = json.loads((root/'identity.json').read_text())
     original = next(structure.StructureReader(str(root/'complex.maegz')))
     source_ligand = [a for a in original.atom if a.property.get(LIGAND) == 1]
@@ -310,7 +316,8 @@ def collect_scores(root, protocol):
         frame['score']=values[frame['frame']]
     journals={phase:json.loads((root/phase/f'{phase}.job.json').read_text()) for phase in ('md','prime')}
     result=dict(status='done', id=identity['id'], mean=statistics.mean(values.values()),
-                std=statistics.stdev(values.values()), snapshots=frames, protocol=protocol, native=journals)
+                std=statistics.stdev(values.values()) if len(values)>1 else 0.0,
+                snapshots=frames, protocol=protocol, native=journals)
     save(root/'result.json',result)
     return result
 

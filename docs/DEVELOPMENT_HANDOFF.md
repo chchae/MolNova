@@ -1,5 +1,22 @@
 # MolNova Development Handoff
 
+## Configurable positive MD snapshot count (2026-10-23)
+
+**Confirmed user request:** remove MolNova's artificial 20–100 snapshot limit.
+`md-gbsa-snapshots` accepts any positive integer, with default 20 and no configured
+upper bound. Reject zero, negative values, booleans, floats and strings. This is
+MolNova validation, not a Prime minimum-size requirement.
+
+For two or more snapshots, preserve distinct evenly spaced frames in the configured
+production analysis window. For one snapshot, select the final production frame.
+Still reject incomplete trajectories and requests exceeding available distinct
+frames. A single observation stores its energy as the mean and `std=0.0` as an
+explicit storage convention; this does not estimate sampling uncertainty. With
+multiple observations (including replicas), keep the sample standard deviation.
+Apply identical statistics in native collection, ensemble merging and DB validation.
+Default protocols, existing immutable selections, deployed remote helpers, live
+jobs and scientific results remain unchanged; new counts apply to new selections.
+
 ## Restart recovery of missing final-iteration GBSA scores (2026-10-23)
 
 **Confirmed user request, clarified to resume only the final calculation:** on
@@ -158,8 +175,10 @@ installed Desmond standard NPT relaxation (160 ps in the verified installation),
 then configurable additional equilibration (default 1 ns), then separate
 unrestrained NPT production (300 K, 1.01325 bar; default 5 ns, configurable to
 20 ns or other positive durations). One replica by default; replicas use distinct
-seeds. Select 20–100 distinct, evenly spaced frames (default 20) from the final
-80% of production, excluding equilibration. Retain original receptor components
+seeds. Select a configurable positive number of distinct frames (default 20,
+no fixed upper bound) from the final 80% of production, excluding equilibration.
+For two or more frames, retain evenly spaced selection; for one, use the final
+production frame. Retain original receptor components
 and remove only solvent/ions added by the builder. Record ligand RMSD after
 receptor-backbone alignment; do not invent a convergence claim or independence
 of correlated frames. Prime uses verified native `-job_type ENERGY -frozen`

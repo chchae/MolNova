@@ -25,13 +25,15 @@ def md_gbsa_settings(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('md-gbsa=true requires prime-gbsa=true')
     result = {'md_gbsa_enabled': enabled}
     for suffix, default, minimum, maximum in [
-        ('snapshots', 20, 20, 100), ('replicates', 1, 1, 100),
+        ('snapshots', 20, 1, None), ('replicates', 1, 1, 100),
         ('gpus', 20, 1, 20), ('cpus', 384, 1, 384), ('seed', 20261021, 1, 2147483647),
     ]:
         key = 'md-gbsa-' + suffix
         value = config.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
-            raise ValueError(f'{key} must be an integer between {minimum} and {maximum}')
+        if (isinstance(value, bool) or not isinstance(value, int) or value < minimum
+                or (maximum is not None and value > maximum)):
+            requirement = 'a positive integer' if maximum is None else f'an integer between {minimum} and {maximum}'
+            raise ValueError(f'{key} must be {requirement}')
         result['md_gbsa_' + suffix] = value
     for suffix, default, upper in [('production-ns', 5.0, None), ('equilibration-ns', 1.0, None),
                                    ('input-ratio', .5, 1.0), ('analysis-start-fraction', .2, 1.0)]:

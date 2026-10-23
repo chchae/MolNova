@@ -1871,7 +1871,8 @@ def store_md_gbsa_result(path, iteration, cid, result):
     if len(set(identities))!=len(frames) or set(identities)!=expected:
         raise ValueError('Duplicate or missing MD-GBSA frame identity')
     import statistics
-    if not math.isclose(statistics.stdev(f['score'] for f in frames),result['std'],abs_tol=1e-10):
+    expected_std = statistics.stdev(f['score'] for f in frames) if len(frames)>1 else 0.0
+    if not math.isclose(expected_std,result['std'],abs_tol=1e-10):
         raise ValueError('MD-GBSA standard deviation does not match snapshot energies')
     if not math.isclose(statistics.mean(f['score'] for f in frames),result['mean'],abs_tol=1e-10):
         raise ValueError('MD-GBSA mean does not match snapshot energies')

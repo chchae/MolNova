@@ -113,13 +113,72 @@ def test_flag_disabled_leaves_no_remote_work(db,monkeypatch):
 
 
 @pytest.mark.parametrize('key,value', [
-    ('snapshots',19),('snapshots',101),('production-ns',0),('production-ns',float('nan')),
+    ('snapshots',0),('snapshots',-1),('snapshots',True),('snapshots',20.0),('snapshots','20'),
+    ('production-ns',0),('production-ns',float('nan')),
     ('equilibration-ns',-1),('replicates',False),('gpus',21),('cpus',385),('input-ratio',1.1),
     ('input-count',0),('analysis-start-fraction',1),('gpu-host','-bad'),('schrodinger','relative'),
 ])
 def test_protocol_validation(key,value):
     with pytest.raises(ValueError,match='md-gbsa'):
         md_gbsa_settings({'md-gbsa-'+key:value})
+
+
+@pytest.mark.parametrize('count',[1,2,5,19,20,100,101,1000000])
+def test_snapshot_count_accepts_any_positive_integer(count):
+    assert md_gbsa_settings({'md-gbsa-snapshots':count})['md_gbsa_snapshots']==count
+    assert md_gbsa_settings({})['md_gbsa_snapshots']==20
+
+
+@pytest.mark.parametrize('count',[1,2,5,20,101])
+def test_snapshot_selection_is_distinct_and_single_frame_is_final(count):
+    times=list(range(1001))
+    protocol=dict(production_ns=1,analysis_start_fraction=.2,snapshots=count)
+    indices=native.snapshot_indices(times,protocol)
+    assert len(indices)==len(set(indices))==count
+    assert indices[-1]==1000
+    if count==1:
+        assert indices==[1000]
+    else:
+        assert indices[0]==200
+
+
+def test_snapshot_selection_still_rejects_short_or_insufficient_trajectories():
+    protocol=dict(production_ns=1,analysis_start_fraction=.2,snapshots=1)
+    with pytest.raises(ValueError,match='incomplete'):
+        native.snapshot_indices([0,100],protocol)
+    with pytest.raises(ValueError,match='Not enough distinct'):
+        native.snapshot_indices([0,1000],dict(protocol,snapshots=2))
+
+
+@pytest.mark.parametrize('count',[1,5,101])
+def test_native_collector_handles_arbitrary_snapshot_count(tmp_path,monkeypatch,count):
+    import sys
+    import statistics
+    structures=[SimpleNamespace(title=f'CMPID_1_FRAME_{i:04d}',
+                    property={'r_psp_MMGBSA_dG_Bind':-float(i+1)}) for i in range(count)]
+    monkeypatch.setitem(sys.modules,'schrodinger',SimpleNamespace(
+        structure=SimpleNamespace(StructureReader=lambda path:iter(structures))))
+    native.save(tmp_path/'identity.json',{'id':1})
+    native.save(tmp_path/'frames.json',[dict(frame=i,time_ps=i,ligand_rmsd=.5) for i in range(count)])
+    for phase in ('md','prime'):
+        (tmp_path/phase).mkdir()
+        native.save(tmp_path/phase/(phase+'.job.json'),{'job_id':phase})
+    data=native.collect_scores(tmp_path,dict(snapshots=count))
+    assert data['mean']==statistics.mean(-float(i+1) for i in range(count))
+    assert data['std']==(statistics.stdev(-float(i+1) for i in range(count)) if count>1 else 0.)
+    assert len(data['snapshots'])==count
+    assert json.loads((tmp_path/'result.json').read_text())['std']==data['std']
+
+
+def test_single_snapshot_db_validation_and_storage(db):
+    settings=dict(protocol=dict(snapshots=1),replicates=1,root='/immutable')
+    database.freeze_md_gbsa_selection(db,1,settings,count=1,target_count=4,prime_count=4)
+    data=dict(id=1,mean=-50.,std=0.,snapshots=[dict(frame=0,score=-50.)])
+    with pytest.raises(ValueError,match='standard deviation'):
+        database.store_md_gbsa_result(db,1,1,dict(data,std=1.))
+    database.store_md_gbsa_result(db,1,1,data)
+    with database.connect(db) as conn:
+        assert conn.execute('SELECT md_gbsa_score,md_gbsa_std,md_gbsa_snapshots FROM compound WHERE id=1').fetchone()==(-50.,0.,1)
 
 
 def test_unknown_native_launch_never_resubmits(tmp_path,monkeypatch):
@@ -213,10 +272,11 @@ def test_concurrent_selection_has_one_frozen_owner(db):
 
 
 @pytest.mark.parametrize('wrong_identity',[False,True])
-def test_controller_recovers_disabled_flag_and_publishes_complete_ensembles(db,monkeypatch,wrong_identity):
+@pytest.mark.parametrize('count',[1,5,20,101])
+def test_controller_recovers_disabled_flag_and_publishes_complete_ensembles(db,monkeypatch,wrong_identity,count):
     from contextlib import nullcontext
     from molnova import schrodinger_guard as guard
-    settings=dict(protocol=dict(snapshots=20,seed=1),replicates=1,root='/frozen',
+    settings=dict(protocol=dict(snapshots=count,seed=1),replicates=1,root='/frozen',
                   ssh_host='slurm',suite='/suite',helper='/helper',gpus=2)
     database.freeze_md_gbsa_selection(db,1,settings,target_count=4,prime_count=4)
     monkeypatch.setattr(md_gbsa,'prepare',lambda config,ids:None)
@@ -227,6 +287,7 @@ def test_controller_recovers_disabled_flag_and_publishes_complete_ensembles(db,m
     def poll(config,action,root):
         cid=int(root.split('/CMPID_')[1].split('/')[0])
         data=result(cid, -50.0 if cid==1 else -80.0)
+        data['snapshots']=[dict(frame=i,score=data['mean']) for i in range(count)]
         data.update(status='done',protocol=settings['protocol'])
         if wrong_identity:
             data['id']=999

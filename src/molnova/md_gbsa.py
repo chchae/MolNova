@@ -172,7 +172,7 @@ def run(args, iteration):
         if all(v and v['status']=='done' for v in results):
             frames=[dict(frame,replica=r+1) for r,v in enumerate(results) for frame in v['snapshots']]
             values=[f['score'] for f in frames]
-            merged=dict(id=cid,mean=statistics.mean(values),std=statistics.stdev(values),snapshots=frames,
+            merged=dict(id=cid,mean=statistics.mean(values),std=statistics.stdev(values) if len(values)>1 else 0.0,snapshots=frames,
                         protocol=settings['protocol'],replicate_means=[v['mean'] for v in results],
                         qc=dict(ligand_rmsd_mean=statistics.mean(f['ligand_rmsd'] for f in frames),
                                 ligand_rmsd_max=max(f['ligand_rmsd'] for f in frames)),
