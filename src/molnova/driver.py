@@ -198,6 +198,12 @@ def choose_iteration(args, requested=None):
     if reference_work_pending(args):
         return 0
     with database.connect(args.db_path) as conn:
+        latest_retry = conn.execute('SELECT MAX(iteration) FROM compound').fetchone()[0]
+    retry_stages = ('prime_gbsa','md_gbsa') if getattr(args,'prime_gbsa_enabled',True) else ('md_gbsa',)
+    if latest_retry is not None and any(database.score_retry_requests(args.db_path, latest_retry, stage)
+                                       for stage in retry_stages):
+        return latest_retry
+    with database.connect(args.db_path) as conn:
         iterations = [row[0] for row in conn.execute(
             "SELECT DISTINCT iteration FROM compound WHERE iteration>0 ORDER BY iteration"
         )]
@@ -222,6 +228,35 @@ def choose_iteration(args, requested=None):
         return latest
     following = latest + 1
     return following if following <= args.max_iteration else None
+
+
+def resume_iteration_stages(args, iteration, stages):
+    """Resume the final cycle's last entered calculation; retain native recovery."""
+    frontier = database.restart_calculation_stage(args.db_path,iteration)
+    names = [stage for stage,_ in stages]
+    if frontier not in names:
+        return stages
+    start = names.index(frontier)
+    from molnova.prime_gbsa_async import load_job as load_prime
+    from molnova.amber_gbsa import load_job as load_amber
+    from molnova.ligprep_recovery import load_job as load_ligprep
+    saved = {
+        'prime_gbsa':load_prime(stage_directory(args.output,iteration,'prime_gbsa')) is not None,
+        'amber-gbsa':load_amber(stage_directory(args.output,iteration,'amber_gbsa')) is not None,
+        'ligprep':load_ligprep(stage_directory(args.output,iteration,'ligprep')) is not None,
+    }
+    from molnova.glide_recovery import load_record
+    saved['glide'] = any(not load_record(path.parent).get('downloaded') for path in
+                          stage_directory(args.output,iteration,'glide').glob('*/glide_job.json'))
+    running = database.running_calculation_stages(args.db_path,iteration)
+    recoveries = []
+    for stage,module in stages[:start]:
+        base = stage.removesuffix('-recovery')
+        if base in running or saved.get(base):
+            name = base+'-recovery' if base in ('prime_gbsa','amber-gbsa') else base
+            if (name,module) not in recoveries:
+                recoveries.append((name,module))
+    return recoveries + stages[start:]
 
 
 def external_completion_reason(args, iteration, stage):
@@ -427,11 +462,12 @@ def main(argv=None):
 
     previous_handlers = {}
     try:
+        database.request_latest_score_retries(args, ns.iteration)
         iteration = choose_iteration(args, ns.iteration)
         if iteration is None:
             print("[driver  ] All configured iterations are complete.")
             return
-        stages = iteration_stages(args, iteration)
+        stages = resume_iteration_stages(args, iteration, iteration_stages(args, iteration))
         print("=" * 70)
         print("SEQUENTIAL SINGLE-ITERATION DRIVER")
         print(f"Project        : {args.project}")

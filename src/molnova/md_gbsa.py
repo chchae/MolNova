@@ -115,6 +115,8 @@ def run(args, iteration):
                     target_count=args.target_count,prime_count=args.prime_gbsa_input_count,
                     amber_keep_count=database.amber_keep_count(args))
     settings=saved['settings']
+    from molnova.score_recovery import recover_md
+    recover_md(args,iteration,saved)
     if database.md_gbsa_completion_reason(args.db_path,iteration) is None:
         from molnova import schrodinger_guard as guard
         guard.unregister_md_remote(settings)

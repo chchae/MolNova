@@ -1,5 +1,40 @@
 # Independent MolNova reconstruction prompt
 
+## Restart recovery of missing final-iteration GBSA scores (2026-10-23)
+
+**Confirmed user request, clarified to resume only the final calculation:** on
+restart, resume the latest existing iteration (including 0) at its last entered
+GBSA stage. A frozen MD selection or even one finite MD-GBSA score establishes MD
+as that stage. Do not backfill any missing Prime scores in that cycle, including
+those of other compounds without MD scores; retire stale Prime retry intents.
+Only missing selected MD results are retried. Otherwise resume Prime or Amber if
+already entered; retain the normal full sequence for a new iteration.
+
+When Prime is the last stage, retry membership follows its final configured top-N
+(all references for iteration 0). MD membership stays in the immutable saved
+selection. Keep native recovery of earlier live/uncertain submissions and claims;
+skip earlier completed workers. Respect disabled Prime and explicitly requested
+other iterations. Unselected compounds and upstream failures are not new targets.
+Existing successful scores remain intact. Earlier-cycle MD results do not disable
+Prime for a newly entered cycle. This clarification supersedes retrying both
+Prime and MD failures after the current cycle has already entered MD.
+
+The supervisor records durable SQLite retry intents only for terminal failures in
+the corresponding stage, once per restart. Existing pending/running work follows
+normal recovery; workers alone verify and rearm failed calculations. An unfinished
+intent gates stage completion and is resumed after a crash, without generating a
+new retry on every worker poll. A repeated terminal failure waits for another
+supervisor restart. Missing/ambiguous JobIds or any live/unknown native parent or
+child block reset for reconciliation.
+
+Workers preserve old failure evidence and native journals. MD retries archive only
+the failed phase with a durable, idempotent move plan. A failed snapshot Prime job
+reuses completed MD and prepared frames; failed MD or trajectory analysis reruns
+MD using the same frozen protocol. Successful replicas and other compounds remain
+unchanged. Legacy frozen remote helpers need no replacement. This recovery policy
+supersedes terminal failures being permanently skipped on supervisor restart; it
+does not establish scientific validity of a repeated calculation.
+
 ## Combichem ranked-elite MCS reduction (2026-10-23)
 
 **Confirmed user request, superseding the earlier automatic combichem fallback:**

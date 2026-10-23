@@ -24,6 +24,126 @@ RDK_DESCRIPTOR_TYPES = {
 }
 
 
+def score_retry_requests(path, iteration, stage):
+    with connect(path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='score_restart_retry'").fetchone():
+            return []
+        return conn.execute('SELECT compound_id,token FROM score_restart_retry '
+                            'WHERE iteration=? AND stage=? AND pending=1 ORDER BY compound_id',
+                            (iteration, stage)).fetchall()
+
+
+def _completed_md_ids(conn, iteration):
+    if 'md_gbsa_score' not in {r[1] for r in conn.execute('PRAGMA table_info(compound)')}:
+        return set()
+    return {cid for cid,score in conn.execute('SELECT id,md_gbsa_score FROM compound WHERE iteration=?',
+                                             (iteration,)) if score is not None and math.isfinite(score)}
+
+
+def completed_md_ids(path, iteration):
+    with connect(path) as conn:
+        return _completed_md_ids(conn,iteration)
+
+
+def restart_calculation_stage(path, iteration):
+    """The latest cycle resumes at its last entered GBSA stage, never by folder alone."""
+    with connect(path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='compound'").fetchone():
+            return None
+        if conn.execute('SELECT MAX(iteration) FROM compound').fetchone()[0] != iteration:
+            return None
+        if _completed_md_ids(conn,iteration):
+            return 'md-gbsa'
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_md_gbsa_selection'").fetchone():
+            if conn.execute('SELECT 1 FROM iteration_md_gbsa_selection WHERE iteration=?',(iteration,)).fetchone():
+                return 'md-gbsa'
+        for stage,state,column in [('prime_gbsa',State.PRIME_GBSA_RUNNING,'prime_gbsa_score'),
+                                   ('amber-gbsa',State.AMBER_RUNNING,'amber_gbsa_score')]:
+            if conn.execute(f'SELECT 1 FROM compound WHERE iteration=? AND '
+                            f'({column} IS NOT NULL OR state=? OR failed_stage=?) LIMIT 1',
+                            (iteration,state,stage.replace('-','_'))).fetchone():
+                return stage
+    return None
+
+
+def running_calculation_stages(path, iteration):
+    mapping = {State.LIGPREP_RUNNING:'ligprep',State.GLIDE_RUNNING:'glide',
+               State.AMBER_RUNNING:'amber-gbsa',State.PRIME_GBSA_RUNNING:'prime_gbsa'}
+    with connect(path) as conn:
+        return {mapping[state] for (state,) in conn.execute('SELECT DISTINCT state FROM compound WHERE iteration=?',
+                                                           (iteration,)) if state in mapping}
+
+
+def request_latest_score_retries(args, requested=None):
+    """One retry per supervisor restart, limited to the final selected population."""
+    import json
+    import uuid
+    with connect(args.db_path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='compound'").fetchone():
+            return None
+        latest = conn.execute('SELECT MAX(iteration) FROM compound').fetchone()[0]
+        if latest is None or (requested is not None and requested != latest):
+            return None
+        conn.execute('CREATE TABLE IF NOT EXISTS score_restart_retry ('
+                     'iteration INTEGER NOT NULL,stage TEXT NOT NULL,'
+                     'compound_id INTEGER NOT NULL REFERENCES compound(id) ON DELETE CASCADE,'
+                     'token TEXT NOT NULL,pending INTEGER NOT NULL,'
+                     'previous_state TEXT,previous_failure TEXT,'
+                     'PRIMARY KEY(iteration,stage,compound_id))')
+        rows = {r[0]:r for r in conn.execute('SELECT id,state,failed_stage,failure_message,'
+                        'prime_gbsa_score,md_gbsa_score FROM compound WHERE iteration=?',(latest,))}
+        selected = {}
+        saved = None
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_md_gbsa_selection'").fetchone():
+            saved = conn.execute('SELECT candidates FROM iteration_md_gbsa_selection WHERE iteration=?',(latest,)).fetchone()
+            if saved:
+                selected['md_gbsa'] = json.loads(saved[0])
+        md_done = _completed_md_ids(conn,latest)
+        if saved or md_done:
+            # The frozen MD stage already owns this cycle; do not backfill Prime.
+            conn.execute("UPDATE score_restart_retry SET pending=0 WHERE iteration=? AND stage='prime_gbsa'",(latest,))
+        elif getattr(args,'prime_gbsa_enabled',True):
+            ranked = _prime_ranked_rows(conn,latest,_iteration_rows(conn,latest),amber_keep_count(args))
+            selected['prime_gbsa'] = list(rows) if latest == 0 else [r[0] for r in ranked[:args.prime_gbsa_input_count]]
+        for cid in md_done:
+            conn.execute("UPDATE score_restart_retry SET pending=0 WHERE iteration=? AND stage='prime_gbsa' AND compound_id=?",(latest,cid))
+        for stage, ids in selected.items():
+            for cid in ids:
+                row = rows.get(cid)
+                if not row or row[4 if stage=='prime_gbsa' else 5] is not None:
+                    continue
+                if stage=='prime_gbsa' and cid in md_done:
+                    continue
+                # Upstream failures and live/uncertain claims retain ownership.
+                if row[1] != State.FAILED or row[2] != stage:
+                    continue
+                conn.execute('INSERT INTO score_restart_retry VALUES (?,?,?,?,1,?,?) '
+                             'ON CONFLICT(iteration,stage,compound_id) DO UPDATE SET '
+                             'token=CASE WHEN pending=1 THEN token ELSE excluded.token END,'
+                             'pending=1,previous_state=excluded.previous_state,previous_failure=excluded.previous_failure',
+                             (latest,stage,cid,uuid.uuid4().hex,row[1],row[3]))
+        pending = conn.execute('SELECT 1 FROM score_restart_retry WHERE iteration=? AND pending=1',(latest,)).fetchone()
+        return latest if pending else None
+
+
+def finish_score_retry(path, iteration, stage, cid, token, *, rearm=True):
+    """Rearm only the requested missing score; leave successful results intact."""
+    column = {'prime_gbsa':'prime_gbsa_score','md_gbsa':'md_gbsa_score'}[stage]
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute('SELECT 1 FROM score_restart_retry WHERE iteration=? AND stage=? '
+                            'AND compound_id=? AND token=? AND pending=1',(iteration,stage,cid,token)).fetchone():
+            return
+        state = State.MD_GBSA_RUNNING if stage=='md_gbsa' else (State.REFERENCE if iteration==0 else State.DOCKED)
+        if rearm and (stage!='prime_gbsa' or not _completed_md_ids(conn,iteration)):
+            conn.execute(f'UPDATE compound SET state=?,failed_stage=NULL,failure_message=NULL,'
+                         f'modified_at=CURRENT_TIMESTAMP WHERE id=? AND iteration=? AND {column} IS NULL '
+                         'AND state=? AND failed_stage=?',(state,cid,iteration,State.FAILED,stage))
+        conn.execute('UPDATE score_restart_retry SET pending=0 WHERE iteration=? AND stage=? AND compound_id=? AND token=?',
+                     (iteration,stage,cid,token))
+
+
 def ensure_rdkit_descriptor_columns(conn):
     """Add nullable properties without replacing rows, results or active claims."""
     columns = {row[1] for row in conn.execute('PRAGMA table_info(compound)')}
@@ -480,13 +600,16 @@ def store_amber_results(path, iteration, results, allowed_ids):
 
 def _prime_gbsa_candidates(conn, iteration, count, target_count, amber_keep_count=None):
     rows = _iteration_rows(conn, iteration)
+    md_done = _completed_md_ids(conn,iteration)
+    if md_done:
+        return []
     if any(state == State.AMBER_RUNNING for _, state, _, _ in rows):
         return []
     if iteration == 0:
         if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count, amber_keep_count):
             return []
         return [cid for cid, state, _, score in rows
-                if score is None and state in (State.REFERENCE, State.DOCKED)]
+                if cid not in md_done and score is None and state in (State.REFERENCE, State.DOCKED)]
     if iteration < 0 or _docking_completion_reason(rows, target_count) is not None:
         return []
     if amber_keep_count is not None and _amber_completion_reason(conn, iteration, target_count, amber_keep_count):
@@ -496,7 +619,7 @@ def _prime_gbsa_candidates(conn, iteration, count, target_count, amber_keep_coun
         "SELECT id FROM compound WHERE iteration=? AND state=? AND failed_stage='amber_gbsa'",
         (iteration, State.FAILED))}
     return [cid for cid, state, _, score in docked[:count]
-            if score is None and (state == State.DOCKED or cid in amber_failed)]
+            if cid not in md_done and score is None and (state == State.DOCKED or cid in amber_failed)]
 
 
 def prime_gbsa_candidates(path: str | Path, iteration: int, count: int,
@@ -543,6 +666,7 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
             if reason:
                 return reason
         docked = _prime_ranked_rows(conn, iteration, rows, amber_keep_count)
+        md_done = _completed_md_ids(conn,iteration)
         amber_failed = {row[0] for row in conn.execute(
             "SELECT id FROM compound WHERE iteration=? AND state=? AND failed_stage='amber_gbsa'",
             (iteration, State.FAILED))}
@@ -558,7 +682,7 @@ def iteration_completion_reason(path, iteration, target_count, input_count, elit
         valid = sum(score is not None and math.isfinite(score) for _, _, score, _ in rows)
         return f'only {valid}/{elite_count} finite Glide scores for elite selection' if valid < elite_count else None
     pending = sum(
-        (state != State.FAILED or cid in amber_failed) and (score is None or not math.isfinite(score))
+        not md_done and (state != State.FAILED or cid in amber_failed) and (score is None or not math.isfinite(score))
         for cid, state, _, score in docked[:input_count]
     )
     if pending:
@@ -1339,6 +1463,8 @@ def prime_gbsa_scored_ids(path, iteration):
 def stage_completion_reason(path, iteration, stage, target_count, input_count,
                             synthetic_enabled=False, amber_keep_count=None):
     """Driver readiness from persisted state, never worker exit status alone."""
+    if stage == 'prime_gbsa' and score_retry_requests(path, iteration, 'prime_gbsa'):
+        return 'Prime restart recovery pending'
     if stage == 'md-gbsa':
         return md_gbsa_completion_reason(path, iteration)
     if stage == 'prime_gbsa-recovery':
@@ -1505,14 +1631,19 @@ def finish_iteration_timer(path, iteration):
 
 def reference_prime_gbsa_completion_reason(path):
     """All references need a score or terminal failure, independent of top-N."""
+    if score_retry_requests(path, 0, 'prime_gbsa'):
+        return 'Prime restart recovery pending'
     with connect(path) as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='compound'").fetchone():
             return None
         rows = _iteration_rows(conn, 0)
-    pending = sum(state != State.FAILED and score is None for _, state, _, score in rows)
+        md_done = _completed_md_ids(conn,0)
+    pending = sum(cid not in md_done and state != State.FAILED and score is None for cid, state, _, score in rows)
     running = sum(state == State.PRIME_GBSA_RUNNING for _, state, _, _ in rows)
     if running:
         return f'reference prime_gbsa still running for {running} compounds'
+    if md_done:
+        return None
     return f'{pending} reference compounds await prime_gbsa results' if pending else None
 
 
@@ -1702,6 +1833,8 @@ def freeze_md_gbsa_selection(path, iteration, settings, *, count=None, ratio=.5,
 
 
 def md_gbsa_completion_reason(path, iteration, minimum=0):
+    if score_retry_requests(path, iteration, 'md_gbsa'):
+        return 'MD-GBSA restart recovery pending'
     selection = md_gbsa_selection(path, iteration)
     if selection is None:
         return 'MD-GBSA candidates have not been selected'

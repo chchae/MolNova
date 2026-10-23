@@ -69,6 +69,12 @@ def _run_stage(args, requested_iteration):
     except PrimeReconciliationPending as exc:
         print(str(exc))
         return
+    if enabled and active is None:
+        from molnova.score_recovery import recover_prime
+        recover_prime(args, iteration, directory)
+    if active is None and database.completed_md_ids(args.db_path,iteration):
+        print('MD-GBSA results exist; no new Prime calculations for this iteration.')
+        return
     if enabled:
         database.reset_unsubmitted_prime_gbsa(
             args.db_path, iteration, active["compound_ids"] if active else (),
