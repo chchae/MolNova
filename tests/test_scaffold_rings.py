@@ -2,6 +2,28 @@ import pytest
 from rdkit import Chem
 
 from molnova import _core
+from molnova.chemistry.scaffold import mcs_readable_smarts
+
+
+def test_readable_smarts_uses_element_symbols_without_losing_aromatic_matches():
+    original = ('[#6&!R]-&!@[#7&!R]-&!@[#6]1:&@[#6]:&@[#6]:'
+                '&@[#6]:&@[#6]:&@[#6]:&@1')
+    readable = mcs_readable_smarts(original)
+    assert '[C,c]' in readable and '[N,n]' in readable
+    assert '#' not in readable and '&@' not in readable and '&!R' not in readable
+    query, display = Chem.MolFromSmarts(original), Chem.MolFromSmarts(readable)
+    assert display.GetNumAtoms() == query.GetNumAtoms()
+    assert display.GetNumBonds() == query.GetNumBonds()
+    for smiles in ['CNc1ccccc1', 'CCNc1ccccc1']:
+        mol = Chem.MolFromSmiles(smiles)
+        assert mol.HasSubstructMatch(query)
+        assert mol.HasSubstructMatch(display)
+    assert query.GetAtomWithIdx(0).GetSmarts() == '[#6&!R]'
+
+
+@pytest.mark.parametrize('smarts', ['N[C@@H](C)C(=O)O', '[13#6]-[#7+]', '[#6:7]-[#8-]'])
+def test_readable_smarts_preserves_complex_atom_conditions(smarts):
+    assert mcs_readable_smarts(smarts) == smarts
 
 
 @pytest.mark.parametrize('rings', [
@@ -69,12 +91,18 @@ def test_insufficient_attachment_sites_report_supported_recovery(tmp_path, capsy
     lines = capsys.readouterr().out.splitlines()
     original_index = next(i for i, line in enumerate(lines) if line.startswith('MCS SMARTS '))
     original = lines[original_index].split(': ', 1)[1]
-    summary = lines[original_index + 1]
+    readable = lines[original_index + 1]
+    assert readable.startswith('MCS SMARTS readable : ')
+    assert '[C,c]' in readable
+    assert Chem.MolFromSmarts(readable.split(': ', 1)[1]) is not None
+    summary = lines[original_index + 2]
     assert summary.startswith('MCS SMARTS summary  : ')
     assert '&@' not in summary and '&!@' not in summary
     assert '&R' not in summary and '&!R' not in summary
     assert Chem.MolFromSmarts(summary.split(': ', 1)[1]) is not None
     assert '&@' in original
+    assert lines[original_index + 3].startswith('MCS summary readable: ')
+    assert lines[original_index + 3].split(': ', 1)[1] == readable.split(': ', 1)[1]
 
     message = str(error.value)
     assert f'({count} found across 2 input ligands)' in message

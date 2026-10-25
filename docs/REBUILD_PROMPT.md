@@ -1,5 +1,96 @@
 # Independent MolNova reconstruction prompt
 
+## Readable SMARTS lines in MCS logs (2026-10-25)
+
+**Confirmed user request:** immediately follow each `MCS SMARTS` and
+`MCS SMARTS summary` line with an additional readable SMARTS representation.
+For display only, relax the generic ring predicates as in the existing summary
+and render simple atomic-number queries using element symbols, e.g. `[#6]` as
+`[C,c]`, retaining both aromatic and aliphatic alternatives. Preserve complex
+atom conditions, isotope/charge/chirality/map annotations and connectivity.
+Keep the original lines, computational SMARTS, saved snapshots, files and all
+scientific matching/docking/generation behavior unchanged.
+
+## Return deleted populations to Generate during supervision (2026-10-25)
+
+**Confirmed user request:** when the current generated iteration has no compounds
+because its population was deleted, return from a later pending stage to Generate.
+Check at stage boundaries and after downstream pending workers; rebuild the normal
+sequential stage queue for that same iteration. Recognize deletion using the
+existing zero-row plus durable prior-population evidence predicate. A nonempty
+population with zero druglike passes does not trigger regeneration. Preserve
+`--once` behavior and iteration-0 reference scheduling.
+
+The driver only redirects independent workers. Generate owns all cleanup through
+the existing stage locks, native-job reconciliation, archived iteration directory,
+SQLite/WAL backup and transactional metadata reset. Unknown/live jobs, partial
+deletions, missing ownership and later dependent compounds retain their blockers.
+A frozen MD selection keeps its recovery ownership and prevents automatic rerouting
+or reset even if its compounds were deleted. No scores, native jobs or other
+iterations are reset by the supervisor. Existing supervisors need a graceful
+restart to load this driver change.
+
+## MD-GBSA readiness before source-file preparation (2026-10-24)
+
+**Implementation repair for the reported iteration-7 failure:** before preparing
+new MD work, check persisted upstream completion and require at least one finite
+Prime result in an eligible completed state. Share the eligible-state/finite-score
+predicate with the atomic selection transaction. Check before opening/hashing the
+Prime complex file, uploading helpers, remote compatibility checks or any launch.
+The supervisor reports the same eligibility blocker for an unsaved MD selection.
+
+An iteration with all compounds rejected by drug likeness or failed upstream
+remains blocked with an explicit no-eligible-Prime-results reason, rather than
+raising a misleading missing-coordinate-file traceback. Do not create an empty
+selection, mark MD complete, relax filters, regenerate compounds or advance the
+iteration. Enough valid preceding elites remain mandatory for new generation.
+Existing saved MD selections bypass this new-work preflight and retain native
+recovery, immutable membership and protocols even when current eligibility or
+configuration changes. Eligible new work still requires the verified final Prime
+coordinates and existing compatibility checks; SQLite rechecks readiness and
+freezes/claims the ranking atomically after compatibility validation.
+
+## Combichem timeout rejection and continued halving (2026-10-24)
+
+**Confirmed user change:** for new automatic ranked combichem snapshots in
+iteration N>1, reject a timed-out MCS attempt and continue with the highest-ranked
+floor half, including `2 -> 1`. At one elite, use the existing validated terminal
+sidechain replacement and actual per-compound scaffold provenance. This
+supersedes stopping on timeouts in the earlier ranked-elite and search-budget
+policies; it does not change the configured per-search timeout.
+
+Distinguish RDKit cancellation using `MCSSearchTimeoutError`, a `RuntimeError`
+subclass. Discard the partial MCS completely. Record `status=mcs_timeout`, subset
+IDs/count, `timeout_seconds`, failure message and `mcs_smarts=null` in the attempt
+history of the accepted immutable snapshot. Log the rejection while searching
+and its timeout/discard evidence on creation/resume. New ranked snapshots use
+`elite_mcs_policy=ranked_halving_v2`; saved v1 snapshots remain unchanged and are
+never recomputed to adopt this change.
+
+Invalid/empty MCS results and unrelated failures still stop. Reference/iteration-1
+inference, explicit/fixed cores and LibInvent behavior retain their error policy.
+Preserve all preceding/fixed core, attachment and decomposition validation,
+completion gates, scores, saved cuts and native jobs. A timeout rejection does
+not establish a maximum MCS or scientific accuracy of the resulting compounds.
+
+## Configurable MCS search budget (2026-10-24)
+
+**Implementation repair for the reported iteration-7 timeout:** expose
+`mcs-timeout` in the project TOML as a positive integer in seconds (default 60),
+rejecting booleans, floats, strings and nonpositive values. Apply the configured
+budget to each new reference/elite MCS search; do not overwrite it during runtime
+initialization. The former timeout error named unsupported CLI flags; report the
+TOML setting and supported explicit generation-core override instead.
+
+Log each ranked combichem subset size, its search budget and rejection/acceptance
+before continuing, so a completed all-elite search cannot conceal a later subset
+timeout. Chemical validation remains unchanged. Canceled searches never use
+their partial MCS; the later confirmed combichem timeout policy above permits
+ranked subset reduction, while other inference paths still stop.
+Saved scaffold snapshots, scientific results and native jobs remain unchanged.
+New workers reload the TOML budget; already running searches keep their budget.
+A longer timeout does not guarantee completion or establish scientific accuracy.
+
 ## Configurable positive MD snapshot count (2026-10-23)
 
 **Confirmed user request:** remove MolNova's artificial 20–100 snapshot limit.
@@ -66,8 +157,9 @@ dummies, independent of atom maps, serialization order and SMARTS ring-query
 spelling. Require valid terminal single-bond attachments, the fixed docking core,
 and successful decomposition of every elite in that candidate subset. A valid
 extension is accepted immediately; otherwise halve again. Non-single boundaries
-and zero attachments reject that attempt; timeout/invalid MCS errors still stop
-rather than silently using an incomplete search.
+and zero attachments reject that attempt. Invalid MCS errors still stop.
+The later confirmed timeout policy above rejects canceled attempts and halves
+again, without using an incomplete search.
 
 At one elite, use the existing terminal-sidechain replacement protocol rather
 than a whole-molecule MCS. Preserve actual per-compound scaffold provenance for
@@ -76,8 +168,10 @@ history still stops. This does not guarantee MW or ROT increases every cycle.
 
 The configured elite count is unchanged; only the MCS input prefix shrinks.
 Persist the complete ranked ID list, actual subset IDs, each attempt's count,
-SMARTS and outcome, `elite_mcs_policy=ranked_halving_v1`, and the accepted scaffold
-in the immutable iteration snapshot. Log the reduction on creation/resume.
+SMARTS and outcome, and the accepted scaffold in the immutable iteration
+snapshot. The original policy recorded `elite_mcs_policy=ranked_halving_v1`;
+new snapshots use v2 under the confirmed timeout-rejection policy above.
+Log the reduction on creation/resume.
 Explicitly supplied/fixed saved cores, iteration 1, mol2mol/LibInvent behavior,
 prior restarts, docking protocols, scores/results/jobs and all previously saved
 iteration scaffolds remain unchanged. Apply this policy only to new snapshots.
@@ -786,7 +880,8 @@ saved generation core and the fixed docking core, and successful decomposition
 of every selected N-1 elite. Do not replace or silently drop elites. Missing or
 incompatible previous scaffolds stop generation; do not search older snapshots
 or guess a smaller core. User-supplied effective cores, initial generation,
-MCS timeout/invalid results and other scaffold errors retain their error behavior.
+MCS timeout/invalid results and other scaffold errors retain their error behavior
+except for the later confirmed ranked combichem timeout-rejection policy above.
 Record source `previous_iteration_scaffold_fallback`, current elite `source_ids`,
 `fallback_from_iteration`, `fallback_reason` and `attempted_mcs_smarts` in the
 new immutable snapshot. Do not copy the previous input's application marker.

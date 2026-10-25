@@ -112,6 +112,60 @@ def test_flag_disabled_leaves_no_remote_work(db,monkeypatch):
     md_gbsa.run(SimpleNamespace(db_path=db,md_gbsa_enabled=False),1)
 
 
+@pytest.mark.parametrize('iteration,state,score', [
+    (1, State.DRUGLIKE_REJECTED, None),
+    (1, State.FAILED, None),
+    (1, State.FAILED, -50.0),
+    (0, State.FAILED, None),
+])
+def test_no_md_candidates_reports_blocker_before_source_or_remote_work(db, monkeypatch, capsys,
+                                                                     iteration, state, score):
+    with database.connect(db) as conn:
+        conn.execute('UPDATE compound SET iteration=?,state=?,docking_score=NULL,prime_gbsa_score=?',
+                     (iteration, state, score))
+        before = conn.execute('SELECT * FROM compound ORDER BY id').fetchall()
+    monkeypatch.setattr(driver, 'external_completion_reason', lambda *a: None)
+    monkeypatch.setattr('molnova.prime_gbsa_async.load_job', lambda *a: None)
+    monkeypatch.setattr(md_gbsa, 'settings_for', lambda *a: pytest.fail('Inspected nonexistent Prime file'))
+    monkeypatch.setattr(md_gbsa, 'ssh', lambda *a, **kw: pytest.fail('Contacted remote host'))
+    monkeypatch.setattr(md_gbsa, 'upload', lambda *a, **kw: pytest.fail('Uploaded MD inputs'))
+    args = SimpleNamespace(db_path=db, output=db.parent, md_gbsa_enabled=True,
+                           target_count=4, prime_gbsa_input_count=4)
+    md_gbsa.run(args, iteration)
+    assert 'no eligible compounds' in capsys.readouterr().out
+    assert database.md_gbsa_selection(db, iteration) is None
+    assert 'no eligible compounds' in database.stage_completion_reason(db, iteration, 'md-gbsa', 4, 4)
+    assert database.md_gbsa_completion_reason(db, iteration) is not None
+    with database.connect(db) as conn:
+        assert conn.execute('SELECT * FROM compound ORDER BY id').fetchall() == before
+
+
+@pytest.mark.parametrize('state', [State.GLIDE_RUNNING, State.PRIME_GBSA_RUNNING, State.AMBER_RUNNING])
+def test_md_worker_waits_for_upstream_before_inspecting_source(db, monkeypatch, capsys, state):
+    with database.connect(db) as conn:
+        conn.execute('UPDATE compound SET state=?,prime_gbsa_score=NULL WHERE id=4', (state,))
+    monkeypatch.setattr(driver, 'external_completion_reason', lambda *a: None)
+    monkeypatch.setattr('molnova.prime_gbsa_async.load_job', lambda *a: None)
+    monkeypatch.setattr(md_gbsa, 'settings_for', lambda *a: pytest.fail('Inspected source while upstream pending'))
+    monkeypatch.setattr(md_gbsa, 'ssh', lambda *a, **kw: pytest.fail('Contacted remote host'))
+    args = SimpleNamespace(db_path=db, output=db.parent, md_gbsa_enabled=True,
+                           target_count=4, prime_gbsa_input_count=4)
+    md_gbsa.run(args, 1)
+    assert 'MD-GBSA waiting:' in capsys.readouterr().out
+    assert database.md_gbsa_selection(db, 1) is None
+
+
+def test_eligible_md_candidates_still_require_final_prime_coordinates(db, monkeypatch):
+    monkeypatch.setattr(driver, 'external_completion_reason', lambda *a: None)
+    monkeypatch.setattr('molnova.prime_gbsa_async.load_job', lambda *a: None)
+    monkeypatch.setattr(md_gbsa, 'ssh', lambda *a, **kw: pytest.fail('Contacted remote host without source'))
+    args = SimpleNamespace(db_path=db, output=db.parent, md_gbsa_enabled=True,
+                           target_count=4, prime_gbsa_input_count=4)
+    with pytest.raises(RuntimeError, match='Missing final optimized Prime complex file'):
+        md_gbsa.run(args, 1)
+    assert database.md_gbsa_selection(db, 1) is None
+
+
 @pytest.mark.parametrize('key,value', [
     ('snapshots',0),('snapshots',-1),('snapshots',True),('snapshots',20.0),('snapshots','20'),
     ('production-ns',0),('production-ns',float('nan')),

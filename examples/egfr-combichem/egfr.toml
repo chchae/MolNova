@@ -20,6 +20,7 @@ sample-size = 100000              # 한 번의 생성/조합 batch 크기; DB �
 sidechain-library = "./input/edges-50k.smi"
 sidechain-max-heavy-atoms = 8      # 각 입력 fragment의 non-H 원자 상한; 결합용 * 제외
 elite-mcs-fixed = false
+mcs-timeout = 600                # 각 MCS 검색 제한(초); timeout 결과는 사용하지 않음
 # elite-mcs = "c1nc(N[*:0])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
 # 첫 cycle은 reference-mcs, 이후는 직전 iteration의 점수순 elite로 generation core 결정
 # prime-gbsa=false이면 Glide 점수 사용; combichem은 필요 시 MCS 입력 elite를 절반씩 축소합니다.

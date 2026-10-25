@@ -93,12 +93,75 @@ def test_boundary_failure_is_recorded_before_trying_smaller_prefix(monkeypatch):
     assert saved['elite_mcs_attempts'][1]['status']=='expanded_core'
 
 
-def test_timeout_is_not_silently_replaced_by_a_smaller_elite_set(monkeypatch):
-    def timeout(*a,**kw):
-        raise RuntimeError('RDKit MCS search timed out')
-    monkeypatch.setattr(combichem,'prepare_scaffold',timeout)
-    with pytest.raises(RuntimeError,match='timed out'):
-        combichem.prepare_ranked_elite_scaffold(elites(),PREVIOUS,'c1ccccc1')
+@pytest.mark.parametrize('message', ['RDKit returned an invalid/empty MCS SMARTS.',
+                                   'RDKit MCS search timed out'])
+def test_only_typed_search_cancellation_is_recoverable(monkeypatch, message):
+    calls = []
+    def fail(selected, *args, **kwargs):
+        calls.append(len(selected))
+        raise RuntimeError(message)
+    monkeypatch.setattr(combichem, 'prepare_scaffold', fail)
+    with pytest.raises(RuntimeError, match=message):
+        combichem.prepare_ranked_elite_scaffold(elites(), PREVIOUS, 'c1ccccc1')
+    assert calls == [10]
+
+
+def test_timeout_after_rejected_core_identifies_the_failing_subset(monkeypatch, capsys):
+    calls = []
+    def infer(selected, *args, **kwargs):
+        calls.append(len(selected))
+        assert kwargs['mcs_timeout'] == 600
+        if len(selected) == 10:
+            return dict(PREVIOUS)
+        if len(selected) == 5:
+            raise _core.MCSSearchTimeoutError('RDKit MCS search timed out')
+        return dict(EXPANDED)
+    monkeypatch.setattr(combichem, 'prepare_scaffold', infer)
+    saved = combichem.prepare_ranked_elite_scaffold(elites(), PREVIOUS, 'c1ccccc1', mcs_timeout=600)
+    assert calls == [10, 5, 2]
+    assert saved['elite_mcs_policy'] == 'ranked_halving_v2'
+    assert saved['source_ids'] == [100, 101]
+    assert saved['elite_mcs_attempts'][1] == dict(
+        elite_count=5, source_ids=list(range(100, 105)), status='mcs_timeout',
+        mcs_smarts=None, timeout_seconds=600, failure_message='RDKit MCS search timed out')
+    output = capsys.readouterr().out
+    assert '10 elites: core_not_larger; trying highest-ranked 5' in output
+    assert 'Trying highest-ranked 5/10 elites (timeout=600s)' in output
+    assert '5 elites: mcs_timeout; trying highest-ranked 2' in output
+    assert 'Trying highest-ranked 2/10' in output
+
+
+@pytest.mark.parametrize('all_timeouts', [False, True])
+def test_two_elite_timeout_uses_real_single_elite_replacement(monkeypatch, all_timeouts):
+    calls = []
+    def infer(selected, *args, **kwargs):
+        calls.append(len(selected))
+        if all_timeouts or len(selected) == 2:
+            raise _core.MCSSearchTimeoutError('RDKit MCS search timed out')
+        return dict(PREVIOUS)
+    monkeypatch.setattr(combichem, 'prepare_scaffold', infer)
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda choices: choices[-1])
+    saved = combichem.prepare_ranked_elite_scaffold(elites(), PREVIOUS, 'c1ccccc1')
+    assert calls == [10, 5, 2]
+    assert [a['elite_count'] for a in saved['elite_mcs_attempts']] == [10, 5, 2, 1]
+    assert saved['elite_mcs_attempts'][-2]['status'] == 'mcs_timeout'
+    assert saved['source'] == 'single_elite_sidechain_replacement'
+    assert saved['source_ids'] == [100]
+    assert saved['replacement_cuts'] and saved['replacement_candidates']
+    assert all(a['mcs_smarts'] is None for a in saved['elite_mcs_attempts'] if a['status'] == 'mcs_timeout')
+
+
+def test_canceled_mcs_rejects_partial_result_and_reports_supported_configuration(monkeypatch):
+    from types import SimpleNamespace
+    def find(mols, parameters):
+        assert parameters.Timeout == 600
+        return SimpleNamespace(canceled=True, smartsString='c1ccccc1')
+    monkeypatch.setattr(_core.rdFMCS, 'FindMCS', find)
+    with pytest.raises(_core.MCSSearchTimeoutError, match='timed out after 600 seconds for 5 ligands') as error:
+        _core.infer_mcs_smarts_from_iteration0(elites(5), timeout=600)
+    assert 'mcs-timeout in the project TOML' in str(error.value)
+    assert '--mcs-timeout' not in str(error.value)
+    assert '--mcs-smarts' not in str(error.value)
 
 
 def test_missing_or_incompatible_history_stops(monkeypatch):

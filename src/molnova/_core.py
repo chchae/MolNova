@@ -817,6 +817,8 @@ def select_reference_by_known_mcs(references, mcs_smarts, energy_field):
     print("Known-MCS reference selection")
     print("-" * 70)
     print(f"MCS SMARTS          : {mcs_smarts}")
+    from molnova.chemistry.scaffold import mcs_readable_smarts
+    print(f"MCS SMARTS readable : {mcs_readable_smarts(mcs_smarts)}")
     print(f"Matching references : {len(candidates)}")
     print(f"Energy field        : {chosen_field}")
     print(f"Selected reference  : {best_ref['id']} ({best_ref['name']})")
@@ -1025,6 +1027,10 @@ def assign_reference_compounds(iteration, args):
 
 
 
+class MCSSearchTimeoutError(RuntimeError):
+    """RDKit canceled the search; its partial MCS must not be used."""
+
+
 def infer_mcs_smarts_from_iteration0(references, timeout=60):
     """Infer an MCS shared by all supplied ligands (references or elites)."""
     mols = [Chem.RemoveHs(Chem.Mol(ref["mol"])) for ref in references]
@@ -1053,9 +1059,10 @@ def infer_mcs_smarts_from_iteration0(references, timeout=60):
     result = rdFMCS.FindMCS(mols, parameters)
 
     if result.canceled:
-        raise RuntimeError(
-            "RDKit MCS search timed out. Increase --mcs-timeout "
-            "or provide --mcs-smarts explicitly."
+        raise MCSSearchTimeoutError(
+            f"RDKit MCS search timed out after {timeout} seconds for {len(mols)} ligands. "
+            "Increase mcs-timeout in the project TOML. "
+            "For an explicit generation core, use elite-mcs / --elite-mcs."
         )
 
     if not result.smartsString:
@@ -1077,8 +1084,11 @@ def infer_mcs_smarts_from_iteration0(references, timeout=60):
     print(f"MCS atoms           : {result.numAtoms}")
     print(f"MCS bonds           : {result.numBonds}")
     print(f"MCS SMARTS          : {result.smartsString}")
-    from molnova.chemistry.scaffold import mcs_display_summary
-    print(f"MCS SMARTS summary  : {mcs_display_summary(result.smartsString)}")
+    from molnova.chemistry.scaffold import mcs_display_summary, mcs_readable_smarts
+    print(f"MCS SMARTS readable : {mcs_readable_smarts(result.smartsString)}")
+    summary = mcs_display_summary(result.smartsString)
+    print(f"MCS SMARTS summary  : {summary}")
+    print(f"MCS summary readable: {mcs_readable_smarts(summary)}")
 
     return result.smartsString
 
@@ -1436,6 +1446,8 @@ def prepare_libinvent_scaffold(
         print("Using user-supplied MCS")
         print("-" * 70)
         print(f"MCS SMARTS          : {mcs_smarts}")
+        from molnova.chemistry.scaffold import mcs_readable_smarts
+        print(f"MCS SMARTS readable : {mcs_readable_smarts(mcs_smarts)}")
 
     # --------------------------------------------------------
     # If the user already supplied a complete LibInvent
@@ -4870,7 +4882,7 @@ def configure_project(project_toml, schrodinger=None, *, elite_mcs=None):
     args.completion_fraction = float(cfg.get("completion_fraction", 0.95)) if isinstance(cfg, dict) else 0.95
     args.tail_timeout = int(cfg.get("tail_timeout", 300))
     args.glide_timeout = 0
-    args.mcs_timeout = 60
+    args.mcs_timeout = cfg.get('mcs_timeout', 60)
     args.attachment_query_indices = None
     args.mcs_energy_field = "auto"
     args.top_fraction = 0.10

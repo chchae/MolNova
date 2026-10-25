@@ -728,6 +728,36 @@ def test_new_iteration_uses_only_immediately_preceding_elites_without_tl(project
     assert snapshot['docking_mcs_smarts'] == 'c1ccccc1'
 
 
+def test_canceled_combichem_mcs_saves_timeout_and_resumes_same_single_elite_cuts(project, monkeypatch, capsys):
+    prepare_iteration_scaffold(project, 1, create=True)
+    elites = [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40),
+              (101, 'B', 'CCCc1ccc(CC)cc1', 1, -9, -30)]
+    calls = []
+    def cancel(mols, parameters):
+        calls.append(len(mols))
+        return SimpleNamespace(canceled=True, smartsString='c1ccccc1')
+    monkeypatch.setattr(_core.rdFMCS, 'FindMCS', cancel)
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    saved = database.iteration_scaffold(project.db_path, 2)
+    assert calls == [2]
+    assert saved['elite_mcs_policy'] == 'ranked_halving_v2'
+    assert saved['source'] == 'single_elite_sidechain_replacement'
+    assert saved['source_ids'] == [100]
+    assert saved['ranked_elite_ids'] == [100, 101]
+    assert saved['docking_mcs_smarts'] == 'c1ccccc1'
+    assert saved['elite_mcs_attempts'][0]['status'] == 'mcs_timeout'
+    assert saved['elite_mcs_attempts'][0]['mcs_smarts'] is None
+    assert saved['elite_mcs_attempts'][0]['timeout_seconds'] == project.mcs_timeout
+    assert saved['replacement_cuts']
+    assert _core.decompose_elite_for_libinvent(elites[0][2], saved['scaffold_smiles']) is not None
+    capsys.readouterr()
+    monkeypatch.setattr(_core.rdFMCS, 'FindMCS', lambda *a: pytest.fail('Recomputed saved MCS'))
+    monkeypatch.setattr(combichem.secrets, 'choice', lambda *a: pytest.fail('Changed saved cuts'))
+    prepare_iteration_scaffold(project, 2, elites, create=True)
+    assert database.iteration_scaffold(project.db_path, 2) == saved
+    assert '2 elites timed out after 60s; partial MCS discarded' in capsys.readouterr().out
+
+
 def test_zero_attachment_combichem_core_reduces_to_single_elite(project):
     prepare_iteration_scaffold(project, 1, create=True)
     elites = [(100, 'A', 'CCc1ccc(CC)cc1', 1, -10, -40),

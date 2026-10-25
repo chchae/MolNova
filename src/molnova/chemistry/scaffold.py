@@ -81,6 +81,26 @@ def mcs_display_summary(smarts):
     return smarts
 
 
+def mcs_readable_smarts(smarts):
+    """Display relaxed ring predicates and simple element queries as symbols.
+
+    Carbon/nitrogen/etc. retain both aromatic and aliphatic alternatives:
+    replacing [#6] with C alone would narrow the query. Complex atom queries
+    stay verbatim. This representation is never used for calculations.
+    """
+    summary = mcs_display_summary(smarts)
+    table = Chem.GetPeriodicTable()
+    aromatic_elements = {'B', 'C', 'N', 'O', 'P', 'S', 'As', 'Se', 'Te'}
+    def element(match):
+        number = int(match.group(1))
+        if not 1 <= number <= 118:
+            return match.group(0)
+        symbol = table.GetElementSymbol(number)
+        return f'[{symbol},{symbol.lower()}]' if symbol in aromatic_elements else f'[{symbol}]'
+    readable = re.sub(r'\[#([1-9][0-9]*)\]', element, summary)
+    return readable if Chem.MolFromSmarts(readable) is not None else summary
+
+
 def _previous_scaffold_fallback(args, iteration, inputs, docking_smarts, error, *,
                                 reason='insufficient_attachment_sites'):
     """Reuse only N-1's saved scaffold, after checking every selected elite."""
@@ -173,6 +193,11 @@ def log_iteration_mcs(args, iteration, snapshot=None, *, include_generation=True
             print(f"[MCS] Iteration {iteration} combichem elite subsets: "
                   + ' -> '.join(str(attempt['elite_count']) for attempt in attempts)
                   + f"; result={attempts[-1]['status']}.", flush=True)
+            for attempt in attempts:
+                if attempt['status'] == 'mcs_timeout':
+                    print(f"[MCS] Iteration {iteration}: highest-ranked {attempt['elite_count']} "
+                          f"elites timed out after {attempt['timeout_seconds']}s; "
+                          'partial MCS discarded.', flush=True)
         if snapshot.get('fallback_reason') == 'insufficient_attachment_sites':
             problem = ('no attachment sites' if snapshot.get('generation_method') == 'combichem' else
                        'fewer than two attachment sites')

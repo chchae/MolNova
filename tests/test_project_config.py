@@ -25,6 +25,21 @@ aizynth-config = "/home1/astrazeneca/AiZynthFinder/policy_data/config.yml"
 '''
 
 
+@pytest.mark.parametrize('extra, expected', [('', 60), ('mcs-timeout = 600\n', 600)])
+def test_mcs_timeout_reaches_project_settings(tmp_path, extra, expected):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + extra)
+    assert _core.load_project_toml(project)['mcs_timeout'] == expected
+
+
+@pytest.mark.parametrize('value', ['0', '-1', 'true', '1.5', '"600"'])
+def test_mcs_timeout_rejects_invalid_values(tmp_path, value):
+    project = tmp_path / 'project.toml'
+    project.write_text(PROJECT_TOML + f'mcs-timeout = {value}\n')
+    with pytest.raises(ValueError, match='mcs-timeout must be a positive integer'):
+        _core.load_project_toml(project)
+
+
 @pytest.mark.parametrize('extra, enabled', [('', False), ('md-gbsa = false\n', False),
                                             ('md-gbsa = true\n', True)])
 def test_md_gbsa_flag_defaults_to_false_and_loads_boolean(tmp_path, extra, enabled):

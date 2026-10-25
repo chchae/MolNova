@@ -105,6 +105,11 @@ def run(args, iteration):
         reason=external_completion_reason(args,iteration,'prime_gbsa')
         if reason:
             print('MD-GBSA waiting: '+reason); return
+        reason=database.md_gbsa_readiness_reason(args.db_path,iteration,
+                    target_count=args.target_count,prime_count=args.prime_gbsa_input_count,
+                    amber_keep_count=database.amber_keep_count(args))
+        if reason:
+            print(reason); return
         proposed=settings_for(args,iteration)
         # Read-only compatibility check precedes SQLite claims and job launch.
         ssh(proposed['ssh_host'],'mkdir -p '+shlex.quote(proposed['root']))

@@ -347,6 +347,13 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
         if stop.is_set():
             return False
         stage, module = pending_stages.pop(0)
+        if (iteration > 0 and stage != 'generate'
+                and database.iteration_was_deleted(args.db_path, iteration)
+                and database.md_gbsa_selection(args.db_path, iteration) is None):
+            pending_stages = iteration_stages(args, iteration)
+            print(f'[driver  ] iteration {iteration}: compound population was deleted; '
+                  'returning to Generate for verified backup and recovery.', flush=True)
+            continue
         if stage == 'md-gbsa' and not md_stage_required(args, project_toml, iteration):
             continue  # Disabled before submission; saved selections still recover.
         if (stage == 'fep' and md_stage_required(args, project_toml, iteration)
@@ -404,6 +411,13 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
             report(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
             if once:
                 return False
+            if (iteration > 0 and stage != 'generate'
+                    and database.iteration_was_deleted(args.db_path, iteration)
+                    and database.md_gbsa_selection(args.db_path, iteration) is None):
+                pending_stages = iteration_stages(args, iteration)
+                print(f'[driver  ] iteration {iteration}: compound population was deleted; '
+                      'returning to Generate for verified backup and recovery.', flush=True)
+                break
             if (stage == 'fep' and md_stage_required(args, project_toml, iteration)
                     and database.md_gbsa_completion_reason(args.db_path, iteration) is not None):
                 pending_stages.insert(0, (stage, module))

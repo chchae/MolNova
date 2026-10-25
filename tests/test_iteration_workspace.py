@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from molnova import _core, database, schrodinger_guard as guard
+from molnova import _core, database, driver, schrodinger_guard as guard
 from molnova.stages._workspace import prepare_iteration_directory
 
 
@@ -22,6 +22,10 @@ def workspace(tmp_path, monkeypatch):
     (root / 'combichem/plan.json').write_text('old plan')
     monkeypatch.setattr(guard, 'active_jobs', lambda *a: [])
     return SimpleNamespace(db_path=db, output=tmp_path, schrodinger=Path('/suite'))
+
+
+def test_uninitialized_database_is_not_a_deleted_population(tmp_path):
+    assert not database.iteration_was_deleted(tmp_path/'empty.sqlite', 1)
 
 
 def test_new_iteration_clears_all_old_subdirectories_before_generation(workspace):
@@ -242,6 +246,75 @@ def test_fresh_generation_clears_deleted_population_before_sampling(deleted, mon
     monkeypatch.setattr(generate, '_run_combichem', sample)
     generate._run_stage(deleted, 1)
     assert calls == [1]
+
+
+@pytest.mark.parametrize('delete_during_poll', [False, True])
+def test_driver_returns_from_md_to_generate_for_deleted_population(deleted, monkeypatch, delete_during_poll):
+    deleted.target_count = 2
+    deleted.prime_gbsa_input_count = 1
+    deleted.synthetic_feasibility_enabled = False
+    deleted.fep_enabled = False
+    deleted.md_gbsa_enabled = True
+    if delete_during_poll:
+        # Start the poll with a population, then reproduce deletion while the
+        # downstream worker is running. Durable selection ownership is retained.
+        with database.connect(deleted.db_path) as conn:
+            conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('remaining','CC',1,'generated')")
+    calls = []
+    def process(stage, cmd, cwd, stop):
+        calls.append(stage)
+        if stage == 'md-gbsa':
+            assert delete_during_poll
+            with sqlite3.connect(deleted.db_path) as conn:
+                conn.execute('DELETE FROM compound WHERE iteration=1')
+        else:
+            assert stage == 'generate'
+            # Exercise the existing real backup/reset gate, rather than
+            # clearing scientific metadata inside the supervisor.
+            archive = prepare_iteration_directory(deleted, 1)
+            assert next(archive.glob('database-before-reset-*.sqlite')).is_file()
+            stop.set()
+        return 0
+    monkeypatch.setattr(driver, 'stream_process', process)
+    assert not driver.supervise_iteration(deleted, deleted.output/'project.toml', 1,
+        [('md-gbsa', 'molnova.stages.md_gbsa')], 30, driver.StopFlag())
+    assert calls == (['md-gbsa'] if delete_during_poll else []) + ['generate']
+    assert not database.iteration_was_deleted(deleted.db_path, 1)
+    with database.connect(deleted.db_path) as conn:
+        assert conn.execute('SELECT count(*) FROM compound WHERE iteration=0').fetchone()[0] == 1
+
+
+def test_driver_does_not_regenerate_deleted_population_with_frozen_md_work(deleted, monkeypatch):
+    with database.connect(deleted.db_path) as conn:
+        database.ensure_md_gbsa_schema(conn)
+        conn.execute('INSERT INTO iteration_md_gbsa_selection VALUES (1,?,?)', ('[999]', '{}'))
+    deleted.md_gbsa_enabled = True
+    deleted.target_count = 2
+    deleted.prime_gbsa_input_count = 1
+    deleted.synthetic_feasibility_enabled = False
+    calls = []
+    monkeypatch.setattr(driver, 'stream_process', lambda stage, *a: calls.append(stage) or 1)
+    assert not driver.supervise_iteration(deleted, deleted.output/'project.toml', 1,
+        [('md-gbsa', 'molnova.stages.md_gbsa')], 30, driver.StopFlag(), once=True)
+    assert calls == ['md-gbsa']
+    assert database.md_gbsa_selection(deleted.db_path, 1)['ids'] == [999]
+    assert not (deleted.output/'.previous').exists()
+
+
+def test_driver_does_not_regenerate_nonempty_rejected_population(deleted, monkeypatch):
+    with database.connect(deleted.db_path) as conn:
+        conn.execute("INSERT INTO compound(name,smiles,iteration,state) VALUES ('rejected','CC',1,'druglike_rejected')")
+    deleted.md_gbsa_enabled = True
+    deleted.target_count = 1
+    deleted.prime_gbsa_input_count = 1
+    deleted.synthetic_feasibility_enabled = False
+    calls = []
+    monkeypatch.setattr(driver, 'stream_process', lambda stage, *a: calls.append(stage) or 0)
+    assert not driver.supervise_iteration(deleted, deleted.output/'project.toml', 1,
+        [('md-gbsa', 'molnova.stages.md_gbsa')], 30, driver.StopFlag(), once=True)
+    assert calls == ['md-gbsa']
+    assert not (deleted.output/'.previous').exists()
+    assert database.iteration_compound_count(deleted.db_path, 1) == 1
 
 
 def test_partial_manual_deletion_fails_before_sampling_without_reset(deleted, monkeypatch):

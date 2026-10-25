@@ -372,11 +372,12 @@ def test_fallback_training_uses_current_elites_and_original_prior(fallback_proje
 
 
 @pytest.mark.parametrize('supplied', [None, '[*:0]c1ccc([*:1])cc1'])
-def test_project_initialization_defers_core_calculations(project, monkeypatch, supplied):
+@pytest.mark.parametrize('timeout', [60, 600])
+def test_project_initialization_defers_core_calculations(project, monkeypatch, supplied, timeout):
     cfg = dict(project='project', toml_file=project.output / 'project.toml',
                db_path=project.db_path, output=project.output, log_level=1,
                grid=project.output / 'grid.zip', reference_poses=project.output / 'refs.maegz',
-               libinvent_prior=project.libinvent_prior, mcs_smarts=supplied)
+               libinvent_prior=project.libinvent_prior, mcs_smarts=supplied, mcs_timeout=timeout)
     monkeypatch.setattr(_core, 'load_project_toml', lambda path: cfg)
     monkeypatch.setattr(_core, 'initialize_project_database', lambda **kwargs: None)
     monkeypatch.setattr(_core, 'get_reference_compounds', lambda *a: pytest.fail('core outside worker'))
@@ -384,6 +385,7 @@ def test_project_initialization_defers_core_calculations(project, monkeypatch, s
     assert args.iteration_mcs
     assert args.initial_mcs_smarts == supplied
     assert args.mcs_smarts == supplied
+    assert args.mcs_timeout == timeout
 
 
 @pytest.mark.parametrize('supplied', [None, '[*:0]c1ccc([*:1])cc1'])

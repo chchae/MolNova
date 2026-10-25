@@ -760,9 +760,11 @@ def iteration_has_saved_work(path, iteration):
 
 
 def _deleted_iteration(conn, iteration):
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'compound' not in tables:
+        return False
     if conn.execute('SELECT 1 FROM compound WHERE iteration=? LIMIT 1', (iteration,)).fetchone():
         return False
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     for table in ('iteration_druglike_selection', 'iteration_sa_selection', 'combichem_compound_origin', 'iteration_md_gbsa_selection'):
         if table in tables and conn.execute(f'SELECT 1 FROM {table} WHERE iteration=? LIMIT 1',
                                             (iteration,)).fetchone():
@@ -1466,6 +1468,11 @@ def stage_completion_reason(path, iteration, stage, target_count, input_count,
     if stage == 'prime_gbsa' and score_retry_requests(path, iteration, 'prime_gbsa'):
         return 'Prime restart recovery pending'
     if stage == 'md-gbsa':
+        if md_gbsa_selection(path, iteration) is None:
+            reason = md_gbsa_readiness_reason(path, iteration, target_count=target_count,
+                                            prime_count=input_count, amber_keep_count=amber_keep_count)
+            if reason:
+                return reason
         return md_gbsa_completion_reason(path, iteration)
     if stage == 'prime_gbsa-recovery':
         return 'Existing Prime claims still running' if has_running_prime_gbsa(path, iteration) else None
@@ -1785,6 +1792,32 @@ def md_gbsa_selection(path, iteration):
         return dict(ids=json.loads(row[0]), settings=json.loads(row[1])) if row else None
 
 
+def _md_gbsa_completed_prime_rows(conn, iteration):
+    rows = conn.execute('SELECT id,prime_gbsa_score,state FROM compound WHERE iteration=? '
+                        'AND prime_gbsa_score IS NOT NULL ORDER BY prime_gbsa_score,id', (iteration,)).fetchall()
+    completed_states = (State.PRIME_GBSA_DONE, State.FEP_DONE, State.MD_GBSA_DONE)
+    if iteration == 0:
+        completed_states += (State.REFERENCE,)
+    return [r for r in rows if math.isfinite(r[1]) and r[2] in completed_states]
+
+
+def md_gbsa_readiness_reason(path, iteration, *, target_count=1, prime_count=1, amber_keep_count=None):
+    """Check new MD work before inspecting source files or contacting remote hosts.
+
+    Freezing still rechecks readiness and claims the final ranking atomically.
+    Existing selections bypass this preflight and retain their recovery path.
+    """
+    reason = stage_completion_reason(path, iteration, 'prime_gbsa', target_count,
+                                    prime_count, amber_keep_count=amber_keep_count)
+    if reason:
+        return 'MD-GBSA waiting: ' + reason
+    with connect(path) as conn:
+        if not _md_gbsa_completed_prime_rows(conn, iteration):
+            return ('MD-GBSA requires finite completed Prime results; no eligible compounds '
+                    '(check drug-likeness rejections and upstream failures)')
+    return None
+
+
 def freeze_md_gbsa_selection(path, iteration, settings, *, count=None, ratio=.5,
                              target_count=1, prime_count=1, amber_keep_count=None):
     """Freeze final finite Prime top-N and claim once in the same transaction."""
@@ -1815,12 +1848,7 @@ def freeze_md_gbsa_selection(path, iteration, settings, *, count=None, ratio=.5,
         if conn.execute('SELECT 1 FROM compound WHERE iteration=? AND state IN (?,?)',
                         (iteration, State.PRIME_GBSA_RUNNING, State.AMBER_RUNNING)).fetchone():
             raise RuntimeError('MD-GBSA waiting for active upstream claims')
-        rows = conn.execute('SELECT id,prime_gbsa_score,state FROM compound WHERE iteration=? '
-                            'AND prime_gbsa_score IS NOT NULL ORDER BY prime_gbsa_score,id', (iteration,)).fetchall()
-        completed_states = (State.PRIME_GBSA_DONE, State.FEP_DONE, State.MD_GBSA_DONE)
-        if iteration == 0:
-            completed_states += (State.REFERENCE,)
-        rows = [r for r in rows if math.isfinite(r[1]) and r[2] in completed_states]
+        rows = _md_gbsa_completed_prime_rows(conn, iteration)
         if not rows:
             raise RuntimeError('MD-GBSA requires finite completed Prime results')
         ids = [r[0] for r in rows[:count if count is not None else max(1, math.ceil(len(rows)*ratio))]]

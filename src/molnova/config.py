@@ -94,6 +94,9 @@ def prime_gbsa_flexdist(config: dict[str, Any]) -> float:
 
 def generation_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     """Select the generator without requiring a REINVENT runtime for combichem."""
+    mcs_timeout = config.get('mcs-timeout', 60)
+    if isinstance(mcs_timeout, bool) or not isinstance(mcs_timeout, int) or mcs_timeout < 1:
+        raise ValueError('mcs-timeout must be a positive integer in seconds')
     value = config.get('sidechain-library')
     if value is not None and (not isinstance(value, str) or not value.strip()):
         raise ValueError('sidechain-library must be a nonempty local path')
@@ -105,6 +108,7 @@ def generation_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1):
         raise ValueError('sidechain-max-heavy-atoms must be a positive integer')
     return {'sidechain_library': library,
+            'mcs_timeout': mcs_timeout,
             'sidechain_max_heavy_atoms': maximum,
             'generation_method': 'combichem' if library is not None else 'reinvent4',
             'sample_size': int(batch)}

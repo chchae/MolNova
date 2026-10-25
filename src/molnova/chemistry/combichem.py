@@ -209,8 +209,15 @@ def prepare_ranked_elite_scaffold(ranked_inputs, previous, docking_smarts, *,
     while count > 1:
         selected = ranked_inputs[:count]
         attempt = dict(elite_count=count, source_ids=[ref['id'] for ref in selected])
+        print(f'[MCS] Trying highest-ranked {count}/{len(ranked_inputs)} elites '
+              f'(timeout={mcs_timeout}s).', flush=True)
         try:
             info = prepare_scaffold(selected, None, mcs_timeout=mcs_timeout)
+        except _core.MCSSearchTimeoutError as error:
+            # Reject the canceled attempt without accepting or recording its
+            # partial SMARTS. Other MCS errors must still stop generation.
+            attempt.update(status='mcs_timeout', mcs_smarts=None,
+                           timeout_seconds=mcs_timeout, failure_message=str(error))
         except (NonSingleAttachmentBoundaryError, _core.InsufficientAttachmentSitesError) as error:
             attempt.update(status=('non_single_attachment_boundary' if isinstance(
                 error, NonSingleAttachmentBoundaryError) else 'insufficient_attachment_sites'),
@@ -233,11 +240,14 @@ def prepare_ranked_elite_scaffold(ranked_inputs, previous, docking_smarts, *,
                 attempt['status'] = 'elite_decomposition_failed'
             else:
                 attempt['status'] = 'expanded_core'
+                print(f'[MCS] {count} elites: expanded_core.', flush=True)
                 attempts.append(attempt)
                 result = dict(info, source='previous_iteration_elites' if count == len(ranked_inputs)
                               else 'ranked_elite_subset_mcs', source_ids=attempt['source_ids'])
                 break
         attempts.append(attempt)
+        print(f"[MCS] {count} elites: {attempt['status']}; "
+              f'trying highest-ranked {max(1, count // 2)}.', flush=True)
         count = max(1, count // 2)
     else:
         # A one-molecule MCS has no variable boundary. Preserve the existing
@@ -245,7 +255,7 @@ def prepare_ranked_elite_scaffold(ranked_inputs, previous, docking_smarts, *,
         result = prepare_single_elite_scaffold(ranked_inputs[0], single_previous or previous, docking_smarts)
         attempts.append(dict(elite_count=1, source_ids=[ranked_inputs[0]['id']],
                              status='single_elite_replacement'))
-    result.update(elite_mcs_policy='ranked_halving_v1', elite_mcs_attempts=attempts,
+    result.update(elite_mcs_policy='ranked_halving_v2', elite_mcs_attempts=attempts,
                   ranked_elite_ids=[ref['id'] for ref in ranked_inputs],
                   previous_core_heavy_atoms=old_core.GetNumHeavyAtoms())
     return result
