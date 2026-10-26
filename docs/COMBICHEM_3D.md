@@ -725,3 +725,27 @@ SQLite BUSY/LOCKED transactions retry after rollback without repeating the
 scientific calculation; idle workers avoid unnecessary writer locks. Final
 analysis lists worker errors separately from attachment sites. Real two-host
 synthetic smoke tests do not establish full 384-slot throughput.
+
+## Buffered result writes
+
+```toml
+[combichem-3d]
+batch-size = 32
+result-buffer-size = 16
+result-buffer-seconds = 2.0
+```
+
+Workers journal completed results durably, then commit up to 16 results per
+SQLite transaction. They also flush at batch boundaries and when the 2-second
+interval is reached between completed products; an ongoing calculation is not
+interrupted by the timer. Increasing batch-size reduces claim/finish transactions;
+batch-size=1 still flushes every result. The result buffer is limited to 256.
+
+Journals in `result-buffer/` survive killed workers and failed DB commits. On a
+validated restart under the stage lock, a separate recovery worker imports them
+before normal claims resume. Duplicate parent/ordinal records do not duplicate
+poses or counters. A partial final line is recomputed; complete corrupt records
+stop recovery. Progress reports show committed results, so may lag calculations.
+Per-result fsync adds filesystem work; 384-worker speedup has not been benchmarked.
+Live runs retain their existing code/settings and should not be reset. Source
+fingerprint validation still applies when restarting with changed code.

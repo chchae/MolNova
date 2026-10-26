@@ -2246,37 +2246,53 @@ def growth_save_plan(path, pose_id, plan, probes):
                      (json.dumps(plan),str(plan['total']),Growth.READY if plan['total'] else Growth.DONE,pose_id))
 
 
-@_growth_retry_locked
 def growth_save_attempt(path, batch, ordinal, report, payload=None):
-    import json
+    return growth_save_attempts(path, batch, [(ordinal, report, payload)])[0]
+
+
+@_growth_retry_locked
+def growth_save_attempts(path, batch, records):
+    """Commit a worker's bounded result buffer atomically and idempotently."""
     with growth_connection(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if conn.execute('SELECT 1 FROM combichem3d_attempt WHERE parent_pose=? AND ordinal=?',
-                        (batch['parent_pose'],str(ordinal))).fetchone():
-            return
-        if payload and payload.get('output_passed'):
-            settings,count=conn.execute('SELECT settings,unique_count FROM combichem3d_run WHERE id=1').fetchone()
-            settings=json.loads(settings)
-            known=conn.execute('SELECT 1 FROM compound c WHERE c.smiles=? AND '
-                               '(EXISTS (SELECT 1 FROM combichem3d_unique u WHERE u.compound_id=c.id) OR '
-                               'EXISTS (SELECT 1 FROM combichem3d_pose p WHERE p.compound_id=c.id AND p.generated=0))',
-                               (payload['smiles'],)).fetchone()
-            if settings['stop-mode']=='target' and count>=settings['target-count'] and not known:
-                # Preserve acquired geometry/history, but do not admit a new
-                # output identity beyond the limit when workers finish together.
-                payload=dict(payload,output_passed=False)
-                report=dict(report,output_passed=False,target_count_limited=True,
-                            filter_rejections=list(report.get('filter_rejections',[]))+['target_count_limit'])
-        pose_id = _growth_insert_pose(conn,payload,batch['parent_pose']) if payload else None
-        failed = report['status'] != 'PASS'
-        conn.execute('INSERT INTO combichem3d_attempt VALUES (?,?,?,?,?,?,?,?)',
-                     (batch['parent_pose'],str(ordinal),report['iteration'],report['status'],json.dumps(report),
-                      report.get('failed_stage','pose_search') if failed else None,
-                      report['reason'] if failed else None,pose_id))
-        conn.execute('UPDATE combichem3d_batch SET cursor=? WHERE id=?', (str(ordinal+1),batch['id']))
-        conn.execute('UPDATE combichem3d_run SET attempted=attempted+1 WHERE id=1')
-        _growth_stop(conn)
-        return report
+        row = conn.execute('SELECT parent_pose,start,stop FROM combichem3d_batch WHERE id=?',
+                           (batch['id'],)).fetchone()
+        if row is None or row[0] != batch['parent_pose']:
+            raise ValueError('Result buffer does not match its saved batch')
+        if any(not int(row[1]) <= ordinal < int(row[2]) for ordinal, _, _ in records):
+            raise ValueError('Result buffer ordinal is outside its saved batch')
+        return [_growth_save_attempt(conn, batch, ordinal, report, payload)
+                for ordinal, report, payload in records]
+
+
+def _growth_save_attempt(conn, batch, ordinal, report, payload):
+    import json
+    if conn.execute('SELECT 1 FROM combichem3d_attempt WHERE parent_pose=? AND ordinal=?',
+                    (batch['parent_pose'],str(ordinal))).fetchone():
+        return
+    if payload and payload.get('output_passed'):
+        settings,count=conn.execute('SELECT settings,unique_count FROM combichem3d_run WHERE id=1').fetchone()
+        settings=json.loads(settings)
+        known=conn.execute('SELECT 1 FROM compound c WHERE c.smiles=? AND '
+                           '(EXISTS (SELECT 1 FROM combichem3d_unique u WHERE u.compound_id=c.id) OR '
+                           'EXISTS (SELECT 1 FROM combichem3d_pose p WHERE p.compound_id=c.id AND p.generated=0))',
+                           (payload['smiles'],)).fetchone()
+        if settings['stop-mode']=='target' and count>=settings['target-count'] and not known:
+            # Preserve acquired geometry/history, but do not admit a new
+            # output identity beyond the limit when workers finish together.
+            payload=dict(payload,output_passed=False)
+            report=dict(report,output_passed=False,target_count_limited=True,
+                        filter_rejections=list(report.get('filter_rejections',[]))+['target_count_limit'])
+    pose_id = _growth_insert_pose(conn,payload,batch['parent_pose']) if payload else None
+    failed = report['status'] != 'PASS'
+    conn.execute('INSERT INTO combichem3d_attempt VALUES (?,?,?,?,?,?,?,?)',
+                 (batch['parent_pose'],str(ordinal),report['iteration'],report['status'],json.dumps(report),
+                  report.get('failed_stage','pose_search') if failed else None,
+                  report['reason'] if failed else None,pose_id))
+    conn.execute('UPDATE combichem3d_batch SET cursor=? WHERE id=?', (str(ordinal+1),batch['id']))
+    conn.execute('UPDATE combichem3d_run SET attempted=attempted+1 WHERE id=1')
+    _growth_stop(conn)
+    return report
 
 
 @_growth_retry_locked

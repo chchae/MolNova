@@ -1,5 +1,36 @@
 # Independent MolNova reconstruction prompt
 
+## Buffered COMBICHEM result persistence (2026-10-26)
+
+**Confirmed user request:** reduce SQLite write contention by buffering results.
+**Implementation choices:** `result-buffer-size=16` (1..256) and
+`result-buffer-seconds=2.0` bound each worker buffer. Time is checked between
+completed products, not by interrupting an ongoing scientific calculation. Flush
+on size/time threshold, batch end, normal stop or caught exception. The separate EGFR
+`examples/tmp/egfr-buffered.toml` uses `batch-size=32` to amortize claim/completion transactions too;
+a batch size of one still forces a result flush after every product.
+
+Before buffering a result, append/fsync its report, pose payload, history and
+ordinal to a batch-owned JSONL journal in `<out-dir>/result-buffer/`. Commit a
+bounded buffer in one SQLite transaction, including unique/target admission,
+attempt counters, poses and cursors. Keep BUSY/LOCKED rollback/retry, WAL, foreign
+keys and the 30-second busy timeout. Remove the journal only after commit.
+On restart, after frozen-protocol validation and under the exclusive stage lock,
+the supervisor launches one independent recovery worker before rearming claims.
+It imports journals idempotently by parent/ordinal without recalculation, then
+normal session recovery proceeds. A truncated final record is recomputed from
+the saved cursor; malformed complete records stop recovery and retain the file.
+Never reset live/uncertain jobs. The driver performs no scientific calculation.
+
+SQLite remains authoritative for global target/count/state coordination. Progress
+counters reflect committed results and can lag buffered computations. Concurrent
+target completion still preserves all acquired poses but atomically limits new
+eligible identities; buffering can do additional work before target detection.
+Per-result journal fsync trades extra filesystem I/O for restart durability;
+transaction count reduction is not a measured 384-worker throughput improvement.
+Buffer implementation/source guards remain enforced; do not bypass old protocol
+fingerprints. Existing live runs and stored outputs are not modified.
+
 ## Two-host COMBICHEM resources and contention recovery (2026-10-26)
 
 **Confirmed user request:** cpu1 and cpu2 each provide 192 cores for COMBICHEM.

@@ -57,7 +57,7 @@ def combichem_3d_settings(filename):
         'force-field': 'auto', 'core-constraint': 'fixed', 'restraint-force': 1000.,
         'max-seconds': 1800., 'stop-mode': 'target', 'target-count': 10,
         'processes': min(16, os.cpu_count() or 1), 'seed': 20261025,
-        'batch-size': 16, 'grace-seconds': 5., 'embed-timeout': 5,
+        'batch-size': 16, 'result-buffer-size': 16, 'result-buffer-seconds': 2., 'grace-seconds': 5., 'embed-timeout': 5,
         'prune-intermediates': False, 'filters': {}, 'site-candidates': {}, 'reference-mcs': None,
         'schrodinger': os.environ.get('SCHRODINGER','/home1/schrodinger/2026-3'),
         'infer-history': project_mode, 'inferred-parent-iteration': 1,
@@ -128,7 +128,7 @@ def combichem_3d_settings(filename):
             raise ValueError(f'{key} must be a nonempty local path{extra}')
         cfg[key] = str((path.parent / Path(value).expanduser()).resolve())
     positive_ints = ('max-iteration', 'sidechains-per-site', 'conformers', 'optimization-iterations',
-                     'minimum-valid-poses', 'target-count', 'processes', 'batch-size', 'embed-timeout', 'inferred-parent-iteration',
+                     'minimum-valid-poses', 'target-count', 'processes', 'batch-size', 'result-buffer-size', 'embed-timeout', 'inferred-parent-iteration',
                      'sidechain-min-heavy-atoms', 'sidechain-max-heavy-atoms','elite-count','next-attachment-count','mcs-timeout')
     for key in (*positive_ints, 'torsion-trials', 'seed', 'maximum-receptor-clashes', 'maximum-internal-clashes', 'log-structures'):
         value = cfg[key]
@@ -136,12 +136,14 @@ def combichem_3d_settings(filename):
             raise ValueError(f'{key} must be an integer >= {1 if key in positive_ints else 0}')
     if cfg['processes'] > 384 or cfg['seed'] > 2147483646:
         raise ValueError('processes must be <=384 and seed <=2147483646')
-    for key in ('core-displacement', 'overlap-tolerance', 'one-four-scale', 'restraint-force', 'max-seconds', 'grace-seconds', 'log-interval'):
+    for key in ('core-displacement', 'overlap-tolerance', 'one-four-scale', 'restraint-force', 'max-seconds', 'grace-seconds', 'log-interval', 'result-buffer-seconds'):
         value = cfg[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValueError(f'{key} must be a finite nonnegative number')
     if cfg['max-seconds'] <= 0 or cfg['restraint-force'] <= 0 or not 0 < cfg['one-four-scale'] <= 1:
         raise ValueError('max-seconds/restraint-force must be positive and one-four-scale in (0,1]')
+    if cfg['result-buffer-size'] > 256 or cfg['result-buffer-seconds'] <= 0:
+        raise ValueError('result-buffer-size must be 1..256 and result-buffer-seconds must be positive')
     if cfg['log-interval'] <= 0 or cfg['log-level'] not in ('INFO','DEBUG','TRACE'):
         raise ValueError('log-interval must be positive and log-level must be INFO, DEBUG or TRACE')
     if cfg['log-structures']>20:

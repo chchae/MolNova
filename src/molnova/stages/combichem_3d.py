@@ -93,45 +93,47 @@ def evaluate_batch(db, job, cfg, checker, evaluator, deadline, references=None):
     row = database.growth_parent(db,job['parent_pose'])
     parent,history,plan = restore_parent(row),row['history'],row['plan']
     trace('batch start parent_pose=%s iteration=%s cursor=%s stop=%s',job['parent_pose'],history['iteration']+1,job['cursor'],job['stop'])
-    for ordinal in range(int(job['cursor']),int(job['stop'])):
-        if database.growth_should_stop(db):
-            return
-        choices = combination_at(plan['pools'],ordinal)
-        trace('product start parent_pose=%s ordinal=%s choices=%s',job['parent_pose'],ordinal,choices)
-        payload = None
-        try:
-            product,birth = assemble(parent,history,plan['sites'],choices,f'c{ordinal}')
-            if references is not None:
-                birth=references.constrain(product,birth)
-            result = search(product,birth,checker,cfg,stable_seed(cfg['seed'],history['lineage_id'],ordinal),deadline=deadline)
-            report = serial_report(result)
-            if result['status'] == PoseVerdict.PASS:
-                pose = result['pose']
-                pruned = False
-                try:
-                    properties,passed,rejected = evaluator.evaluate(pose)
-                    pruned = cfg['prune-intermediates'] and not passed
-                except (ValueError,RuntimeError) as exc:
-                    # Preserve an acquired valid 3D pose even if its output
-                    # descriptors cannot be evaluated. Unknown is not pruning.
-                    properties,passed,rejected = {},False,['evaluation_unresolved']
-                    report.update(status=PoseVerdict.UNRESOLVED,geometry_status=PoseVerdict.PASS,
-                                  reason=str(exc),failed_stage='property_evaluation')
-                report.update(output_passed=passed,filter_rejections=rejected,properties=properties,
-                              intermediate_pruned=pruned)
-                payload = dict(smiles=provenance.canonical_smiles(pose),molblock=Chem.MolToMolBlock(pose),
-                               history=provenance.snapshot(pose,birth),properties=properties,output_passed=passed,
-                               pruned=pruned)
-        except (ValueError,RuntimeError) as exc:
-            report = dict(status=PoseVerdict.UNRESOLVED,reason=str(exc),failed_stage='assembly_or_evaluation')
-        report.update(iteration=history['iteration']+1,choices=dict(zip(plan['sites'],choices)),
-                      expanded_sites=[uid for uid,choice in zip(plan['sites'],choices) if choice!='-H'],
-                      expanded_site_count=sum(choice!='-H' for choice in choices))
-        report=database.growth_save_attempt(db,job,ordinal,report,payload) or report
-        trace('product parent_pose=%s ordinal=%s status=%s output_passed=%s valid_poses=%s attempts=%s reason=%s errors=%s filters=%s clashes=%s',
-                     job['parent_pose'],ordinal,report['status'],report.get('output_passed',False),report.get('valid_poses'),
-                     report.get('attempts'),str(report.get('reason',''))[:400],str(report.get('errors',[]))[:400],
-                     report.get('filter_rejections',[]),str(report.get('clashes'))[:600])
+    from molnova.stages.combichem_buffer import ResultBuffer
+    with ResultBuffer(db, job, cfg) as buffer:
+        for ordinal in range(int(job['cursor']),int(job['stop'])):
+            if database.growth_should_stop(db):
+                return
+            choices = combination_at(plan['pools'],ordinal)
+            trace('product start parent_pose=%s ordinal=%s choices=%s',job['parent_pose'],ordinal,choices)
+            payload = None
+            try:
+                product,birth = assemble(parent,history,plan['sites'],choices,f'c{ordinal}')
+                if references is not None:
+                    birth=references.constrain(product,birth)
+                result = search(product,birth,checker,cfg,stable_seed(cfg['seed'],history['lineage_id'],ordinal),deadline=deadline)
+                report = serial_report(result)
+                if result['status'] == PoseVerdict.PASS:
+                    pose = result['pose']
+                    pruned = False
+                    try:
+                        properties,passed,rejected = evaluator.evaluate(pose)
+                        pruned = cfg['prune-intermediates'] and not passed
+                    except (ValueError,RuntimeError) as exc:
+                        # Preserve an acquired valid 3D pose even if its output
+                        # descriptors cannot be evaluated. Unknown is not pruning.
+                        properties,passed,rejected = {},False,['evaluation_unresolved']
+                        report.update(status=PoseVerdict.UNRESOLVED,geometry_status=PoseVerdict.PASS,
+                                      reason=str(exc),failed_stage='property_evaluation')
+                    report.update(output_passed=passed,filter_rejections=rejected,properties=properties,
+                                  intermediate_pruned=pruned)
+                    payload = dict(smiles=provenance.canonical_smiles(pose),molblock=Chem.MolToMolBlock(pose),
+                                   history=provenance.snapshot(pose,birth),properties=properties,output_passed=passed,
+                                   pruned=pruned)
+            except (ValueError,RuntimeError) as exc:
+                report = dict(status=PoseVerdict.UNRESOLVED,reason=str(exc),failed_stage='assembly_or_evaluation')
+            report.update(iteration=history['iteration']+1,choices=dict(zip(plan['sites'],choices)),
+                          expanded_sites=[uid for uid,choice in zip(plan['sites'],choices) if choice!='-H'],
+                          expanded_site_count=sum(choice!='-H' for choice in choices))
+            buffer.append(ordinal,report,payload)
+            trace('product parent_pose=%s ordinal=%s status=%s output_passed=%s valid_poses=%s attempts=%s reason=%s errors=%s filters=%s clashes=%s',
+                         job['parent_pose'],ordinal,report['status'],report.get('output_passed',False),report.get('valid_poses'),
+                         report.get('attempts'),str(report.get('reason',''))[:400],str(report.get('errors',[]))[:400],
+                         report.get('filter_rejections',[]),str(report.get('clashes'))[:600])
     database.growth_finish_batch(db,job)
 
 
@@ -275,7 +277,7 @@ def prepare_project(cfg):
             raise ValueError('Input parent core coordinates exceed core-displacement; confirm the explicit coordinate frame/map')
         history['lineage_id'] = hashlib.sha256(json.dumps([root_index,history],sort_keys=True).encode()).hexdigest()
         records.append(dict(smiles=provenance.canonical_smiles(mol),molblock=Chem.MolToMolBlock(mol),history=history))
-    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script'}
+    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script','result-buffer-size','result-buffer-seconds'}
     frozen = {k:v for k,v in cfg.items() if k not in operational}
     frozen['input_sha256'] = {k:hashlib.sha256(Path(cfg[k]).read_bytes()).hexdigest()
                               for k in ('parents','receptor','history','reference-smiles','sidechain-library')}
@@ -283,6 +285,7 @@ def prepare_project(cfg):
         frozen['input_sha256']['reference-poses']=hashlib.sha256(Path(cfg['reference-poses']).read_bytes()).hexdigest()
         frozen['growth_search_policy']=dict(optional_sites_after_initial=True,
                                            movable_atoms='all_sidechains_outside_original_iteration0_core')
+    frozen['result_buffer_implementation_sha256']=hashlib.sha256(Path(__file__).with_name('combichem_buffer.py').read_bytes()).hexdigest()
     scientific_source = Path(__file__).resolve().parents[1]/'chemistry/combichem3d'
     frozen['implementation_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                                         for p in sorted(scientific_source.glob('*.py'))}
@@ -331,6 +334,15 @@ def prepare_project(cfg):
 
 def supervise(cfg, db, first_iteration):
     """Only lifecycle supervision here: every scientific calculation is a worker."""
+    # Recovery does no scientific calculation. An independent stage process
+    # persists orphaned journals before any calculator can reclaim their jobs.
+    if any((Path(db).parent/'result-buffer').glob('batch-*.jsonl')):
+        from molnova.stages.combichem_buffer import recover
+        recovery = multiprocessing.get_context('fork').Process(target=recover, args=(db,))
+        recovery.start()
+        recovery.join()
+        if recovery.exitcode != 0:
+            raise RuntimeError('Result-buffer recovery failed; journals and claims retained')
     database.growth_start_session(db,cfg)
     processes = []
     stopped = False
