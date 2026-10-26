@@ -65,6 +65,9 @@ def final_analysis_lines(db):
         c=counts[iteration]
         lines.append(f"CYCLE {iteration} 결과: 시도={sum(c.values())} PASS={c.get('PASS',0)} "
                      f"CLASH_REJECT={c.get('CLASH_REJECT',0)} UNRESOLVED={c.get('UNRESOLVED',0)}")
+        for row in snapshot['expansion']:
+            if row['iteration']==iteration:
+                lines.append(f"  확장 위치 수={row['expanded_sites']} status={row['status']} 조합수={row['n']}")
         for row in snapshot['optimization']:
             if row['iteration']==iteration:
                 lines.append((f"  최적화: 수렴={row['converged']} 반복한도={row['iteration_limit']} "
@@ -86,6 +89,9 @@ def final_analysis_lines(db):
             prepared=report.get('prepared_frame')
             if prepared is None:
                 lines.append(f"CYCLE {number} FRAME 준비상태={report.get('status',cycle['state'])}")
+                for attempt in report.get('attempts',[]):
+                    lines.append(f"  MCS elites={attempt['elite_count']} status={attempt['status']} "
+                                 f"missing_growth_roots={attempt.get('missing_growth_roots',[])}")
                 continue
             row=dict(prepared,history=prepared['history'],id=None,compound_id=None)
         h=copy.deepcopy(row['history'])
@@ -103,6 +109,11 @@ def final_analysis_lines(db):
         lines.extend(['  FRAME MCS SMARTS: '+smarts,'  FRAME MCS SMARTS readable: '+mcs_readable_smarts(smarts)])
         if report.get('attempts'):
             lines.append('  MCS 축소='+ ' -> '.join(f"{a['elite_count']}:{a['status']}" for a in report['attempts']))
+            for attempt in report['attempts']:
+                if attempt.get('missing_growth_roots'):
+                    lines.append(f"  MCS 성장조건 미충족: elites={attempt['elite_count']} "
+                                 f"missing_roots={attempt['missing_growth_roots']} "
+                                 f"candidate_counts={attempt['growth_candidate_counts']}")
             final=report['attempts'][-1]
             for pose,smiles in zip(final.get('elite_pose_ids',[]),final.get('elite_smiles',[])):
                 lines.append(f'  ELITE pose={pose} SMILES={smiles}')

@@ -205,6 +205,7 @@ def search(product, history, checker, cfg, seed, *, parent_fixed=None, starts=()
                                 pose=Chem.Mol(candidate), valid_poses=len(valid), attempts=attempts,
                                 errors=errors[:10], field=kind, ligand_energy=energy,
                                 optimization=optimization,optimization_counts=optimization_counts,
+                                constraint_scope='parent_heavy_atoms' if parent_fixed is not None else 'original_reference_core',
                                 core_max_displacement=displacement, clashes=last)
             except (ValueError, RuntimeError) as exc:
                 errors.append(str(exc))
@@ -213,6 +214,7 @@ def search(product, history, checker, cfg, seed, *, parent_fixed=None, starts=()
               if status == PoseVerdict.CLASH_REJECT else 'Insufficient valid poses or embedding/parameter/optimization failure')
     return dict(status=status, reason=reason, pose=None, valid_poses=len(valid), attempts=attempts,
                 errors=errors[:10], clashes=last,last_optimization=optimization,
+                constraint_scope='parent_heavy_atoms' if parent_fixed is not None else 'original_reference_core',
                 optimization_counts=optimization_counts)
 
 
@@ -220,6 +222,12 @@ def methyl_probe(parent, history, uid, checker, cfg, seed, deadline=float('inf')
     product, probe_history = assemble(parent, history, [uid], ['*C'], f'probe/{uid}')
     directions = hydrogen_directions(parent, uid)
     starts = [local_methyl_pose(parent, product, uid, direction) for direction in directions]
+    if history.get('growth_mode')=='frame-cycles':
+        # Only the original iteration-0 core is fixed. Even atoms retained in
+        # later elite-MCS frames remain movable alongside the new methyl group.
+        result=search(product,probe_history,checker,cfg,seed,starts=starts,deadline=deadline)
+        result['phase']='reference_core_'+cfg['core-constraint']
+        return result
     first = search(product, probe_history, checker, cfg, seed, parent_fixed=parent, starts=starts, deadline=deadline)
     if first['status'] == PoseVerdict.PASS:
         first['phase'] = 'parent_heavy_fixed'

@@ -2,7 +2,7 @@
 import hashlib
 import numpy as np
 from rdkit import Chem
-from molnova.chemistry.combichem3d.history import frontier_uids, snapshot
+from molnova.chemistry.combichem3d.history import frontier_uids, snapshot, tag_atom_cycles
 from molnova.chemistry.combichem3d.attachment_policy import root_for_site, growth_available
 
 
@@ -87,6 +87,7 @@ def assemble(parent, history, sites, choices, token):
     if any(a.GetAtomicNum() == 0 for a in product.GetAtoms()):
         raise ValueError('Unconsumed attachment dummy after assembly')
     result = snapshot(product, history, iteration)
+    tag_atom_cycles(product,result)
     if history.get('growth_mode')=='frame-cycles':
         result['role']='product'
     if history.get('initial_attachment_labels'):

@@ -27,9 +27,12 @@ rotate extras by cumulative selected-site counts. Within each branch prefer the
 greatest **minimum shortest bond distance to any previous attachment atom**, with
 stable UID ties. Capped branches are excluded; fewer than three PASS sites means
 fewer selected points. No PASS sites ends the run with
-explicit clash/unresolved evidence. Attach real candidates simultaneously at all
-selected points and check the entire product again; the probe never remains as
-a linker. With three sites and K=10, the next full space is 1000 attempts.
+explicit clash/unresolved evidence. In cycles >=2 each selected site also has
+-H (leave unchanged), in addition to its sampled heavy fragments. Thus generate
+all single-, double- and triple-site extensions and the all-H no-op, checking each
+whole product again; probes never remain as linkers. Three sites with K=10 heavy
+fragments yield 11^3=1331 attempts: 30 singles, 300 doubles, 1000 triples and one
+all-H. Cycle 1 remains 10^2=100. H already present in a pool is not duplicated.
 
 For each generated product, pick the most similar compatible reference pose
 (Morgan radius 2 / 2048-bit Tanimoto), preserving the original mapped reference
@@ -73,7 +76,7 @@ molnova combichem-3d /tmp/molnova-cycle-example/grow.toml
 ```
 
 The toy uses a distant Ne receptor and K=2: four initial combinations, then up to
-eight with three selected sites. It does not validate real receptor performance
+27 with three selected sites (two heavy fragments plus -H at each site). It does not validate real receptor performance
 or the scientific usefulness of QED-based elite selection. The older
 `make_toy_inputs.py`/`toy-inputs` explicitly use `growth-mode="frontier"` to retain
 legacy regression coverage. Historical frontier/history details below apply to
@@ -106,6 +109,17 @@ that legacy mode. Existing :0/:1 inputs therefore do not silently acquire new ca
 For the new notation use positive dummy values and omit that legacy setting.
 Old saved results and the legacy root/Glide/LibInvent workflows are unchanged.
 Use a fresh output folder after changing the growth protocol.
+
+Before accepting an expanded MCS, every root with remaining growth cycles must
+retain at least one new H-bearing structural candidate. Otherwise the MCS attempt
+is recorded as `missing_active_root_sites` and the current elite subset is reduced
+again, retaining heavier elites. Exhausted roots are exempt. The whole-molecule
+single-elite fallback must also satisfy this condition; if not, stop explicitly
+with `required_growth_sites_unavailable`, preserving evidence and results. Logs
+include missing root IDs and candidate counts. The condition applies to histories
+with per-root budgets (including map-cycle 999 roots); empty-limit legacy histories
+keep their old behavior. Structural candidates must still pass the later methyl
+probe and actual-product bump checks; this test does not guarantee a passing pose.
 
 If both roots are eligible and three sites are requested, distribute them 2+1;
 prefer the less-used root for the extra slot on later cycles. When one root is
@@ -140,6 +154,14 @@ Records carry SMILES, CMPID/pose IDs, parent links and `output_passed`. Geometri
 valid but descriptor/filter-failing poses are not labelled accepted outputs.
 Full 3D coordinates are in final `poses.sdf`/`passed_poses.sdf`, and complete
 ancestry and failure details remain in `growth_history.jsonl`/`failures.jsonl`.
+Generated heavy atoms also carry integer `molnova_added_cycle` tags: 0 for the
+original core, 1 for cycle-1 fragment atoms, 2 for cycle-2 additions, and so on.
+`poses.sdf` and `passed_poses.sdf` include `atom.iprop.molnova_added_cycle`; RDKit
+restores it as an atom property on reading. Old atoms keep their birth cycle when
+later cycles optimize them or leave them unchanged. Hydrogen birth is untracked
+and appears as missing (`n/a`). Any inferred imported ancestry retains its
+original uncertainty labels in the history.
+
 Logs append to `<3D out-dir>/run.log` and flush to stdout.
 After the final export, the end of run.log contains a full `실행 결과 분석` block:
 cycle counts and property ranges, force-field convergence, frame SMILES, all
@@ -377,9 +399,10 @@ may use different subsets. Actual pools are saved in SQLite plans. Increase K or
 change the size range explicitly; insufficient eligible candidates is an error.
 `[site-candidates]` supplies explicit pools, also subject to size eligibility and K.
 
-`sidechain-include-h=false` is the new default so all 10 choices are actual 5–10
+`sidechain-include-h=false` is the default so all K sampled choices are actual 5–10
 heavy-atom fragments. To retain the earlier -H option, set it true: K then includes
-one -H slot and K-1 heavy fragments. `-H`, `[H]` and dummy–H remain valid no-op
+one -H slot and K-1 heavy fragments. In later frame cycles, -H is added to each pool
+if absent, independently of this sampling option; the K heavy choices are retained. `-H`, `[H]` and dummy–H remain valid no-op
 notations. The small toy explicitly uses ordered selection, H inclusion and a
 broader size range to preserve its original artificial checks.
 
@@ -434,6 +457,13 @@ converged and iteration-limited minimizations; unsuccessful searches retain
 `last_optimization`. Missing parameters and actual minimizer errors remain
 UNRESOLVED. These are iterations, not a per-pose wall-time limit, and PASS makes no
 convergence/energy-minimum claim. A protocol change requires a new output folder.
+
+In frame-cycles, both methyl probes and actual products jointly relax all
+sidechains from all cycles. Only the original iteration-0 history.core atom set
+is fixed (or explicitly restrained); larger later elite-MCS frame atoms are not
+added to the fixed set. Local H-direction starts and fresh constrained embeddings
+both follow this rule. Original-geometry inputs and histories stay intact.
+The parent-fixed-first/rescue procedure below applies only to legacy frontier mode.
 
 Each logical heavy-atom site receives its own independent methyl trial molecule.
 For a parent with five sites, there are five probe decisions, each with a bounded
@@ -504,7 +534,9 @@ post-optimization clash filter. No affinity/convergence claim follows from PASS.
 
 ## Resource bounds, stopping and restart
 
-Up to 16 independent single-threaded RDKit calculator processes run locally.
+Up to 384 independent single-threaded RDKit calculation slots are supported.
+The default remains min(16, CPU count); set `processes = 128` explicitly on t41.
+Changes apply at the next launch; running supervisors keep their saved worker count.
 SQLite uses WAL, foreign keys, a 30-second busy timeout, atomic parent/batch claims
 and committed per-combination cursors. The supervisor only starts/joins workers;
 workers inspect SQLite and never invoke other workers. Iterations are supervised
@@ -649,3 +681,47 @@ reference input was checked only for extraction: it yielded ONE 16-heavy-atom
 bare frame with two attachment points, with all 24 native ligands retained only
 as coordinate references. No real EGFR generation/affinity/throughput claim is
 made from these checks. Existing production calculations/results were untouched.
+
+### Direct execution on t41
+
+With shared source/input paths, the ordinary CLI can forward the entire run:
+
+```toml
+[combichem-3d]
+execution-host = "t41"
+remote-env-script = "/share/opt/amber26/envs/AmberTools26/amber.sh"
+processes = 128
+```
+
+Run `molnova combichem-3d egfr.toml` on tensor. SSH activates the remote
+environment and starts the supervisor and workers on t41 without Slurm. The
+command stays attached; use nohup or tmux for a durable client session. Select a
+new output when changing scientific code or Python/RDKit versions. Existing jobs
+are not moved or cancelled.
+
+## Two 192-core hosts
+
+The EGFR runtime TOML in `examples/tmp/egfr.toml` now uses:
+
+```toml
+[combichem-3d]
+execution-host = "cpu1"
+remote-env-script = "/share/opt/amber26/envs/AmberTools26/amber.sh"
+worker-hosts = { cpu1 = 192, cpu2 = 192 }
+worker-ssh-known-hosts = "./combichem-known-hosts"
+processes = 384
+```
+
+`worker-hosts` determines the total process count (at most two hosts, 192 per
+host). All SQLite coordination stays on cpu1. cpu2 performs pure product searches
+through persistent SSH connections; frame/MCS/probe work stays on cpu1. Both hosts
+must see the same files and calculator versions. Use verified host keys; the
+optional known-hosts file is relative to the TOML. Coordinate transport preserves
+full precision and atom histories. SSH failure retains the uncertain claim and
+stops the run rather than saving a scientific rejection. Per-worker calculator
+host and helper initialization are logged. This does not change Glide submission.
+
+SQLite BUSY/LOCKED transactions retry after rollback without repeating the
+scientific calculation; idle workers avoid unnecessary writer locks. Final
+analysis lists worker errors separately from attachment sites. Real two-host
+synthetic smoke tests do not establish full 384-slot throughput.

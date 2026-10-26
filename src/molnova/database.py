@@ -1936,6 +1936,29 @@ def iteration_md_gbsa_elites(path, iteration, count):
 
 # Dedicated combichem-3d projects use the same compound identity/state model,
 # with pose/frontier/task records separate from legacy scientific selections.
+def _growth_retry_locked(operation):
+    """Retry rolled-back bookkeeping only; never repeat scientific calculation."""
+    from functools import wraps
+    import logging
+    import random
+
+    @wraps(operation)
+    def retry(*args, **kwargs):
+        for attempt in range(8):
+            try:
+                return operation(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, 'sqlite_errorcode', 0) & 255
+                if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or attempt == 7:
+                    raise
+                delay = random.uniform(.05, min(2., .1 * 2 ** attempt))
+                logging.getLogger('molnova.combichem3d').warning(
+                    'SQLite contention in %s; retry=%s/7 after %.3fs; calculation retained',
+                    operation.__name__, attempt + 1, delay)
+                time.sleep(delay)
+    return retry
+
+
 @contextmanager
 def growth_connection(path):
     """Do not inherit live SQLite connections across local calculator forks."""
@@ -1962,6 +1985,7 @@ def growth_project_references(path):
         source.close()
 
 
+@_growth_retry_locked
 def growth_initialize(path, cfg, fingerprint, parents):
     import json
     with growth_connection(path) as conn:
@@ -1977,6 +2001,7 @@ def growth_initialize(path, cfg, fingerprint, parents):
                 raise ValueError('Cannot reduce max-iteration of an existing pose-growth project')
             conn.execute('CREATE TABLE IF NOT EXISTS combichem3d_event (id INTEGER PRIMARY KEY,created REAL NOT NULL,kind TEXT NOT NULL,report TEXT NOT NULL)')
             conn.execute('CREATE INDEX IF NOT EXISTS combichem3d_pose_iteration_id ON combichem3d_pose(iteration,id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS combichem3d_batch_parent_state ON combichem3d_batch(parent_pose,state)')
             conn.execute('UPDATE combichem3d_run SET settings=? WHERE id=1', (json.dumps(cfg, sort_keys=True),))
             return False
         _core.create_sqlite_schema(conn)
@@ -1999,6 +2024,7 @@ def growth_initialize(path, cfg, fingerprint, parents):
                      'iteration INTEGER NOT NULL,start TEXT NOT NULL,stop TEXT NOT NULL,cursor TEXT NOT NULL,'
                      'state TEXT NOT NULL,owner INTEGER)')
         conn.execute('CREATE INDEX combichem3d_batch_pending ON combichem3d_batch(iteration,state)')
+        conn.execute('CREATE INDEX combichem3d_batch_parent_state ON combichem3d_batch(parent_pose,state)')
         conn.execute('CREATE TABLE combichem3d_probe ('
                      'parent_pose INTEGER NOT NULL REFERENCES combichem3d_pose(id),site TEXT NOT NULL,'
                      'report TEXT NOT NULL,PRIMARY KEY(parent_pose,site))')
@@ -2048,6 +2074,7 @@ def _growth_insert_pose(conn, payload, parent, generated=True):
     return cursor.lastrowid
 
 
+@_growth_retry_locked
 def growth_start_session(path, cfg):
     """Caller owns the growth stage lock and has joined every previous worker."""
     import json
@@ -2080,20 +2107,39 @@ def _growth_stop(conn):
     return reason
 
 
+@_growth_retry_locked
 def growth_should_stop(path):
     with growth_connection(path) as conn:
         return _growth_stop(conn)
 
 
+@_growth_retry_locked
 def growth_request_stop(path, reason):
     with growth_connection(path) as conn:
         conn.execute('UPDATE combichem3d_run SET stop_reason=COALESCE(stop_reason,?) WHERE id=1', (reason,))
 
 
+@_growth_retry_locked
 def growth_claim(path, iteration, batch_size, owner):
     """Allocate bounded ordinal ranges atomically; never materialize a product."""
     import json
     with growth_connection(path) as conn:
+        run = conn.execute('SELECT stop_reason,deadline FROM combichem3d_run WHERE id=1').fetchone()
+        if not run[0] and time.time() < run[1]:
+            active = conn.execute('SELECT 1 FROM combichem3d_batch WHERE iteration=? AND state=? LIMIT 1',
+                                  (iteration,Growth.RUNNING)).fetchone()
+            if active:
+                ready = conn.execute('SELECT 1 FROM combichem3d_batch WHERE iteration=? AND state=? LIMIT 1',
+                                     (iteration,Growth.PENDING)).fetchone()
+                ready = ready or conn.execute('SELECT 1 FROM combichem3d_pose WHERE '
+                    '(iteration=? AND input_state=?) OR (iteration=? AND plan_state=?) OR '
+                    '(iteration=? AND plan_state=? AND allocated!=total) LIMIT 1',
+                    (iteration,Growth.PENDING,iteration-1,Growth.PENDING,
+                     iteration-1,Growth.READY)).fetchone()
+                if not ready:
+                    # A stale observation only causes one harmless wait. Actual
+                    # allocation/completion decisions remain atomic below.
+                    return dict(kind='wait')
         conn.execute('BEGIN IMMEDIATE')
         if _growth_stop(conn):
             return None
@@ -2156,6 +2202,7 @@ def growth_parent(path, pose_id):
     return dict(id=pose_id,compound_id=row[3],molblock=row[0],history=json.loads(row[1]),plan=json.loads(row[2]) if row[2] else None,probes=probes)
 
 
+@_growth_retry_locked
 def growth_save_probe(path, pose_id, uid, report):
     import json
     with growth_connection(path) as conn:
@@ -2168,6 +2215,7 @@ def growth_save_probe(path, pose_id, uid, report):
         conn.execute('INSERT OR REPLACE INTO combichem3d_probe VALUES (?,?,?)', (pose_id,uid,json.dumps(report)))
 
 
+@_growth_retry_locked
 def growth_save_input(path, pose_id, properties, passed, baseline, prune=False, pose_data=None):
     import json
     with growth_connection(path) as conn:
@@ -2186,6 +2234,7 @@ def growth_save_input(path, pose_id, properties, passed, baseline, prune=False, 
                      (pose_id,'__baseline__',json.dumps(baseline)))
 
 
+@_growth_retry_locked
 def growth_save_plan(path, pose_id, plan, probes):
     import json
     with growth_connection(path) as conn:
@@ -2197,6 +2246,7 @@ def growth_save_plan(path, pose_id, plan, probes):
                      (json.dumps(plan),str(plan['total']),Growth.READY if plan['total'] else Growth.DONE,pose_id))
 
 
+@_growth_retry_locked
 def growth_save_attempt(path, batch, ordinal, report, payload=None):
     import json
     with growth_connection(path) as conn:
@@ -2229,6 +2279,7 @@ def growth_save_attempt(path, batch, ordinal, report, payload=None):
         return report
 
 
+@_growth_retry_locked
 def growth_finish_batch(path, batch):
     with growth_connection(path) as conn:
         conn.execute('UPDATE combichem3d_batch SET state=? WHERE id=? AND cursor=stop', (Growth.DONE,batch['id']))
@@ -2239,6 +2290,7 @@ def growth_finish_batch(path, batch):
             conn.execute('UPDATE combichem3d_pose SET plan_state=? WHERE id=?', (Growth.DONE,batch['parent_pose']))
 
 
+@_growth_retry_locked
 def growth_end_session(path, reason):
     with growth_connection(path) as conn:
         conn.execute('UPDATE combichem3d_run SET elapsed=elapsed+MAX(0,?-started),started=NULL,'
@@ -2255,6 +2307,7 @@ def growth_rows(path, table, after=0, limit=256):
                                                   (after,limit))]
 
 
+@_growth_retry_locked
 def growth_log_event(path, kind, report):
     import json
     with growth_connection(path) as conn:
@@ -2339,12 +2392,14 @@ def growth_cycle_info(path, iteration):
         return json.loads(row[0]) if row else {}
 
 
+@_growth_retry_locked
 def growth_cycle_checkpoint(path, iteration, report):
     import json
     with growth_connection(path) as conn:
         conn.execute('UPDATE combichem3d_cycle SET report=? WHERE iteration=?',(json.dumps(report),iteration))
 
 
+@_growth_retry_locked
 def growth_save_cycle_frame(path, iteration, payload, report, probes):
     import json
     with growth_connection(path) as conn:
@@ -2398,11 +2453,22 @@ def growth_analysis_snapshot(path):
         errors=[dict(r) for r in conn.execute(
             "SELECT a.iteration,e.value AS error,count(DISTINCT a.rowid) AS n FROM combichem3d_attempt a,"
             "json_each(a.report,'$.errors') e WHERE a.status='UNRESOLVED' GROUP BY a.iteration,e.value")]
+        expansion=[dict(r) for r in conn.execute(
+            "SELECT iteration,json_extract(report,'$.expanded_site_count') AS expanded_sites,status,count(*) AS n "
+            "FROM combichem3d_attempt WHERE json_type(report,'$.expanded_site_count') IS NOT NULL "
+            'GROUP BY iteration,expanded_sites,status ORDER BY iteration,expanded_sites,status')]
         for frame in frames:
             frame['history']=json.loads(frame['history'])
         for row in cycles+probes:
             row['report']=json.loads(row['report'])
+        frame_iterations = {frame['id']: frame['iteration'] for frame in frames}
+        worker_errors = [row for row in probes if row['site'].startswith('__worker_error__:')]
+        probes = [row for row in probes if not row['site'].startswith('__worker_error__:')]
+        for row in worker_errors:
+            reason = row['report'].get('reason', 'worker failure').strip().splitlines()
+            errors.append(dict(iteration=frame_iterations.get(row['parent_pose'], 0) + 1,
+                               error=row['site'] + ' ' + (reason[-1] if reason else 'worker failure'), n=1))
         return dict(run=run,frames=frames,cycles=cycles,probes=probes,counts=counts,
-                    optimization=optimization,properties=properties,errors=errors)
+                    optimization=optimization,properties=properties,errors=errors,expansion=expansion)
     finally:
         conn.close()

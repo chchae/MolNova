@@ -1,5 +1,47 @@
 # Independent MolNova reconstruction prompt
 
+## Two-host COMBICHEM resources and contention recovery (2026-10-26)
+
+**Confirmed user request:** cpu1 and cpu2 each provide 192 cores for COMBICHEM.
+Support `worker-hosts = { cpu1 = 192, cpu2 = 192 }` with
+`execution-host = "cpu1"`, for 384 single-threaded calculation slots in total.
+Keep Glide on its existing submission path; the requested Slurm migration was
+explicitly deferred. Default COMBICHEM execution remains local/min(16, CPU count).
+
+**Implementation choice:** all SQLite-claiming processes remain on the execution
+host. Slots assigned to the other host use persistent SSH pure-search helpers;
+helpers never open SQLite, claim work, supervise stages or invoke other workers.
+MCS, frame preparation and methyl probes remain with the original calculators on
+the execution host. Shared source/input paths and identical Python/RDKit/NumPy
+versions are required. Preserve seeds, atom order, stereo, atom histories and full
+precision coordinates on requests and replies. Optional shared
+`worker-ssh-known-hosts` resolves relative to the TOML and enables verified SSH
+host keys. A transport failure stops the worker and retains its uncertain claim;
+it must never become a terminal scientific UNRESOLVED attempt. Changed scientific
+settings still require a separate output; never reset production jobs/results.
+
+**Reported bug repairs:** retry rolled-back SQLite BUSY/LOCKED bookkeeping up to
+eight times with jitter, retaining the 30-second busy timeout and the already
+calculated result. Other SQL errors propagate. Idle claims avoid write locking
+when all available batches are already running. Add a non-destructive per-parent
+batch-state index. Separate saved `__worker_error__:PID` diagnostics from chemical
+attachment sites in final analysis, retaining the original diagnostic rows.
+These changes do not establish 384-slot production throughput or receptor accuracy.
+
+## Direct COMBICHEM SSH execution (2026-10-26)
+
+**Confirmed user request:** `molnova combichem-3d egfr.toml` must support direct
+execution on t41 without Slurm. Optional [combichem-3d] `execution-host` and
+absolute remote `remote-env-script` dispatch the entire supervisor through SSH
+before local output locking or initialization. TOML, inputs and source must be
+visible at identical shared paths. Activate the remote environment, replace
+PYTHONPATH with the shared source directory to avoid leaking Amber site-packages
+into Schrödinger, and keep calculator threads at one. Forward debug/trace/export
+flags and remote failures; prevent recursive dispatch. SQLite and multiprocessing
+remain on the execution host; no worker coordinates other workers. Default local
+execution remains unchanged. Existing jobs/results are not moved or reset.
+
+
 ## Elite-MCS frame cycles (2026-10-25; supersedes reference-parent/frontier growth defaults)
 
 **Confirmed user correction:** reference parent ligands are pose references only,
@@ -59,7 +101,8 @@ changed manifest keys/files and explain using a new [combichem-3d].out-dir, or
 
 **Confirmed distance choice:** molecular bond distance, not Euclidean distance.
 On newly retained sidechain atoms, find replaceable terminal H directions and
-independently test methyl probes (parent-heavy fixed, then original-core rescue).
+independently test methyl probes with only the original iteration-0 core fixed;
+all sidechains may relax jointly.
 For every PASS heavy-atom site compute the MINIMUM shortest bond-path length to
 any previous attachment atom. Select up to next-attachment-count=3 with the
 per-initial-branch balancing/cycle-cap policy below; within a branch prefer greatest
@@ -69,7 +112,7 @@ H preserves earlier elemental/H substitution rules; it does not restrict heavy
 atoms to graph degree one. If fewer than three pass, use those available; if none
 pass, preserve the explicit clash/unresolved evidence and stop. Real fragments
 replace H directly, followed by a fresh joint constrained search and bump checks.
-Only selected sites form the full next K^m Cartesian product.
+Only selected sites form the full next Cartesian product, including later-cycle -H choices.
 
 Cycle creation, ranked selection, frame preparation claims and checkpointing are
 SQLite-coordinated. Calculators perform elite MCS/probes, never coordinate workers.
@@ -90,6 +133,42 @@ as the default, descending, with compound ID then pose ID as deterministic ties.
 Rank distinct passing molecules from the immediately preceding cycle only. QED
 is not binding affinity. Reference similarity remains an explicit alternative;
 external Glide/GBSA scores must not be fabricated or copied from reference ligands.
+
+## Optional later growth, joint sidechain relaxation and atom cycle tags (2026-10-26)
+
+**Confirmed user changes:** enumerate partially substituted products at later
+frame cycles, optimize old and new sidechains together with only the original
+iteration-0 core fixed, and expose each generated atom's attachment cycle.
+
+At frame cycles >=2 add -H to every selected site's saved candidate pool if absent,
+without removing any sampled heavy fragment. Keep cycle 1's configured Cartesian
+product and explicit frontier behavior unchanged. With K=10 heavy fragments and
+three selected sites enumerate 11^3=1331 combinations: 30 single-site, 300 two-site,
+1000 three-site and one all-H no-op. Existing H-enabled pools already reserve an
+H slot within K and must not duplicate it. Preserve all combinations, mixed-radix
+cursors, masks and atom histories in SQLite; do not silently drop all-H. It is the
+existing frame's identity, not a new unique compound. Only non-H additions consume
+a root growth cycle. Record expanded sites/count in each attempt and summarize
+mask counts in the final log. Every attempted combination retains normal constrained
+search and bump/filter gates. Active-root MCS acceptance remains mandatory.
+
+For frame-cycle methyl probes remove the parent-heavy-fixed-first phase: local
+H-direction starts and constrained ETKDG/torsion searches all permit previous and
+current sidechains to move. The fixed/restraint map contains only the original
+history.core UIDs, never the enlarged frame_uids. Actual products already use that
+joint map and retain it. The EGFR input explicitly sets core-constraint="fixed";
+other explicit restraint settings and opt-in legacy frontier probe behavior remain
+unchanged. Keep core displacement, stereo, receptor/internal bump checks and the
+100-iteration capped-minimization policy. Record constraint_scope in search reports.
+
+Add public integer atom property molnova_added_cycle from saved added_iteration:
+original core=0, generated fragment atoms=their addition cycle. Preserve these
+values through trimming, no-ops, assembly and restoration; never relabel old atoms
+with the current cycle. Export atom.iprop.molnova_added_cycle in both SDF files
+using RDKit integer atom-property lists, which restore atom properties on read.
+Hydrogen birth is not tracked: leave it missing (n/a), and retain any INFERRED
+history provenance/assumptions rather than promoting inferred chronology to fact.
+Changes require a new output; existing jobs and scientific results remain intact.
 
 ## Per-initial-attachment growth caps, balanced selection and final log analysis (2026-10-26)
 
@@ -124,6 +203,27 @@ counts in pose histories, through MCS extraction and restart. Reject assembly an
 skip methyl probing/selection on exhausted roots. Preserve capped branches' existing
 chemistry. Stop explicitly with attachment_cycle_limits_reached when candidate
 roots are exhausted; this is an expected configured stop, not an unresolved search.
+
+**Confirmed active-root acceptance change (2026-10-26):** a chemically expanded
+MCS is insufficient when it removes all structural follow-up growth sites from a
+root whose growth budget remains. For histories with per-root cycle-limit metadata
+(including new map-cycle 999/unlimited roots), require at least one newly retained,
+H-bearing heavy atom per still-active initial root, using the existing terminal-H
+candidate definition. Exhausted roots do not require follow-up sites. Preserve
+uncapped legacy empty-limit histories' previous MCS behavior. This is a structural
+acceptance condition; methyl probing and finite clash searches remain separate.
+
+Reject such MCS attempts as missing_active_root_sites, record required/missing
+root IDs and per-root candidate counts, and continue the same molecular-weight
+subset reduction. Consider all bounded ring/stereo-compatible template mappings
+before concluding that an active root is missing. At one elite use the whole
+molecule and apply the same condition. If it still cannot supply a required site,
+stop explicitly with required_growth_sites_unavailable, retaining checkpoints and
+results; do not loop forever, fabricate a frame, or label this a completed growth
+budget. Report the rejection evidence in live and final log analysis. Do not
+consume growth counters during these checks. The reported 65/39 pair now rejects
+its 25-atom MCS and reduces to CMPID_65's full 31-atom structure, which retains
+three structural N-branch candidates; actual bump eligibility requires calculation.
 
 **Balanced selection interpretation:** among eligible probe-PASS sites, prioritize
 roots with fewer slots selected in the current cycle, then fewer cumulative slots,
@@ -321,7 +421,7 @@ Use a separate output/SQLite DB. Independent local calculators atomically claim
 bounded parent/product batches; the supervisor only supervises and keeps iterations
 sequential. Preserve WAL, foreign keys, 30-second timeout, CMPID identity,
 per-combination commits, big-integer cursors, all poses/history and failure/deferred
-records. Never materialize the full product. Up to 16 processes, seed, search and
+records. Never materialize the full product. Up to 384 processes total (default min(16, CPU count)), seed, search and
 filter settings, output-vs-intermediate pruning, 30-minute default compute budget,
 target/time stopping and restart behavior are configured explicitly. Save partial
 search evidence on limits/Ctrl+C; never reset live calculators. Existing legacy

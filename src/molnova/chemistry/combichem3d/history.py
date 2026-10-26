@@ -7,6 +7,12 @@ SCHEMA = 'molnova_pose_history_v1'
 FIELDS = ('uid', 'branch', 'fragment', 'added_iteration')
 
 
+def tag_atom_cycles(mol, history):
+    """Expose saved heavy-atom provenance without guessing hydrogen birth."""
+    for row in history['atoms']:
+        mol.GetAtomWithIdx(row['index']).SetIntProp('molnova_added_cycle',row['added_iteration'])
+
+
 def annotate(mol, history):
     mol = Chem.Mol(mol)
     if not isinstance(history,dict):
@@ -85,6 +91,7 @@ def annotate(mol, history):
     clean = Chem.Mol(mol)
     if any(a.GetAtomicNum() == 0 for a in clean.GetAtoms()) or len(Chem.GetMolFrags(clean)) != 1:
         raise ValueError('A parent must be one connected molecule without attachment dummies')
+    tag_atom_cycles(clean,history)
     return clean, snapshot(clean, history)
 
 
@@ -103,6 +110,7 @@ def restore(mol, history):
     for row in history['atoms']:
         for key in FIELDS:
             mol.GetAtomWithIdx(row['index']).SetProp('_mn_' + key, str(row[key]))
+    tag_atom_cycles(mol,history)
     coordinates = history.get('pose_coordinates')
     if coordinates is not None:
         if len(coordinates) != mol.GetNumAtoms():

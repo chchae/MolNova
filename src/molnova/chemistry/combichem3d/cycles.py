@@ -36,6 +36,25 @@ def cuts_ring(mol, mapping):
                for b in mol.GetBonds())
 
 
+def growth_site_coverage(frame, history, previous):
+    """Require a future H-bearing site for every still-active limited root.
+
+    Empty legacy limit metadata retains its original uncapped-MCS behavior.
+    New map-cycle histories include explicit limits, including unlimited 999.
+    This is a structural check; methyl probes still decide clash eligibility.
+    """
+    required=([root for root in history.get('initial_attachment_labels',{}) if growth_available(history,root)]
+              if history.get('initial_attachment_max_cycles') else [])
+    counts={root:0 for root in required}
+    if required:
+        for uid,_ in terminal_h_candidates(frame,history,previous):
+            root=root_for_site(history,uid)
+            if root in counts:
+                counts[root]+=1
+    return dict(required_growth_roots=required,growth_candidate_counts=counts,
+                missing_growth_roots=[root for root in required if not counts[root]])
+
+
 def select_mcs(elites, previous, cfg, deadline, checkpoint=lambda report:None):
     old=set(previous['history']['frame_uids'])
     old_smiles=previous['history']['frame_smiles']
@@ -71,7 +90,8 @@ def select_mcs(elites, previous, cfg, deadline, checkpoint=lambda report:None):
             params.BondCompareParameters.RingMatchesRingOnly=True
             params.BondCompareParameters.CompleteRingsOnly=True
             params.InitialSeed=old_smiles
-            result=rdFMCS.FindMCS([mcs_input(restored(r)) for r in subset],params)
+            molecules=[Chem.RemoveHs(restored(r)) for r in subset]
+            result=rdFMCS.FindMCS([mcs_input(m) for m in molecules],params)
             if result.canceled:
                 attempt.update(status='mcs_timeout',mcs_smarts=None,timeout_seconds=params.Timeout)
                 frame=None
@@ -88,21 +108,39 @@ def select_mcs(elites, previous, cfg, deadline, checkpoint=lambda report:None):
                     if not mappings:
                         frame=None;attempt.update(status='partial_ring_mapping',mcs_smarts=result.smartsString)
                     else:
-                        mapping=min(mappings)
-                        frame=trim_to_uids(template,{template.GetAtomWithIdx(i).GetProp('_mn_uid') for i in mapping})
-                        attempt.update(status='accepted',mcs_smarts=result.smartsString,selected_template_indices=list(mapping))
-                        # FMCS SMARTS need not encode every tetrahedral tag. Check
-                        # the actual extracted stereochemical structure as well.
-                        if not all(Chem.RemoveHs(restored(r)).HasSubstructMatch(frame,useChirality=True) for r in subset):
-                            frame=None;attempt['status']='frame_stereo_not_shared'
+                        frame=None
+                        attempt.update(status='frame_stereo_not_shared',mcs_smarts=result.smartsString)
+                        # A degenerate mapping can retain a different branch.
+                        # Try every bounded, ring-preserving mapping before
+                        # rejecting the MCS for missing active-root growth sites.
+                        for mapping in sorted(mappings):
+                            candidate=trim_to_uids(template,{template.GetAtomWithIdx(i).GetProp('_mn_uid') for i in mapping})
+                            if not all(m.HasSubstructMatch(candidate,useChirality=True) for m in molecules):
+                                continue
+                            coverage=growth_site_coverage(candidate,subset[0]['history'],previous)
+                            attempt.update(coverage,selected_template_indices=list(mapping),
+                                           frame_smiles=provenance.canonical_smiles(candidate),atoms=candidate.GetNumHeavyAtoms())
+                            if coverage['missing_growth_roots'] and attempt['frame_smiles']!=old_smiles:
+                                attempt['status']='missing_active_root_sites'
+                                continue
+                            frame=candidate;attempt['status']='accepted'
+                            break
         if frame is not None:
             smiles=provenance.canonical_smiles(frame)
             attempt.update(frame_smiles=smiles,atoms=frame.GetNumHeavyAtoms())
             if count>1 and smiles==old_smiles:
                 attempt['status']='same_as_previous_frame';frame=None
+            else:
+                coverage=growth_site_coverage(frame,subset[0]['history'],previous)
+                attempt.update(coverage)
+                if coverage['missing_growth_roots']:
+                    attempt['status']='missing_active_root_sites';frame=None
         attempts.append(attempt)
         logger.info('elite MCS: cycle=%s elites=%s status=%s atoms=%s frame_SMILES=%s',
                     cycle,count,attempt['status'],attempt.get('atoms'),attempt.get('frame_smiles'))
+        if attempt.get('missing_growth_roots'):
+            logger.info('MCS growth requirements: cycle=%s elites=%s required_roots=%s candidate_counts=%s missing_roots=%s',
+                        cycle,count,attempt['required_growth_roots'],attempt['growth_candidate_counts'],attempt['missing_growth_roots'])
         if attempt.get('mcs_smarts'):
             logger.info('MCS SMARTS: %s',attempt['mcs_smarts'])
             logger.info('MCS SMARTS readable: %s',mcs_readable_smarts(attempt['mcs_smarts']))
@@ -114,6 +152,9 @@ def select_mcs(elites, previous, cfg, deadline, checkpoint=lambda report:None):
                            previous_attachments=previous['history']['attachments'],attachments=previous['history']['attachments'])
             return (frame,history),dict(attempts=attempts,template_pose=subset[0]['id'],
                                       elite_pose_ids=[r['id'] for r in subset],selected_elite_count=count)
+        if count==1:
+            return None,dict(attempts=attempts,status='required_growth_sites_unavailable',
+                             missing_growth_roots=attempt.get('missing_growth_roots',[]))
         count=max(1,count//2)
         # Stable ties retain the original elite ranking. Only reduction changes
         # the subset order; the first MCS still uses the configured rank order.
@@ -157,7 +198,11 @@ def prepare_next_frame(db, iteration, cfg, checker, deadline):
             return
         def checkpoint(value):database.growth_cycle_checkpoint(db,iteration,dict(value,previous_mcs_attempts=previous_attempts))
         selected,report=select_mcs(elites,previous,cfg,deadline,checkpoint)
-        if selected is None:return
+        if selected is None:
+            if report.get('status')=='required_growth_sites_unavailable':
+                checkpoint(report)
+                database.growth_request_stop(db,report['status'])
+            return
         frame,history=selected
         report['previous_mcs_attempts']=previous_attempts
         report.update(prepared_frame=dict(molblock=Chem.MolToMolBlock(frame),history=provenance.snapshot(frame,history)),

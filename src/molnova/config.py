@@ -66,6 +66,7 @@ def combichem_3d_settings(filename):
         'growth-mode': 'frame-cycles', 'elite-count': 20, 'elite-rank-by': 'qed',
         'next-attachment-count': 3, 'attachment-distance': 'bonds', 'mcs-timeout': 60,
         'initial-attachment-max-cycles': {},
+        'execution-host': None, 'remote-env-script': None, 'worker-hosts': {}, 'worker-ssh-known-hosts': None,
     }
     if project_mode:
         for key in defaults:
@@ -133,8 +134,8 @@ def combichem_3d_settings(filename):
         value = cfg[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < (1 if key in positive_ints else 0):
             raise ValueError(f'{key} must be an integer >= {1 if key in positive_ints else 0}')
-    if cfg['processes'] > 16 or cfg['seed'] > 2147483646:
-        raise ValueError('processes must be <=16 and seed <=2147483646')
+    if cfg['processes'] > 384 or cfg['seed'] > 2147483646:
+        raise ValueError('processes must be <=384 and seed <=2147483646')
     for key in ('core-displacement', 'overlap-tolerance', 'one-four-scale', 'restraint-force', 'max-seconds', 'grace-seconds', 'log-interval'):
         value = cfg[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
@@ -175,6 +176,41 @@ def combichem_3d_settings(filename):
             not isinstance(v, list) or not v or any(not isinstance(x, str) for x in v)
             for v in cfg['site-candidates'].values()):
         raise ValueError('site-candidates must map atom UIDs to nonempty fragment SMILES lists')
+    host = cfg['execution-host']
+    script = cfg['remote-env-script']
+    if host is not None:
+        import re
+        if not isinstance(host, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*', host):
+            raise ValueError('execution-host must be an SSH hostname or alias')
+        if not isinstance(script, str) or not script.startswith('/') or '\n' in script:
+            raise ValueError('remote-env-script must be an absolute remote environment script path')
+    elif script is not None:
+        raise ValueError('remote-env-script requires execution-host')
+    hosts = cfg['worker-hosts']
+    if not isinstance(hosts, dict):
+        raise ValueError('worker-hosts must map SSH hostnames to worker counts')
+    if hosts:
+        import re
+        if not host or not isinstance(script, str):
+            raise ValueError('worker-hosts requires execution-host and remote-env-script')
+        for name, slots in hosts.items():
+            if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name)
+                    or isinstance(slots, bool) or not isinstance(slots, int) or not 1 <= slots <= 192):
+                raise ValueError('worker-hosts requires hostnames and 1..192 workers per host')
+        if len(hosts) > 2 or sum(hosts.values()) > 384:
+            raise ValueError('worker-hosts supports at most two hosts and 384 workers total')
+        if host not in hosts:
+            raise ValueError('execution-host must be present in worker-hosts')
+        cfg['processes'] = sum(hosts.values())
+    known_hosts = cfg['worker-ssh-known-hosts']
+    if known_hosts is not None:
+        if not isinstance(known_hosts, str) or not known_hosts.strip():
+            raise ValueError('worker-ssh-known-hosts must be a local shared file path')
+        cfg['worker-ssh-known-hosts'] = str((path.parent / Path(known_hosts).expanduser()).resolve())
+    else:
+        cfg.pop('worker-ssh-known-hosts')
+    if not hosts:
+        cfg.pop('worker-hosts')
     cfg['config-path'] = str(path)
     if not isinstance(cfg['schrodinger'],str) or not cfg['schrodinger'].strip():
         raise ValueError('schrodinger must be a local installation path')

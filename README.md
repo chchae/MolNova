@@ -41,9 +41,15 @@ attachment-site Cartesian product, filters constrained poses against the recepto
 ranks passing molecules by QED, then updates the next frame with elite-MCS
 reduction that retains heavier molecules. Probe-passing growth sites are balanced
 across initial branches and ranked by molecular bond distance within each branch.
+An MCS missing future H-bearing growth sites on a still-active branch is rejected
+and the elite subset is reduced further, down to a single complete elite.
 Positive initial `[*:N]` values set per-branch growth-cycle limits; `[*:999]` is
 unlimited, with independent internal IDs for repeated values. Each run ends with
 a cycle/frame/attachment analysis appended to its log.
+Later cycles include leaving any selected site unchanged, so partial extensions
+are enumerated alongside full extensions. Probe and product searches relax old
+and new sidechains together around the original core, and exported SDF atoms
+retain their `molnova_added_cycle` provenance tags.
 
 ```bash
 python examples/combichem-3d/make_cycle_inputs.py /tmp/molnova-frame-demo

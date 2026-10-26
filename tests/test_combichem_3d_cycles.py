@@ -3,6 +3,8 @@ import copy
 import importlib.util
 import json
 import logging
+import math
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -150,6 +152,87 @@ def test_changed_mcs_is_accepted_without_halving(project,monkeypatch):
     monkeypatch.setattr(cycles.rdFMCS,'FindMCS',lambda *args:SimpleNamespace(canceled=False,smartsString=query))
     selected,report=cycles.select_mcs(elites,previous,cfg,time.time()+30)
     assert selected and len(report['attempts'])==1 and report['selected_elite_count']==2
+
+
+@pytest.fixture
+def reported_missing_branch(project,tmp_path):
+    """CMPID_65/39 chemistry with synthetic poses, not receptor validation."""
+    source=Chem.AddHs(Chem.MolFromSmiles('O=C(ONc1ncnc2[nH]c(-c3ccc(OCCCC4(F)COC4)cc3)cc12)C1CC1'))
+    assert AllChem.EmbedMolecule(source,randomSeed=37)>=0
+    path=tmp_path/'reported-reference.sdf'
+    writer=Chem.SDWriter(str(path));writer.write(source);writer.close()
+    frame,h=frames.initial_frame(path,'c1nc(N[*:2])c2cc(-c3ccc([*:1])cc3)[nH]c2n1')
+    previous=dict(id=1,compound_id=1,history=h,molblock=Chem.MolToMolBlock(frame))
+    elites=[product_row(frame,h,i,choices=[fragment,'*OCCCC1(F)COC1'])
+            for i,fragment in enumerate(['*OC(=O)C1CC1','*Cc1ncco1'])]
+    for row,number in zip(elites,[65,39]):row.update(id=number,compound_id=number)
+    return project,previous,elites
+
+
+def test_reported_mcs_missing_uncapped_n_branch_reduces_two_elites_to_one(reported_missing_branch):
+    cfg,previous,elites=reported_missing_branch
+    (frame,h),report=cycles.select_mcs(elites,previous,cfg,time.time()+30)
+    assert [a['elite_count'] for a in report['attempts']]==[2,1]
+    rejected=report['attempts'][0]
+    assert rejected['status']=='missing_active_root_sites'
+    assert rejected['required_growth_roots']==['0'] and rejected['missing_growth_roots']==['0']
+    assert rejected['growth_candidate_counts']=={'0':0}
+    assert rejected['atoms']==25
+    assert report['selected_elite_count']==1 and report['template_pose']==65
+    assert provenance.canonical_smiles(frame)==elites[0]['smiles']
+    assert report['attempts'][-1]['growth_candidate_counts']['0']>0
+    assert h['growth_counts']=={'0':1,'1':1}
+
+
+def test_mcs_requires_each_active_root_and_does_not_require_exhausted_roots(reported_missing_branch):
+    cfg,previous,elites=reported_missing_branch
+    for row in elites:row['history']['initial_attachment_max_cycles']={'0':2,'1':2}
+    _,report=cycles.select_mcs(elites,previous,cfg,time.time()+30)
+    rejected=report['attempts'][0]
+    assert rejected['required_growth_roots']==['0','1']
+    assert rejected['missing_growth_roots']==['0']
+    assert rejected['growth_candidate_counts']['1']>0
+    for row in elites:row['history']['initial_attachment_max_cycles']={'0':1,'1':1}
+    _,report=cycles.select_mcs(elites,previous,cfg,time.time()+30)
+    assert report['selected_elite_count']==2
+    assert report['attempts'][0]['required_growth_roots']==[]
+
+
+def test_single_elite_without_active_root_h_sites_stops_instead_of_looping(reported_missing_branch):
+    cfg,previous,elites=reported_missing_branch
+    original=stage.restore_parent(previous)
+    elite=product_row(original,previous['history'],choices=['*F','*OCCCC1(F)COC1'])
+    selected,report=cycles.select_mcs([elite],previous,cfg,time.time()+30)
+    assert selected is None and len(report['attempts'])==1
+    assert report['status']=='required_growth_sites_unavailable'
+    assert report['missing_growth_roots']==['0']
+
+
+def test_root_coverage_checks_alternative_mcs_mappings_before_reducing(project,monkeypatch):
+    project['initial-attachment-max-cycles']={'0':1,'1':2}
+    db,_=stage.prepare_project(project);previous=database.growth_parent(db,1);parent=stage.restore_parent(previous)
+    elites=[product_row(parent,previous['history'],i,choices=['*CCC','*CCC']) for i in range(2)]
+    template=cycles.restored(elites[0]);h=elites[0]['history']
+    keep=set(previous['history']['frame_uids'])|{a['uid'] for a in h['atoms'] if a['branch']=='branch_1'}
+    query=Chem.MolToSmarts(frames.trim_to_uids(template,keep))
+    monkeypatch.setattr(cycles.rdFMCS,'FindMCS',lambda *args:SimpleNamespace(canceled=False,smartsString=query))
+    (frame,h),report=cycles.select_mcs(elites,previous,project,time.time()+30)
+    assert report['selected_elite_count']==2
+    assert report['attempts'][0]['growth_candidate_counts']['1']>0
+    candidates=cycles.terminal_h_candidates(frame,h,previous)
+    assert {root_for_site(h,uid) for uid,_ in candidates}=={'1'}
+
+
+def test_exhausted_single_elite_failure_is_checkpointed_without_creating_frame(project,monkeypatch):
+    db,_,_,_=seed_completed_cycle(project);database.growth_claim(db,2,1,1)
+    failure=dict(status='required_growth_sites_unavailable',missing_growth_roots=['0'],
+                 attempts=[dict(elite_count=1,status='missing_active_root_sites',missing_growth_roots=['0'])])
+    monkeypatch.setattr(cycles,'select_mcs',lambda *args:(None,failure))
+    cycles.prepare_next_frame(db,2,project,None,time.time()+30)
+    assert database.growth_run_info(db)['stop_reason']=='required_growth_sites_unavailable'
+    assert database.growth_cycle_info(db,2)['missing_growth_roots']==['0']
+    assert len(database.growth_rows(db,'combichem3d_pose'))==2
+    assert 'missing_growth_roots=' in '\n'.join(final_analysis_lines(db))
 
 
 @pytest.fixture
@@ -315,13 +398,67 @@ def test_real_two_cycle_search_starts_at_mcs_and_ignores_target_when_enumerating
     report=database.growth_cycle_info(db,2)
     assert report['status']=='ready'
     assert len(report['selected_attachments'])==2 # only two new H-bearing MCS sites exist
-    assert sum(r['iteration']==2 for r in attempts)==4
+    assert sum(r['iteration']==2 for r in attempts)==9 # each selected site has 2 fragments plus -H
+    second=[json.loads(r['report']) for r in attempts if r['iteration']==2]
+    assert Counter(r['expanded_site_count'] for r in second)=={0:1,1:4,2:4}
+    assert all(r['expanded_site_count']==sum(c!='-H' for c in r['choices'].values()) for r in second)
     assert info['unique_count']>1
     assert len(database.growth_structure_rows(db,0,frames_only=True))==1
     assert len(database.growth_structure_rows(db,1,frames_only=True))==1
     parents=database.growth_rows(db,'combichem3d_pose')
     assert all(json.loads(r['history']).get('role')=='frame' for r in parents if not r['generated'])
     assert all(json.loads(r['history'])['constraint_reference']['record']==1 for r in parents if r['generated'])
+    # Exported integer atom tags survive SDF loading, including older atoms.
+    for saved in Chem.SDMolSupplier(str(Path(cfg['out-dir'])/'poses.sdf'),removeHs=False):
+        assert saved is not None and saved.HasProp('atom.iprop.molnova_added_cycle')
+        h=json.loads(saved.GetProp('history'))
+        for a in h['atoms']:
+            assert saved.GetAtomWithIdx(a['index']).GetIntProp('molnova_added_cycle')==a['added_iteration']
+        assert all(not a.HasProp('molnova_added_cycle') for a in saved.GetAtoms() if a.GetAtomicNum()==1)
+
+
+@pytest.mark.parametrize('include_h',[False,True])
+def test_later_frame_plans_enumerate_all_partial_growth_subsets(project,monkeypatch,include_h):
+    project.update({'sidechains-per-site':10,'sidechain-include-h':include_h})
+    Path(project['sidechain-library']).write_text('\n'.join('*'+'C'*n for n in range(1,11))+'\n')
+    db,_,_,_=seed_completed_cycle(project);database.growth_claim(db,2,1,1)
+    monkeypatch.setattr(cycles,'methyl_probe',lambda *args:dict(status='PASS',reason='synthetic probe',pose=None))
+    checker=BumpChecker(load_receptor(project['receptor'],project),project)
+    cycles.prepare_next_frame(db,2,project,checker,time.time()+30)
+    job=database.growth_claim(db,2,1,1)
+    assert job['kind']=='plan'
+    library,_=load_library(project['sidechain-library'],project)
+    stage.plan_parent(db,job,project,library,checker,time.time()+30)
+    row=database.growth_parent(db,job['parent_pose']);plan=row['plan']
+    size=10 if include_h else 11
+    assert plan['optional_sites'] and len(plan['sites'])==3
+    assert all(len(p)==size and p.count('-H')==1 for p in plan['pools'])
+    assert plan['total']==size**3
+    sizes=Counter(sum(c!='-H' for c in combination_at(plan['pools'],i)) for i in range(plan['total']))
+    assert sizes=={n:math.comb(3,n)*(size-1)**n for n in range(4)}
+    # Pools/cursors are durable; a restart retains the optional no-op choices.
+    saved=copy.deepcopy(plan)
+    database.growth_end_session(db,'interrupted');database.growth_start_session(db,project)
+    assert database.growth_parent(db,job['parent_pose'])['plan']==saved
+
+
+def test_partial_growth_keeps_old_atom_cycles_and_only_counts_actual_additions(project):
+    db,_=stage.prepare_project(project);previous=database.growth_parent(db,1)
+    row=product_row(stage.restore_parent(previous),previous['history'])
+    mol=cycles.restored(row);h=row['history']
+    sites=[a['uid'] for a in h['atoms'] if a['branch']=='branch_1'][:3]
+    product,birth=assemble(mol,h,sites,['-H','*CC','-H'],'partial')
+    assert product.GetNumHeavyAtoms()==mol.GetNumHeavyAtoms()+2
+    assert birth['growth_counts']=={'0':2,'1':1}
+    old={a['uid']:a['added_iteration'] for a in h['atoms']}
+    for atom in product.GetAtoms():
+        expected=old.get(atom.GetProp('_mn_uid'),2)
+        assert atom.GetIntProp('molnova_added_cycle')==expected
+    assert sum(a.GetIntProp('molnova_added_cycle')==2 for a in product.GetAtoms())==2
+    noop,noop_history=assemble(mol,h,sites,['-H']*3,'all-noop')
+    assert provenance.canonical_smiles(noop)==provenance.canonical_smiles(mol)
+    assert noop_history['growth_counts']==h['growth_counts']
+    assert {a.GetIntProp('molnova_added_cycle') for a in noop.GetAtoms()}=={0,1}
 
 
 def test_prepared_mcs_and_probe_results_survive_interruption(project,monkeypatch):
@@ -580,3 +717,14 @@ def test_final_analysis_is_read_only_and_contains_cycle_frames_and_sites(project
     assert 'initial_branch_balanced' in report and 'growth_cycles_used=1' in report
     assert report.endswith('===== 실행 결과 분석 END =====')
     assert database.growth_rows(db,'combichem3d_pose')==before
+
+
+def test_final_analysis_separates_worker_failures_from_attachment_sites(project):
+    db, _, _, _ = seed_completed_cycle(project)
+    database.growth_save_probe(db, 1, '__worker_error__:123',
+        dict(status='UNRESOLVED', reason='sqlite3.OperationalError: database is locked', failed_stage='worker'))
+    before = database.growth_rows(db, 'combichem3d_probe')
+    report = '\n'.join(final_analysis_lines(db))
+    assert '__worker_error__:123' in report and 'database is locked' in report
+    assert report.endswith('===== 실행 결과 분석 END =====')
+    assert database.growth_rows(db, 'combichem3d_probe') == before

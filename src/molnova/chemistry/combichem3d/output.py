@@ -74,6 +74,7 @@ def export_results(db, output, batch=256):
                         raise RuntimeError(f"Cannot reconstruct saved pose {row['id']}")
                     from molnova.chemistry.combichem3d.history import restore
                     restore(mol,metadata)
+                    Chem.CreateAtomIntPropertyList(mol,'molnova_added_cycle')
                     mol.SetProp('_Name',f"CMPID_{row['compound_id']}")
                     for key,value in dict(pose_id=row['id'],parent_pose=row['parent_pose'],iteration=row['iteration'],
                                           output_passed=bool(row['output_passed']),history=metadata,

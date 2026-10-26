@@ -281,6 +281,47 @@ def test_baseline_clash_is_reported_and_core_only_rescue_can_move_parent_sidecha
     assert result['core_max_displacement'] <= cfg['core-displacement']
 
 
+def test_frame_probe_relaxes_old_sidechains_while_only_initial_core_is_fixed(inputs):
+    _,cfg,_,_=inputs
+    mol,h=parent('c1ccccc1CCCC',tuple(range(6)))
+    h.update(growth_mode='frame-cycles',role='frame',
+             frame_uids=[a.GetProp('_mn_uid') for a in mol.GetAtoms()],attachments=['a9'])
+    cfg.update({'conformers':4,'torsion-trials':2})
+    uid=growth_sites(mol,h)[-1]
+    anchor=next(a.GetIdx() for a in mol.GetAtoms() if a.GetProp('_mn_uid')==uid)
+    checker=BumpChecker(positioned('C',[mol.GetConformer().GetAtomPosition(anchor)]),cfg)
+    assert not checker.check(mol)['passed']
+    result=conformations.methyl_probe(mol,h,uid,checker,cfg,37)
+    assert result['status']==PoseVerdict.PASS
+    assert result['phase']=='reference_core_fixed' and 'first_phase' not in result
+    assert result['constraint_scope']=='original_reference_core'
+    assert result['core_max_displacement']<=cfg['core-displacement']
+    original={a.GetProp('_mn_uid'):np.array(mol.GetConformer().GetAtomPosition(a.GetIdx())) for a in mol.GetAtoms()}
+    pose=result['pose']
+    moved=[np.linalg.norm(np.array(pose.GetConformer().GetAtomPosition(a.GetIdx()))-original[a.GetProp('_mn_uid')])
+           for a in pose.GetAtoms() if a.HasProp('_mn_uid') and a.GetProp('_mn_uid') in original
+           and a.GetProp('_mn_uid') not in {r['uid'] for r in h['core']}]
+    assert max(moved)>.1
+
+
+def test_frame_probe_never_adds_previous_frame_atoms_to_fixed_set(inputs,monkeypatch):
+    _,cfg,mol,h=inputs
+    uid=growth_sites(mol,h)[0]
+    h.update(growth_mode='frame-cycles',role='frame',
+             frame_uids=[a.GetProp('_mn_uid') for a in mol.GetAtoms()],attachments=[uid])
+    calls=[]
+    def checked_search(product,birth,checker,settings,seed,**kwargs):
+        fixed=conformations.fixed_coordinates(product,birth,kwargs.get('parent_fixed'))
+        assert kwargs.get('parent_fixed') is None
+        assert set(fixed)=={r['uid'] for r in h['core']}
+        assert set(fixed)<set(h['frame_uids'])
+        calls.append(fixed)
+        return dict(status=PoseVerdict.PASS,pose=None)
+    monkeypatch.setattr(conformations,'search',checked_search)
+    result=conformations.methyl_probe(mol,h,uid,None,cfg,37)
+    assert len(calls)==1 and result['phase']=='reference_core_fixed'
+
+
 @pytest.mark.parametrize('failure',['embedding','parameters','optimization'])
 def test_search_failures_are_unresolved_never_clash_reject(inputs,monkeypatch,failure):
     _,cfg,mol,h = inputs
@@ -396,7 +437,7 @@ def test_new_substituent_can_rotate_about_a_fixed_parent_axis_without_moving_par
     assert np.linalg.norm(before[7]-after[7])>.1
 
 
-@pytest.mark.parametrize('extra',['max-iteration = 0','processes = 17','conformers = true',
+@pytest.mark.parametrize('extra',['max-iteration = 0','processes = 385','conformers = true',
                                   'max-seconds = -1','one-four-policy = "guess"'])
 def test_invalid_configuration_is_rejected(inputs,extra):
     filename,_,_,_ = inputs
@@ -406,6 +447,16 @@ def test_invalid_configuration_is_rejected(inputs,extra):
     filename.write_text(text+'\n'+extra+'\n')
     with pytest.raises(ValueError):
         combichem_3d_settings(filename)
+
+
+@pytest.mark.parametrize('processes', [17, 128, 192, 384])
+def test_configuration_accepts_up_to_384_workers(inputs, processes):
+    filename, _, _, _ = inputs
+    text = filename.read_text()
+    lines = [f'processes = {processes}' if line.startswith('processes =') else line
+             for line in text.splitlines()]
+    filename.write_text('\n'.join(lines) + '\n')
+    assert combichem_3d_settings(filename)['processes'] == processes
 
 
 def test_atomic_claims_allocate_nonoverlapping_bounded_ranges(inputs):
@@ -1113,3 +1164,94 @@ def test_target_limit_is_atomic_and_preserves_finished_geometry(inputs):
     assert len(poses)==8 and sum(r['output_passed'] for r in poses)==2
     reports=[json.loads(r['report']) for r in database.growth_rows(db,'combichem3d_attempt')]
     assert sum(r.get('target_count_limited',False) for r in reports)==6
+
+
+@pytest.mark.parametrize('extra', [
+    'execution-host = "-bad"\nremote-env-script = "/env/amber.sh"',
+    'execution-host = "t41"',
+    'execution-host = "t41"\nremote-env-script = "relative/amber.sh"',
+    'remote-env-script = "/env/amber.sh"',
+])
+def test_remote_execution_settings_reject_invalid_configuration(inputs, extra):
+    filename, _, _, _ = inputs
+    filename.write_text(filename.read_text().split('[filters]')[0] + '\n' + extra + '\n')
+    with pytest.raises(ValueError):
+        combichem_3d_settings(filename)
+
+
+def test_locked_result_transaction_rolls_back_and_retries_without_duplicates(inputs, monkeypatch):
+    import sqlite3
+    _, cfg, _, _ = inputs
+    db, _ = stage.prepare_project(cfg)
+    database.growth_start_session(db, cfg)
+    job = database.growth_claim(db, 1, 1, 1)
+    database.growth_save_input(db, job['parent_pose'], {}, True, {})
+    job = database.growth_claim(db, 2, 1, 1)
+    database.growth_save_plan(db, job['parent_pose'], dict(sites=['a'], pools=[['-H']], total=1), [])
+    job = database.growth_claim(db, 2, 1, 1)
+    calls = []
+    class BusyOnce(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if sql.startswith('UPDATE combichem3d_run SET attempted='):
+                calls.append(sql)
+                if len(calls) == 1:
+                    exc = sqlite3.OperationalError('database is locked')
+                    exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                    raise exc
+            return super().execute(sql, parameters)
+    monkeypatch.setattr(database, 'connect', lambda path: sqlite3.connect(path, factory=BusyOnce))
+    database.growth_save_attempt(db, job, 0, dict(status='CLASH_REJECT', reason='synthetic clash', iteration=2))
+    assert len(calls) == 2
+    assert len(database.growth_rows(db, 'combichem3d_attempt')) == 1
+    assert database.growth_run_info(db)['attempted'] == 1
+    assert database.growth_rows(db, 'combichem3d_batch')[0]['cursor'] == '1'
+
+
+def test_idle_claim_does_not_compete_with_result_writer(inputs):
+    _, cfg, _, _ = inputs
+    db, _ = stage.prepare_project(cfg)
+    database.growth_start_session(db, cfg)
+    job = database.growth_claim(db, 1, 1, 1)
+    database.growth_save_input(db, job['parent_pose'], {}, True, {})
+    job = database.growth_claim(db, 2, 1, 1)
+    database.growth_save_plan(db, job['parent_pose'], dict(sites=['a'], pools=[['-H']], total=1), [])
+    assert database.growth_claim(db, 2, 1, 1)['kind'] == 'batch'
+    with database.growth_connection(db) as writer:
+        writer.execute('BEGIN IMMEDIATE')
+        assert database.growth_claim(db, 2, 1, 2) == dict(kind='wait')
+
+
+def test_non_lock_database_errors_are_not_retried():
+    import sqlite3
+    calls = []
+    @database._growth_retry_locked
+    def invalid():
+        calls.append(1)
+        raise sqlite3.OperationalError('no such table')
+    with pytest.raises(sqlite3.OperationalError, match='no such table'):
+        invalid()
+    assert len(calls) == 1
+
+
+def test_two_host_configuration_uses_192_slots_each_and_resolves_known_hosts(inputs):
+    filename, _, _, _ = inputs
+    extra = '''execution-host = "cpu1"
+remote-env-script = "/env/amber.sh"
+worker-hosts = { cpu1 = 192, cpu2 = 192 }
+worker-ssh-known-hosts = "keys/known_hosts"
+'''
+    filename.write_text(filename.read_text().split('[filters]')[0] + '\n' + extra)
+    cfg = combichem_3d_settings(filename)
+    assert cfg['processes'] == 384
+    assert cfg['worker-hosts'] == {'cpu1':192, 'cpu2':192}
+    assert cfg['worker-ssh-known-hosts'] == str(filename.parent/'keys/known_hosts')
+
+
+@pytest.mark.parametrize('hosts', ['{ cpu1 = 193 }', '{ cpu1 = true }',
+    '{ cpu1 = 1, cpu2 = 1, cpu3 = 1 }', '{ cpu2 = 192 }', '{ "-bad" = 1 }'])
+def test_invalid_distributed_host_capacity_is_rejected(inputs, hosts):
+    filename, _, _, _ = inputs
+    filename.write_text(filename.read_text().split('[filters]')[0] + '\n' +
+        'execution-host = "cpu1"\nremote-env-script = "/env/amber.sh"\nworker-hosts = '+hosts+'\n')
+    with pytest.raises(ValueError):
+        combichem_3d_settings(filename)

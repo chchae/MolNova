@@ -72,8 +72,15 @@ def plan_parent(db, job, cfg, library, checker, deadline):
     if history['iteration']==0 or history.get('growth_mode')=='frame-cycles':
         passed = list(history['attachments'])
     pools = candidate_pools(passed,library,cfg) if passed else []
+    optional_sites=history.get('growth_mode')=='frame-cycles' and history['iteration']>0
+    if optional_sites:
+        # Keep the sampled heavy fragments intact; -H is an additional no-op.
+        # Existing H-enabled pools already contain it and must not duplicate it.
+        pools=[pool if '-H' in pool else ['-H',*pool] for pool in pools]
     plan = dict(sites=passed,pools=pools,total=math.prod(len(pool) for pool in pools) if pools else 0,
+                optional_sites=optional_sites,
                 eligible_sites=sites,reason=('Full core-attachment Cartesian product' if history['iteration']==0 else
+                'Optional PASS-site Cartesian product including -H' if optional_sites else
                 'PASS-site Cartesian product') if pools else 'No complete set of eligible PASS growth sites')
     database.growth_save_plan(db,job['parent_pose'],plan,reports)
     logger.debug('parent_pose=%s plan ready: PASS=%s CLASH_REJECT=%s UNRESOLVED=%s selected_sites=%s candidates_per_site=%s combinations=%s',
@@ -117,7 +124,9 @@ def evaluate_batch(db, job, cfg, checker, evaluator, deadline, references=None):
                                pruned=pruned)
         except (ValueError,RuntimeError) as exc:
             report = dict(status=PoseVerdict.UNRESOLVED,reason=str(exc),failed_stage='assembly_or_evaluation')
-        report.update(iteration=history['iteration']+1,choices=dict(zip(plan['sites'],choices)))
+        report.update(iteration=history['iteration']+1,choices=dict(zip(plan['sites'],choices)),
+                      expanded_sites=[uid for uid,choice in zip(plan['sites'],choices) if choice!='-H'],
+                      expanded_site_count=sum(choice!='-H' for choice in choices))
         report=database.growth_save_attempt(db,job,ordinal,report,payload) or report
         trace('product parent_pose=%s ordinal=%s status=%s output_passed=%s valid_poses=%s attempts=%s reason=%s errors=%s filters=%s clashes=%s',
                      job['parent_pose'],ordinal,report['status'],report.get('output_passed',False),report.get('valid_poses'),
@@ -266,12 +275,14 @@ def prepare_project(cfg):
             raise ValueError('Input parent core coordinates exceed core-displacement; confirm the explicit coordinate frame/map')
         history['lineage_id'] = hashlib.sha256(json.dumps([root_index,history],sort_keys=True).encode()).hexdigest()
         records.append(dict(smiles=provenance.canonical_smiles(mol),molblock=Chem.MolToMolBlock(mol),history=history))
-    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures'}
+    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script'}
     frozen = {k:v for k,v in cfg.items() if k not in operational}
     frozen['input_sha256'] = {k:hashlib.sha256(Path(cfg[k]).read_bytes()).hexdigest()
                               for k in ('parents','receptor','history','reference-smiles','sidechain-library')}
     if frame_mode:
         frozen['input_sha256']['reference-poses']=hashlib.sha256(Path(cfg['reference-poses']).read_bytes()).hexdigest()
+        frozen['growth_search_policy']=dict(optional_sites_after_initial=True,
+                                           movable_atoms='all_sidechains_outside_original_iteration0_core')
     scientific_source = Path(__file__).resolve().parents[1]/'chemistry/combichem3d'
     frozen['implementation_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                                         for p in sorted(scientific_source.glob('*.py'))}
@@ -396,6 +407,9 @@ def _main(argv=None):
     parser.add_argument('--trace',action='store_true',help='Verbose per-probe/product diagnostics')
     ns = parser.parse_args(argv)
     cfg = combichem_3d_settings(ns.project_toml)
+    from molnova.stages.combichem_remote import dispatch
+    if dispatch(cfg, ns):
+        return None
     if ns.debug:
         cfg['log-level']='DEBUG'
     if ns.trace:
