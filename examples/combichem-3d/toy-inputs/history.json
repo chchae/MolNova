@@ -1,0 +1,126 @@
+{
+  "parents": [
+    {
+      "schema": "molnova_pose_history_v1",
+      "iteration": 1,
+      "core_smarts": "c1ccccc1",
+      "atoms": [
+        {
+          "index": 0,
+          "uid": "core:0",
+          "branch": "core",
+          "fragment": "core",
+          "added_iteration": 0
+        },
+        {
+          "index": 1,
+          "uid": "core:1",
+          "branch": "core",
+          "fragment": "core",
+          "added_iteration": 0
+        },
+        {
+          "index": 2,
+          "uid": "core:2",
+          "branch": "core",
+          "fragment": "core",
+          "added_iteration": 0
+        },
+        {
+          "index": 3,
+          "uid": "core:3",
+          "branch": "core",
+          "fragment": "core",
+          "added_iteration": 0
+        },
+        {
+          "index": 4,
+          "uid": "core:4",
+          "branch": "core",
+          "fragment": "core",
+          "added_iteration": 0
+        },
+        {
+          "index": 5,
+          "uid": "core:5",
+          "branch": "core",
+          "fragment": "core",
+          "added_iteration": 0
+        },
+        {
+          "index": 6,
+          "uid": "branch1:0",
+          "branch": "branch_1",
+          "fragment": "iter1_fragment_1",
+          "added_iteration": 1
+        },
+        {
+          "index": 7,
+          "uid": "branch1:1",
+          "branch": "branch_1",
+          "fragment": "iter1_fragment_1",
+          "added_iteration": 1
+        }
+      ],
+      "attachments": [
+        "core:0"
+      ],
+      "core": [
+        {
+          "core_index": 0,
+          "uid": "core:0",
+          "xyz": [
+            0.14832487637647868,
+            -0.09266936532594637,
+            -0.3954289644665869
+          ]
+        },
+        {
+          "core_index": 1,
+          "uid": "core:1",
+          "xyz": [
+            -0.6026638621696582,
+            1.0875023562255948,
+            -0.5276874437325407
+          ]
+        },
+        {
+          "core_index": 2,
+          "uid": "core:2",
+          "xyz": [
+            -1.9597596513013533,
+            1.100071700480501,
+            -0.19023796337032894
+          ]
+        },
+        {
+          "core_index": 3,
+          "uid": "core:3",
+          "xyz": [
+            -2.5732089497239414,
+            -0.06047495517620102,
+            0.28955652130356757
+          ]
+        },
+        {
+          "core_index": 4,
+          "uid": "core:4",
+          "xyz": [
+            -1.8296317568434972,
+            -1.234735839204079,
+            0.4365116324115886
+          ]
+        },
+        {
+          "core_index": 5,
+          "uid": "core:5",
+          "xyz": [
+            -0.4722894179512566,
+            -1.251729645590786,
+            0.10025055290026715
+          ]
+        }
+      ]
+    }
+  ]
+}

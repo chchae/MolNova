@@ -33,6 +33,28 @@ The new default Amber receptor path is `output/iter00/08-prime_gbsa/receptor.mae
 
 MolNova is a modular iterative lead-optimization pipeline integrating REINVENT4/LibInvent, Schrödinger LigPrep and Glide, Prime MM-GBSA, SQLite workflow state, and FEP staging.
 
+## Local COMBICHEM 3D growth
+
+`molnova combichem-3d input.toml` extracts the starting frame from `reference-mcs`;
+reference ligands supply coordinates only. Each cycle enumerates the configured
+attachment-site Cartesian product, filters constrained poses against the receptor,
+ranks passing molecules by QED, then updates the next frame with elite-MCS
+reduction that retains heavier molecules. Probe-passing growth sites are balanced
+across initial branches and ranked by molecular bond distance within each branch.
+Positive initial `[*:N]` values set per-branch growth-cycle limits; `[*:999]` is
+unlimited, with independent internal IDs for repeated values. Each run ends with
+a cycle/frame/attachment analysis appended to its log.
+
+```bash
+python examples/combichem-3d/make_cycle_inputs.py /tmp/molnova-frame-demo
+molnova combichem-3d /tmp/molnova-frame-demo/grow.toml
+```
+
+The example is synthetic, with a distant single-atom receptor; it does not validate
+real-receptor performance or affinity. See [the input/workflow guide](docs/COMBICHEM_3D.md)
+and [the shared project TOML additions](examples/combichem-3d/project-settings.example.toml).
+Older frontier regression examples explicitly select `growth-mode="frontier"`.
+
 ## Iteration landscape reports
 
 `molnova run project.toml` automatically refreshes chemical-space, substituent

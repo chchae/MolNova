@@ -1,0 +1,36 @@
+# Artificial geometry smoke example; not a binding-site model.
+# For a real existing input TOML, append ../project-settings.example.toml tables;
+# reuse its common inputs. The 30-second/two-process values below are toy values.
+receptor = "receptor.sdf"
+parents = "parents.sdf"
+history = "history.json"
+sidechain-library = "sidechains.smi"
+reference-smiles = "references.smi"
+out-dir = "output"
+growth-mode = "frontier" # legacy artificial frontier regression example
+max-iteration = 2
+sidechains-per-site = 3 # small artificial library; legacy ordered example
+sidechain-min-heavy-atoms = 1
+sidechain-max-heavy-atoms = 1000
+sidechain-selection = "ordered"
+sidechain-include-h = true
+conformers = 3
+torsion-trials = 2
+optimization-iterations = 1000
+processes = 2
+seed = 37
+batch-size = 2
+max-seconds = 30.0
+stop-mode = "time"
+target-count = 10000
+core-displacement = 0.05
+overlap-tolerance = 0.4
+one-four-policy = "exclude"
+log-level = "INFO" # DEBUG: compact parent details; TRACE/--trace: per-product diagnostics
+log-interval = 10.0 # seconds between progress snapshots
+log-structures = 3 # frame/result previews per iteration; all structures saved to files
+
+[filters]
+mw = [0.0, 2000.0]
+qed = [0.0, 1.0]
+similarity = [0.0, 1.0]

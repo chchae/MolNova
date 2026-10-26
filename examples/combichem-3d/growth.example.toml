@@ -1,0 +1,72 @@
+# Dedicated 3D project. Paths are relative to this TOML, never a legacy project DB.
+receptor = "inputs/prepared-receptor.pdb" # PDB or SDF, same coordinate frame
+parents = "inputs/reference-poses.sdf" # coordinate references only, never growth parents
+reference-mcs = "c1([*:0])c([*:1])cccc1" # example two-point core; replace for your target
+# history is not required in frame-cycles mode
+sidechain-library = "inputs/sidechains-50k.smi"
+reference-smiles = "inputs/reference-20.smi"
+out-dir = "output-frame-cycles"
+
+# Absolute final iteration. Default 1. Importing iteration 1 and growing to 2:
+growth-mode = "frame-cycles"
+elite-count = 20
+elite-rank-by = "qed" # highest QED first; compound ID breaks ties
+next-attachment-count = 3
+attachment-distance = "bonds"
+mcs-timeout = 60
+max-iteration = 2
+sidechain-min-heavy-atoms = 5
+sidechain-max-heavy-atoms = 10
+sidechain-selection = "random"
+sidechain-include-h = false
+sidechains-per-site = 10 # K random eligible candidates per site; no replacement
+
+conformers = 8
+torsion-trials = 8       # additional torsion starts per embedded conformer
+optimization-iterations = 250
+minimum-valid-poses = 1 # evidence needed for CLASH_REJECT; one passing pose is PASS
+embed-timeout = 5        # seconds per RDKit embedding, clipped to remaining budget
+force-field = "auto"    # MMFF if fully parameterized, otherwise UFF; or MMFF / UFF
+core-constraint = "fixed" # or restraint; restraint uses a finite force, not fixation
+restraint-force = 1000.0
+core-displacement = 0.05 # Å, maximum per mapped core atom AFTER optimization
+
+overlap-tolerance = 0.4  # Å; overlap = r_i + r_j - distance
+maximum-receptor-clashes = 0
+maximum-internal-clashes = 0
+one-four-policy = "exclude" # exclude / include / scaled; 1–2 and 1–3 always excluded
+one-four-scale = 0.8        # applied to radius SUM only with scaled policy
+include-water = false
+include-cofactors = true    # includes metals/ions; no special coordination scoring
+include-hydrogens = false   # heavy-atom clash model by default
+
+processes = 16             # 1..16 local calculators; no external docking engine
+batch-size = 1            # bounded product ordinal range / export batch
+seed = 20261025
+target-count = 10       # new globally unique output-passing structures
+max-seconds = 1800.0       # cumulative compute budget across resumes; default 30 min
+stop-mode = "cycles"       # target: stop at target OR time; time: ignore target cutoff
+grace-seconds = 5.0        # finish current local work, then stop remaining calculators
+prune-intermediates = false # false: output filters do not prevent later growth
+
+log-level = "INFO" # DEBUG: compact parent details; TRACE/--trace: per-product diagnostics
+log-interval = 10.0 # seconds between progress snapshots
+log-structures = 3 # frame/result previews per iteration; all structures saved to files
+
+[filters]
+# Output ranges, not automatically a scientific/pruning protocol.
+mw = [0.0, 2000.0]
+clogp = [-20.0, 30.0]
+tpsa = [0.0, 2000.0]
+qed = [0.0, 1.0]
+similarity = [0.0, 1.0] # maximum Morgan radius-2/2048-bit Tanimoto to references
+hbd = [0, 100]
+hba = [0, 100]
+rotatable_bonds = [0, 100]
+heavy_atoms = [1, 300]
+
+# Optional different N_i candidate sets, keyed by actual imported atom UID.
+# Every SMILES must be in the library; -H is always available.
+# [site-candidates]
+# "branch1:0" = ["-H", "[*]C"]
+# "branch1:1" = ["-H", "[*:7]F", "[*]C"]

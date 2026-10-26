@@ -1,0 +1,4 @@
+# New geometry path: standard library + NumPy + RDKit.
+# Tested RDKit 2026.03.6; EmbedParameters.timeout is required for bounded searches.
+numpy>=1.24
+rdkit>=2026.3

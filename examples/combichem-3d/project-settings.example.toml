@@ -1,0 +1,60 @@
+# Append this table to the existing project input TOML (e.g. egfr.toml).
+# All relative paths are relative to THAT input TOML, not this example/toy folder.
+# Shared sidechain-library and reference inputs are inherited; 3D limits below override legacy values.
+
+[combichem-3d]
+# Coordinate references and receptor come from shared reference-pose and dock-grid.
+# Optional local installation override (otherwise SCHRODINGER/default installation):
+# schrodinger = "/home1/schrodinger/2026-3"
+# Optional prepared coordinate-preserving overrides:
+# receptor = "./input/prepared-receptor.pdb"
+# parents = "./input/reference-poses.sdf"
+# No parent-fragment history is needed: frame-cycles extracts the initial MCS only.
+
+# Additional controls use the same names as toy-inputs/grow.toml.
+# Values here are for the requested 16-core / 30-minute run, not the small toy.
+growth-mode = "frame-cycles"
+elite-count = 20
+elite-rank-by = "qed" # highest QED first; compound ID breaks ties
+next-attachment-count = 3
+# Balance selected sites across the original attachment branches.
+# In frame-cycles, positive [*:N] values in reference-mcs encode cycle limits.
+# Repeated values are allowed: [*:2] at two sites gives two independent 2-cycle roots.
+# [*:999] / bare [*] are unlimited, still bounded by max-iteration/time.
+# Optional EGFR example: N-side 2 cycles, phenyl-side 1 cycle:
+# reference-mcs = "c1nc(N[*:2])c2cc(-c3ccc([*:1])cc3)[nH]c2n1"
+# Legacy :0-containing inputs retain ID labels; use positive maps for new limits.
+attachment-distance = "bonds"
+mcs-timeout = 60
+max-iteration = 2
+sidechain-min-heavy-atoms = 5
+sidechain-max-heavy-atoms = 10
+sidechain-selection = "random"
+sidechain-include-h = false
+sidechains-per-site = 10
+conformers = 8
+torsion-trials = 8
+optimization-iterations = 250
+processes = 16
+seed = 20261025
+batch-size = 1
+max-seconds = 1800.0
+stop-mode = "cycles" # finish each cycle within time limit; target-count is inactive
+target-count = 10
+core-displacement = 0.05
+overlap-tolerance = 0.4
+one-four-policy = "exclude"
+
+# Optional: default output is <existing out-dir>/combichem-3d, a separate DB.
+out-dir = "./output/combichem-3d-frame-cycles"
+# Optional: normally read iteration-0 reference SMILES from existing project DB.
+# reference-smiles = "./input/reference-20.smi"
+
+log-level = "INFO" # DEBUG: compact parent details; TRACE/--trace: per-product diagnostics
+log-interval = 10.0 # seconds between progress snapshots
+log-structures = 3 # frame/result previews per iteration; all structures saved to files
+
+[combichem-3d.filters]
+mw = [0.0, 2000.0]
+qed = [0.0, 1.0]
+similarity = [0.0, 1.0]

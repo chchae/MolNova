@@ -132,7 +132,18 @@ def main(argv=None):
     report.add_argument('project_toml', type=Path)
     report.add_argument('--iteration', type=int, help='Include iterations through N (default: all)')
 
+    grow = sub.add_parser('combichem-3d', help='Grow explicit-history parent poses with constrained search and clash filtering')
+    grow.add_argument('project_toml', type=Path)
+    grow.add_argument('--export-only', action='store_true')
+    grow.add_argument('--debug', action='store_true', help='Show detailed 3D growth diagnostics')
+    grow.add_argument('--trace', action='store_true', help='Include verbose per-probe/product diagnostics')
+
     ns = parser.parse_args(argv)
+
+    if ns.command == 'combichem-3d':
+        from molnova.stages.combichem_3d import main as growth_main
+        growth_main([str(ns.project_toml)] + (['--export-only'] if ns.export_only else []) + (['--debug'] if ns.debug else []) + (['--trace'] if ns.trace else []))
+        return 0
 
     if ns.command == 'report':
         from molnova.distributions import main as report_main

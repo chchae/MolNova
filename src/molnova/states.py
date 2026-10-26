@@ -19,3 +19,16 @@ class CompoundState(StrEnum):
     FEP_RUNNING = "fep_running"
     FEP_DONE = "fep_done"
     FAILED = "failed"
+
+
+class PoseVerdict(StrEnum):
+    PASS = 'PASS'
+    CLASH_REJECT = 'CLASH_REJECT'
+    UNRESOLVED = 'UNRESOLVED'
+
+
+class GrowthTaskState(StrEnum):
+    PENDING = 'pending'
+    RUNNING = 'running'
+    READY = 'ready'
+    DONE = 'done'

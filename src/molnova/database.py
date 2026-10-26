@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from molnova import _core
 from molnova.states import CompoundState as State
+from molnova.states import GrowthTaskState as Growth
 
 
 RDK_DESCRIPTOR_TYPES = {
@@ -1931,3 +1932,477 @@ def iteration_md_gbsa_elites(path, iteration, count):
         rows=conn.execute('SELECT id,name,smiles,iteration,docking_score,md_gbsa_score FROM compound '
                           'WHERE iteration=? AND md_gbsa_score IS NOT NULL ORDER BY md_gbsa_score,id',(iteration,)).fetchall()
     return [r for r in rows if r[0] in selection['ids'] and math.isfinite(r[5])][:count]
+
+
+# Dedicated combichem-3d projects use the same compound identity/state model,
+# with pose/frontier/task records separate from legacy scientific selections.
+@contextmanager
+def growth_connection(path):
+    """Do not inherit live SQLite connections across local calculator forks."""
+    conn = connect(path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def growth_project_references(path):
+    """Read an existing project's original molecules without migrations/claims."""
+    source=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=30)
+    try:
+        source.execute('PRAGMA query_only=ON')
+        source.execute('PRAGMA busy_timeout=30000')
+        source.execute('BEGIN')
+        rows=source.execute('SELECT id,smiles FROM compound WHERE iteration=0 ORDER BY id').fetchall()
+        if not rows:
+            raise ValueError('Existing project DB has no iteration-0 references; provide reference-smiles')
+        return rows
+    finally:
+        source.close()
+
+
+def growth_initialize(path, cfg, fingerprint, parents):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'compound' in tables and 'combichem3d_run' not in tables:
+            raise RuntimeError('Refusing an existing legacy project DB; use a separate combichem-3d output')
+        if 'combichem3d_run' in tables:
+            row = conn.execute('SELECT fingerprint,settings FROM combichem3d_run WHERE id=1').fetchone()
+            if row and row[0] != fingerprint:
+                raise RuntimeError('Frozen pose-growth inputs or scientific settings changed; use a new output directory')
+            if row and cfg['max-iteration'] < json.loads(row[1])['max-iteration']:
+                raise ValueError('Cannot reduce max-iteration of an existing pose-growth project')
+            conn.execute('CREATE TABLE IF NOT EXISTS combichem3d_event (id INTEGER PRIMARY KEY,created REAL NOT NULL,kind TEXT NOT NULL,report TEXT NOT NULL)')
+            conn.execute('CREATE INDEX IF NOT EXISTS combichem3d_pose_iteration_id ON combichem3d_pose(iteration,id)')
+            conn.execute('UPDATE combichem3d_run SET settings=? WHERE id=1', (json.dumps(cfg, sort_keys=True),))
+            return False
+        _core.create_sqlite_schema(conn)
+        conn.execute('CREATE UNIQUE INDEX combichem3d_smiles ON compound(smiles)')
+        conn.execute('CREATE TABLE combichem3d_run ('
+                     'id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT NOT NULL,settings TEXT NOT NULL,'
+                     'started REAL,deadline REAL,elapsed REAL NOT NULL DEFAULT 0,stop_reason TEXT,'
+                     'unique_count INTEGER NOT NULL DEFAULT 0,attempted INTEGER NOT NULL DEFAULT 0)')
+        conn.execute('CREATE TABLE combichem3d_pose ('
+                     'id INTEGER PRIMARY KEY,compound_id INTEGER NOT NULL REFERENCES compound(id),'
+                     'parent_pose INTEGER REFERENCES combichem3d_pose(id),iteration INTEGER NOT NULL,'
+                     'molblock TEXT NOT NULL,history TEXT NOT NULL,properties TEXT,output_passed INTEGER NOT NULL,'
+                     'generated INTEGER NOT NULL,input_state TEXT NOT NULL,plan_state TEXT NOT NULL,'
+                     'plan TEXT,total TEXT NOT NULL DEFAULT "0",allocated TEXT NOT NULL DEFAULT "0")')
+        conn.execute('CREATE INDEX combichem3d_pose_frontier ON combichem3d_pose(iteration,plan_state)')
+        conn.execute('CREATE INDEX combichem3d_pose_iteration_id ON combichem3d_pose(iteration,id)')
+        conn.execute('CREATE INDEX combichem3d_pose_compound ON combichem3d_pose(compound_id,output_passed)')
+        conn.execute('CREATE TABLE combichem3d_batch ('
+                     'id INTEGER PRIMARY KEY,parent_pose INTEGER NOT NULL REFERENCES combichem3d_pose(id),'
+                     'iteration INTEGER NOT NULL,start TEXT NOT NULL,stop TEXT NOT NULL,cursor TEXT NOT NULL,'
+                     'state TEXT NOT NULL,owner INTEGER)')
+        conn.execute('CREATE INDEX combichem3d_batch_pending ON combichem3d_batch(iteration,state)')
+        conn.execute('CREATE TABLE combichem3d_probe ('
+                     'parent_pose INTEGER NOT NULL REFERENCES combichem3d_pose(id),site TEXT NOT NULL,'
+                     'report TEXT NOT NULL,PRIMARY KEY(parent_pose,site))')
+        conn.execute('CREATE TABLE combichem3d_attempt ('
+                     'parent_pose INTEGER NOT NULL REFERENCES combichem3d_pose(id),ordinal TEXT NOT NULL,'
+                     'iteration INTEGER NOT NULL,status TEXT NOT NULL,report TEXT NOT NULL,'
+                     'failed_stage TEXT,failure_message TEXT,pose_id INTEGER REFERENCES combichem3d_pose(id),'
+                     'PRIMARY KEY(parent_pose,ordinal))')
+        conn.execute('CREATE TABLE combichem3d_unique (compound_id INTEGER PRIMARY KEY REFERENCES compound(id))')
+        conn.execute('CREATE TABLE combichem3d_event (id INTEGER PRIMARY KEY,created REAL NOT NULL,kind TEXT NOT NULL,report TEXT NOT NULL)')
+        conn.execute('CREATE TABLE combichem3d_cycle (iteration INTEGER PRIMARY KEY,state TEXT NOT NULL,frame_pose INTEGER REFERENCES combichem3d_pose(id),report TEXT NOT NULL,owner INTEGER)')
+        conn.execute('INSERT INTO combichem3d_run(id,fingerprint,settings) VALUES (1,?,?)',
+                     (fingerprint, json.dumps(cfg, sort_keys=True)))
+        for parent in parents:
+            pose_id=_growth_insert_pose(conn, parent, None, generated=False)
+            if cfg.get('growth-mode')=='frame-cycles':
+                conn.execute('INSERT INTO combichem3d_cycle VALUES (?,?,?,?,NULL)',(1,Growth.READY,pose_id,json.dumps(dict(kind='initial_frame'))))
+    return True
+
+
+def _growth_insert_pose(conn, payload, parent, generated=True):
+    import hashlib
+    import json
+    smiles = payload['smiles']
+    name = 'new_' + hashlib.sha256(smiles.encode()).hexdigest()
+    conn.execute('INSERT INTO compound(name,smiles,iteration,state) VALUES (?,?,?,?) '
+                 'ON CONFLICT(smiles) DO NOTHING', (name, smiles, payload['history']['iteration'], State.GENERATED))
+    cid = conn.execute('SELECT id FROM compound WHERE smiles=?', (smiles,)).fetchone()[0]
+    conn.execute('UPDATE compound SET name=? WHERE id=?', (f'CMPID_{cid}', cid))
+    history = payload['history']
+    core = {r['uid'] for r in history['core']}
+    frontier = any(r['uid'] not in core and r['added_iteration'] == history['iteration'] for r in history['atoms'])
+    prune = payload.get('pruned', False)
+    state = Growth.PENDING if (frontier or history['iteration'] == 0) and not prune else Growth.DONE
+    if history.get('growth_mode')=='frame-cycles':
+        state=Growth.PENDING if history.get('role')=='frame' else Growth.DONE
+    cursor = conn.execute('INSERT INTO combichem3d_pose('
+                 'compound_id,parent_pose,iteration,molblock,history,properties,output_passed,generated,input_state,plan_state) '
+                 'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                 (cid,parent,history['iteration'],payload['molblock'],json.dumps(history,sort_keys=True),
+                  json.dumps(payload.get('properties', {})) if generated else None,
+                  int(payload.get('output_passed',False)),int(generated),Growth.DONE if generated else Growth.PENDING,state))
+    if generated and payload.get('output_passed') and not conn.execute(
+            'SELECT 1 FROM combichem3d_pose WHERE compound_id=? AND generated=0 LIMIT 1', (cid,)).fetchone():
+        fresh = conn.execute('INSERT OR IGNORE INTO combichem3d_unique VALUES (?)', (cid,)).rowcount
+        conn.execute('UPDATE combichem3d_run SET unique_count=unique_count+? WHERE id=1', (fresh,))
+    return cursor.lastrowid
+
+
+def growth_start_session(path, cfg):
+    """Caller owns the growth stage lock and has joined every previous worker."""
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        run = conn.execute('SELECT elapsed,started,deadline FROM combichem3d_run WHERE id=1').fetchone()
+        now = time.time()
+        elapsed = run[0] + (max(0,min(now,run[2])-run[1]) if run[1] is not None else 0)
+        # Only abandoned local claims are rearmed, under the exclusive process
+        # lock; their per-combination committed cursor is never reset.
+        conn.execute('UPDATE combichem3d_batch SET state=?,owner=NULL WHERE state=?', (Growth.PENDING,Growth.RUNNING))
+        conn.execute('UPDATE combichem3d_pose SET input_state=? WHERE input_state=?', (Growth.PENDING,Growth.RUNNING))
+        conn.execute('UPDATE combichem3d_pose SET plan_state=? WHERE plan_state=?', (Growth.PENDING,Growth.RUNNING))
+        if cfg.get('growth-mode')=='frame-cycles':
+            conn.execute('UPDATE combichem3d_cycle SET state=?,owner=NULL WHERE state=?',(Growth.PENDING,Growth.RUNNING))
+        conn.execute('UPDATE combichem3d_run SET settings=?,started=?,deadline=?,elapsed=?,stop_reason=NULL WHERE id=1',
+                     (json.dumps(cfg,sort_keys=True),now,now+max(0,cfg['max-seconds']-elapsed),elapsed))
+
+
+def _growth_stop(conn):
+    import json
+    row = conn.execute('SELECT settings,deadline,stop_reason,unique_count FROM combichem3d_run WHERE id=1').fetchone()
+    if row[2]:
+        return row[2]
+    cfg = json.loads(row[0])
+    reason = ('time_limit' if time.time() >= row[1] else
+              'target_count' if cfg['stop-mode']=='target' and row[3]>=cfg['target-count'] else None)
+    if reason:
+        conn.execute('UPDATE combichem3d_run SET stop_reason=? WHERE id=1', (reason,))
+    return reason
+
+
+def growth_should_stop(path):
+    with growth_connection(path) as conn:
+        return _growth_stop(conn)
+
+
+def growth_request_stop(path, reason):
+    with growth_connection(path) as conn:
+        conn.execute('UPDATE combichem3d_run SET stop_reason=COALESCE(stop_reason,?) WHERE id=1', (reason,))
+
+
+def growth_claim(path, iteration, batch_size, owner):
+    """Allocate bounded ordinal ranges atomically; never materialize a product."""
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if _growth_stop(conn):
+            return None
+        settings=json.loads(conn.execute('SELECT settings FROM combichem3d_run WHERE id=1').fetchone()[0])
+        if settings.get('growth-mode')=='frame-cycles' and iteration>0:
+            cycle=conn.execute('SELECT state FROM combichem3d_cycle WHERE iteration=?',(iteration,)).fetchone()
+            if not cycle:
+                unfinished=conn.execute('SELECT 1 FROM combichem3d_batch WHERE iteration=? AND state!=? LIMIT 1',
+                                        (iteration-1,Growth.DONE)).fetchone()
+                prior=conn.execute('SELECT p.plan_state FROM combichem3d_cycle c JOIN combichem3d_pose p '
+                                   'ON p.id=c.frame_pose WHERE c.iteration=?',(iteration-1,)).fetchone()
+                if unfinished or not prior or prior[0]!=Growth.DONE:
+                    return dict(kind='wait')
+                conn.execute('INSERT INTO combichem3d_cycle VALUES (?,?,NULL,?,NULL)',(iteration,Growth.PENDING,'{}'))
+                cycle=(Growth.PENDING,)
+            if cycle[0]==Growth.PENDING:
+                conn.execute('UPDATE combichem3d_cycle SET state=?,owner=? WHERE iteration=?',(Growth.RUNNING,owner,iteration))
+                return dict(kind='frame',iteration=iteration)
+            if cycle[0]==Growth.RUNNING:
+                return dict(kind='wait')
+        row = conn.execute('SELECT id FROM combichem3d_pose WHERE iteration=? AND input_state=? ORDER BY id LIMIT 1',
+                           (iteration,Growth.PENDING)).fetchone()
+        if row:
+            conn.execute('UPDATE combichem3d_pose SET input_state=? WHERE id=?', (Growth.RUNNING,row[0]))
+            return dict(kind='input',parent_pose=row[0])
+        row = conn.execute('SELECT id,parent_pose,cursor,stop FROM combichem3d_batch WHERE iteration=? AND state=? ORDER BY id LIMIT 1',
+                           (iteration,Growth.PENDING)).fetchone()
+        if row:
+            conn.execute('UPDATE combichem3d_batch SET state=?,owner=? WHERE id=?', (Growth.RUNNING,owner,row[0]))
+            return dict(kind='batch',id=row[0],parent_pose=row[1],cursor=row[2],stop=row[3])
+        # SQLite text integers avoid 64-bit overflow for large N^m spaces.
+        for row in conn.execute('SELECT id,allocated,total FROM combichem3d_pose WHERE iteration=? AND plan_state=? AND allocated!=total ORDER BY id',
+                                (iteration-1,Growth.READY)):
+            start,total = int(row[1]),int(row[2])
+            if start < total:
+                end = min(start+batch_size,total)
+                conn.execute('UPDATE combichem3d_pose SET allocated=? WHERE id=?', (str(end),row[0]))
+                cursor = conn.execute('INSERT INTO combichem3d_batch(parent_pose,iteration,start,stop,cursor,state,owner) VALUES (?,?,?,?,?,?,?)',
+                                     (row[0],iteration,str(start),str(end),str(start),Growth.RUNNING,owner))
+                return dict(kind='batch',id=cursor.lastrowid,parent_pose=row[0],cursor=str(start),stop=str(end))
+        row = conn.execute('SELECT id FROM combichem3d_pose WHERE iteration=? AND plan_state=? ORDER BY id LIMIT 1',
+                           (iteration-1,Growth.PENDING)).fetchone()
+        if row:
+            conn.execute('UPDATE combichem3d_pose SET plan_state=? WHERE id=?', (Growth.RUNNING,row[0]))
+            return dict(kind='plan',parent_pose=row[0])
+        active = conn.execute('SELECT 1 FROM combichem3d_pose WHERE '
+                              '(iteration=? AND input_state=?) OR (iteration=? AND plan_state=?) LIMIT 1',
+                              (iteration,Growth.RUNNING,iteration-1,Growth.RUNNING)).fetchone()
+        active = active or conn.execute('SELECT 1 FROM combichem3d_batch WHERE iteration=? AND state=? LIMIT 1',
+                                        (iteration,Growth.RUNNING)).fetchone()
+        return dict(kind='wait') if active else None
+
+
+def growth_parent(path, pose_id):
+    import json
+    with growth_connection(path) as conn:
+        row = conn.execute('SELECT molblock,history,plan,compound_id FROM combichem3d_pose WHERE id=?', (pose_id,)).fetchone()
+        probes = {uid:json.loads(report) for uid,report in conn.execute(
+            'SELECT site,report FROM combichem3d_probe WHERE parent_pose=?', (pose_id,))}
+    return dict(id=pose_id,compound_id=row[3],molblock=row[0],history=json.loads(row[1]),plan=json.loads(row[2]) if row[2] else None,probes=probes)
+
+
+def growth_save_probe(path, pose_id, uid, report):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        old = conn.execute('SELECT report FROM combichem3d_probe WHERE parent_pose=? AND site=?',(pose_id,uid)).fetchone()
+        if old and json.loads(old[0]) != report:
+            prior = json.loads(old[0])
+            previous = prior.pop('previous_reports',[])
+            report = dict(report,previous_reports=previous+[prior])
+        conn.execute('INSERT OR REPLACE INTO combichem3d_probe VALUES (?,?,?)', (pose_id,uid,json.dumps(report)))
+
+
+def growth_save_input(path, pose_id, properties, passed, baseline, prune=False, pose_data=None):
+    import json
+    with growth_connection(path) as conn:
+        settings=json.loads(conn.execute('SELECT settings FROM combichem3d_run WHERE id=1').fetchone()[0])
+        if settings.get('growth-mode')=='frame-cycles':
+            passed=False
+            prune=False
+        conn.execute('UPDATE combichem3d_pose SET properties=?,output_passed=?,input_state=? WHERE id=?',
+                     (json.dumps(properties),int(passed),Growth.DONE,pose_id))
+        if prune:
+            conn.execute('UPDATE combichem3d_pose SET plan_state=? WHERE id=?',(Growth.DONE,pose_id))
+        if pose_data:
+            conn.execute('UPDATE combichem3d_pose SET molblock=?,history=? WHERE id=?',
+                         (pose_data['molblock'],json.dumps(pose_data['history']),pose_id))
+        conn.execute('INSERT OR REPLACE INTO combichem3d_probe VALUES (?,?,?)',
+                     (pose_id,'__baseline__',json.dumps(baseline)))
+
+
+def growth_save_plan(path, pose_id, plan, probes):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        for uid, report in probes:
+            conn.execute('INSERT INTO combichem3d_probe VALUES (?,?,?) ON CONFLICT(parent_pose,site) DO NOTHING',
+                         (pose_id,uid,json.dumps(report)))
+        conn.execute('UPDATE combichem3d_pose SET plan=?,total=?,plan_state=? WHERE id=?',
+                     (json.dumps(plan),str(plan['total']),Growth.READY if plan['total'] else Growth.DONE,pose_id))
+
+
+def growth_save_attempt(path, batch, ordinal, report, payload=None):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if conn.execute('SELECT 1 FROM combichem3d_attempt WHERE parent_pose=? AND ordinal=?',
+                        (batch['parent_pose'],str(ordinal))).fetchone():
+            return
+        if payload and payload.get('output_passed'):
+            settings,count=conn.execute('SELECT settings,unique_count FROM combichem3d_run WHERE id=1').fetchone()
+            settings=json.loads(settings)
+            known=conn.execute('SELECT 1 FROM compound c WHERE c.smiles=? AND '
+                               '(EXISTS (SELECT 1 FROM combichem3d_unique u WHERE u.compound_id=c.id) OR '
+                               'EXISTS (SELECT 1 FROM combichem3d_pose p WHERE p.compound_id=c.id AND p.generated=0))',
+                               (payload['smiles'],)).fetchone()
+            if settings['stop-mode']=='target' and count>=settings['target-count'] and not known:
+                # Preserve acquired geometry/history, but do not admit a new
+                # output identity beyond the limit when workers finish together.
+                payload=dict(payload,output_passed=False)
+                report=dict(report,output_passed=False,target_count_limited=True,
+                            filter_rejections=list(report.get('filter_rejections',[]))+['target_count_limit'])
+        pose_id = _growth_insert_pose(conn,payload,batch['parent_pose']) if payload else None
+        failed = report['status'] != 'PASS'
+        conn.execute('INSERT INTO combichem3d_attempt VALUES (?,?,?,?,?,?,?,?)',
+                     (batch['parent_pose'],str(ordinal),report['iteration'],report['status'],json.dumps(report),
+                      report.get('failed_stage','pose_search') if failed else None,
+                      report['reason'] if failed else None,pose_id))
+        conn.execute('UPDATE combichem3d_batch SET cursor=? WHERE id=?', (str(ordinal+1),batch['id']))
+        conn.execute('UPDATE combichem3d_run SET attempted=attempted+1 WHERE id=1')
+        _growth_stop(conn)
+        return report
+
+
+def growth_finish_batch(path, batch):
+    with growth_connection(path) as conn:
+        conn.execute('UPDATE combichem3d_batch SET state=? WHERE id=? AND cursor=stop', (Growth.DONE,batch['id']))
+        row = conn.execute('SELECT allocated,total FROM combichem3d_pose WHERE id=?', (batch['parent_pose'],)).fetchone()
+        if int(row[0]) >= int(row[1]) and not conn.execute(
+                'SELECT 1 FROM combichem3d_batch WHERE parent_pose=? AND state!=? LIMIT 1',
+                (batch['parent_pose'],Growth.DONE)).fetchone():
+            conn.execute('UPDATE combichem3d_pose SET plan_state=? WHERE id=?', (Growth.DONE,batch['parent_pose']))
+
+
+def growth_end_session(path, reason):
+    with growth_connection(path) as conn:
+        conn.execute('UPDATE combichem3d_run SET elapsed=elapsed+MAX(0,?-started),started=NULL,'
+                     'stop_reason=COALESCE(stop_reason,?) WHERE id=1 AND started IS NOT NULL', (time.time(),reason))
+
+
+def growth_rows(path, table, after=0, limit=256):
+    """Bounded export cursor; table names are an explicit internal allowlist."""
+    if table not in {'combichem3d_pose','combichem3d_probe','combichem3d_attempt','combichem3d_batch','combichem3d_event','combichem3d_cycle','compound'}:
+        raise ValueError('Unknown pose-growth export table')
+    with growth_connection(path) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute(f'SELECT rowid AS export_rowid,* FROM {table} WHERE rowid>? ORDER BY rowid LIMIT ?',
+                                                  (after,limit))]
+
+
+def growth_log_event(path, kind, report):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('INSERT INTO combichem3d_event(created,kind,report) VALUES (?,?,?)',
+                     (time.time(),kind,json.dumps(report)))
+
+
+def growth_run_info(path):
+    import json
+    with growth_connection(path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.execute('SELECT * FROM combichem3d_run WHERE id=1').fetchone())
+        row['settings'] = json.loads(row['settings'])
+        row['statuses'] = dict(conn.execute('SELECT status,count(*) FROM combichem3d_attempt GROUP BY status'))
+        row['pose_count'] = conn.execute('SELECT count(*) FROM combichem3d_pose').fetchone()[0]
+        row['probe_statuses'] = {}
+        for (body,) in conn.execute('SELECT report FROM combichem3d_probe WHERE site!="__baseline__"'):
+            status = json.loads(body)['status']
+            row['probe_statuses'][status] = row['probe_statuses'].get(status,0)+1
+        row['planned_combinations'] = str(sum(int(x[0]) for x in conn.execute('SELECT total FROM combichem3d_pose')))
+        row['pending_plans'] = conn.execute('SELECT count(*) FROM combichem3d_pose WHERE iteration<? AND '
+                                            '(plan_state IN (?,?) OR (plan_state=? AND allocated!=total))',
+                                            (row['settings']['max-iteration'],Growth.PENDING,Growth.RUNNING,Growth.READY)).fetchone()[0]
+    return row
+
+
+def growth_compound_rows(path, after=0, limit=256):
+    with growth_connection(path) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute(
+            'SELECT c.id,c.name,c.smiles,MIN(p.iteration) AS first_iteration,'
+            'GROUP_CONCAT(DISTINCT p.iteration) AS iterations,COUNT(*) AS pose_count,'
+            '(SELECT properties FROM combichem3d_pose q WHERE q.compound_id=c.id AND q.output_passed=1 ORDER BY q.id LIMIT 1) AS properties '
+            'FROM compound c JOIN combichem3d_pose p ON p.compound_id=c.id '
+            'WHERE c.id>? AND p.output_passed=1 GROUP BY c.id ORDER BY c.id LIMIT ?', (after,limit))]
+
+
+def growth_structure_rows(path, iteration, after=0, limit=256, results=False, frames_only=False):
+    """Bounded structure inventory; results are valid saved generated poses."""
+    with growth_connection(path) as conn:
+        conn.row_factory=sqlite3.Row
+        history='NULL' if results else 'p.history'
+        return [dict(r) for r in conn.execute(
+            f'SELECT p.id AS pose_id,p.compound_id,p.parent_pose,p.output_passed,p.plan_state,'
+            f'{history} AS history,c.smiles FROM combichem3d_pose p JOIN compound c ON c.id=p.compound_id '
+            'WHERE p.iteration=? AND p.id>? AND (?=0 OR p.generated=1) AND (?=0 OR p.generated=0) ORDER BY p.id LIMIT ?',
+            (iteration,after,int(results),int(frames_only),limit))]
+
+
+def growth_iteration_counts(path, iteration, source_iteration=None, frames_only=False):
+    with growth_connection(path) as conn:
+        statuses=dict(conn.execute('SELECT status,count(*) FROM combichem3d_attempt WHERE iteration=? GROUP BY status',(iteration,)))
+        poses,unique=conn.execute('SELECT count(*),count(DISTINCT compound_id) FROM combichem3d_pose '
+                                 'WHERE iteration=? AND generated=1 AND output_passed=1',(iteration,)).fetchone()
+        frames=conn.execute('SELECT count(*) FROM combichem3d_pose WHERE iteration=? AND (?=0 OR generated=0)',
+                            (iteration-1 if source_iteration is None else source_iteration,int(frames_only))).fetchone()[0]
+    return dict(iteration=iteration,frames=frames,attempted=sum(statuses.values()),statuses=statuses,
+                passed_poses=poses,passed_unique=unique)
+
+
+def growth_elite_rows(path, iteration, count, rank_by):
+    import json
+    if rank_by not in ('qed','similarity'):
+        raise ValueError('An explicit supported elite-rank-by is required before selecting elites')
+    with growth_connection(path) as conn:
+        conn.row_factory=sqlite3.Row
+        records=[dict(r) for r in conn.execute(
+            'SELECT p.*,c.smiles FROM combichem3d_pose p JOIN compound c ON c.id=p.compound_id '
+            'WHERE p.id IN (SELECT MIN(id) FROM combichem3d_pose WHERE iteration=? AND generated=1 '
+            'AND output_passed=1 GROUP BY compound_id) '
+            'ORDER BY json_extract(p.properties,?) DESC,p.compound_id,p.id LIMIT ?',
+            (iteration,'$.'+rank_by,count))]
+        for row in records:
+            row['history']=json.loads(row['history']);row['properties']=json.loads(row['properties'])
+        return records
+
+
+def growth_cycle_info(path, iteration):
+    import json
+    with growth_connection(path) as conn:
+        row=conn.execute('SELECT report FROM combichem3d_cycle WHERE iteration=?',(iteration,)).fetchone()
+        return json.loads(row[0]) if row else {}
+
+
+def growth_cycle_checkpoint(path, iteration, report):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('UPDATE combichem3d_cycle SET report=? WHERE iteration=?',(json.dumps(report),iteration))
+
+
+def growth_save_cycle_frame(path, iteration, payload, report, probes):
+    import json
+    with growth_connection(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row=conn.execute('SELECT frame_pose FROM combichem3d_cycle WHERE iteration=?',(iteration,)).fetchone()
+        if row[0] is not None:return row[0]
+        pose=_growth_insert_pose(conn,payload,report['template_pose'],generated=False)
+        conn.execute('UPDATE combichem3d_pose SET input_state=? WHERE id=?',(Growth.DONE,pose))
+        for uid,value in probes.items():
+            conn.execute('INSERT INTO combichem3d_probe VALUES (?,?,?)',(pose,uid,json.dumps(value)))
+        conn.execute('UPDATE combichem3d_cycle SET state=?,frame_pose=?,report=?,owner=NULL WHERE iteration=?',
+                     (Growth.READY,pose,json.dumps(report),iteration))
+        return pose
+
+
+def growth_previous_frame(path, iteration):
+    with growth_connection(path) as conn:
+        row=conn.execute('SELECT frame_pose FROM combichem3d_cycle WHERE iteration=?',(iteration-1,)).fetchone()
+    if not row or row[0] is None:raise ValueError('Previous cycle frame is not ready')
+    return growth_parent(path,row[0])
+
+
+def growth_analysis_snapshot(path):
+    """Read-only consistent snapshot for the final human-readable log appendix."""
+    import json
+    conn=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=30)
+    conn.row_factory=sqlite3.Row
+    try:
+        conn.execute('BEGIN')
+        run=dict(conn.execute('SELECT * FROM combichem3d_run WHERE id=1').fetchone())
+        run['settings']=json.loads(run['settings'])
+        frames=[dict(r) for r in conn.execute(
+            'SELECT p.*,c.smiles FROM combichem3d_pose p JOIN compound c ON c.id=p.compound_id '
+            'WHERE p.generated=0 ORDER BY p.id')]
+        cycles=[dict(r) for r in conn.execute('SELECT * FROM combichem3d_cycle ORDER BY iteration')]
+        probes=[dict(r) for r in conn.execute('SELECT * FROM combichem3d_probe WHERE site!="__baseline__"')]
+        counts=[dict(r) for r in conn.execute(
+            'SELECT iteration,status,count(*) AS n FROM combichem3d_attempt GROUP BY iteration,status')]
+        optimization=[dict(r) for r in conn.execute(
+            "SELECT iteration,SUM(CASE WHEN json_type(report,'$.optimization_counts') IS NOT NULL THEN 1 ELSE 0 END) AS recorded,"
+            "SUM(COALESCE(json_extract(report,'$.optimization_counts.converged'),0)) AS converged,"
+            "SUM(COALESCE(json_extract(report,'$.optimization_counts.iteration_limit'),0)) AS iteration_limit,"
+            "SUM(CASE WHEN status='PASS' AND json_extract(report,'$.optimization.converged')=0 THEN 1 ELSE 0 END) AS passed_unconverged "
+            'FROM combichem3d_attempt GROUP BY iteration')]
+        properties=[dict(r) for r in conn.execute(
+            "SELECT iteration,count(*) AS n,count(DISTINCT compound_id) AS unique_count,MIN(json_extract(properties,'$.mw')) AS mw_min,"
+            "MAX(json_extract(properties,'$.mw')) AS mw_max,MIN(json_extract(properties,'$.qed')) AS qed_min,"
+            "MAX(json_extract(properties,'$.qed')) AS qed_max,MIN(json_extract(properties,'$.clogp')) AS clogp_min,"
+            "MAX(json_extract(properties,'$.clogp')) AS clogp_max FROM combichem3d_pose "
+            'WHERE generated=1 AND output_passed=1 GROUP BY iteration')]
+        errors=[dict(r) for r in conn.execute(
+            "SELECT a.iteration,e.value AS error,count(DISTINCT a.rowid) AS n FROM combichem3d_attempt a,"
+            "json_each(a.report,'$.errors') e WHERE a.status='UNRESOLVED' GROUP BY a.iteration,e.value")]
+        for frame in frames:
+            frame['history']=json.loads(frame['history'])
+        for row in cycles+probes:
+            row['report']=json.loads(row['report'])
+        return dict(run=run,frames=frames,cycles=cycles,probes=probes,counts=counts,
+                    optimization=optimization,properties=properties,errors=errors)
+    finally:
+        conn.close()

@@ -1,5 +1,340 @@
 # MolNova Development Handoff
 
+## Elite-MCS frame cycles (2026-10-25; supersedes reference-parent/frontier growth defaults)
+
+**Confirmed user correction:** reference parent ligands are pose references only,
+not growing molecules. Start cycle 1 from the supplied reference-MCS alone,
+retaining its 1–4 specified attachment anchors. Two anchors and K=10 yield 100
+Cartesian attempts, not 24 reference-parent populations. Structure deduplication,
+pose failures and output filters may reduce accepted molecules below 100.
+Default growth-mode is now "frame-cycles". Preserve explicit "frontier" mode for
+old synthetic/regression projects, never reinterpret or reset their checkpoints.
+
+Prepare one bare MCS frame from a matching reference's actual retained subgraph,
+cap cut valences with H and retain core coordinates. Reference substituents are
+excluded. Each completed product selects its closest compatible reference pose
+by Morgan radius-2/2048-bit Tanimoto for ORIGINAL reference-core coordinate
+constraints; unmatched references never trigger unconstrained optimization.
+The growing elite-MCS frame describes retained chemistry, while original reference
+core atoms define fixed/restraint coordinates. Newly retained frame decorations
+can relax under those original-core constraints. This is not docking/affinity scoring.
+
+For cycle N+1 select up to elite-count=20 DISTINCT passing products from N only.
+Calculate their MCS. If the concrete retained frame is chemically identical to N's
+frame, halve the elite subset: 20→10→5→2→1. **Confirmed user change
+(2026-10-26):** when reducing, sort the current subset by molecular weight and
+discard the smallest molecules first, retaining the heavier half (floor, minimum
+one). Initial elite selection still uses the configured QED/similarity ranking.
+**Implementation choice:** calculate average molecular weight with RDKit MolWt
+from the saved molecular structure, including hydrogens; equal weights retain
+the original elite order. Reduced attempts use descending molecular weight,
+including template selection; record weights alongside pose IDs in each attempt.
+At one elite use its whole molecule as the frame. Equality uses canonical isomeric structure, not raw
+SMARTS spelling. Reject/discard timed-out partial MCS and reduce the subset;
+check the previous frame's retained UIDs, rings, formal charges and stereo.
+Record attempts and template/elite IDs. If fewer passing products exist, use that
+available ranked set; never substitute reference ligands or fabricate elites.
+
+**Implementation repair (2026-10-26; reported CMPID_8/13):** saved SDF-derived
+atom/bond traversal with chirality matching returned only 17 retained heavy atoms,
+including a lone sidechain ring carbon, although both molecules share a 26-atom
+stereocompatible subgraph. Normalize graph-only FMCS inputs through canonical
+isomeric SMILES while retaining chirality/charge matching. Extract the frame from
+the original template pose/UIDs, never from the normalized copy. Enable both atom
+and bond CompleteRingsOnly, reject mappings cutting ring bonds, and verify the
+concrete extracted frame matches every selected elite with chirality enabled.
+Regression graphs reproduce the reported pair; this is graph/coordinate-preservation
+evidence, not validation of receptor energetics or scientific ranking.
+
+**Confirmed logging request (2026-10-26):** INFO logs each MCS attempt's previous
+frame, complete selected elite ID/pose/SMILES/MolWt list, template, raw and readable
+MCS SMARTS, extracted frame SMILES/atom count/status, and reduction kept/discarded
+pose IDs. Persist input elite SMILES and weights in the checkpoint as well.
+Timed-out partial MCS is discarded and never presented as an accepted structure.
+
+**Resume diagnostics:** existing output is resumable only with the original frozen
+inputs/scientific settings/calculator source. Fingerprint mismatch errors identify
+changed manifest keys/files and explain using a new [combichem-3d].out-dir, or
+--export-only for old results. Never bypass the guard or overwrite old calculations.
+
+**Confirmed distance choice:** molecular bond distance, not Euclidean distance.
+On newly retained sidechain atoms, find replaceable terminal H directions and
+independently test methyl probes (parent-heavy fixed, then original-core rescue).
+For every PASS heavy-atom site compute the MINIMUM shortest bond-path length to
+any previous attachment atom. Select up to next-attachment-count=3 with the
+per-initial-branch balancing/cycle-cap policy below; within a branch prefer greatest
+such distance and break ties by stable UID. One logical site per H-bearing heavy
+atom, including ring C-H/N-H, not one per individual H. This definition of terminal
+H preserves earlier elemental/H substitution rules; it does not restrict heavy
+atoms to graph degree one. If fewer than three pass, use those available; if none
+pass, preserve the explicit clash/unresolved evidence and stop. Real fragments
+replace H directly, followed by a fresh joint constrained search and bump checks.
+Only selected sites form the full next K^m Cartesian product.
+
+Cycle creation, ranked selection, frame preparation claims and checkpointing are
+SQLite-coordinated. Calculators perform elite MCS/probes, never coordinate workers.
+One immutable frame per cycle; products are not independently queued as parents.
+Persist MCS/probe checkpoints and cycles.jsonl; restarting under the exclusive
+stage lock rearms abandoned local work without losing poses or repeating completed
+MCS/probes. Keep old results, jobs and frozen protocol guards intact.
+
+Use stop-mode="cycles" (the new frame-mode default when not explicitly overridden)
+to finish each configured cycle within max-seconds. A legacy target-count=10
+would otherwise cut the first 100-product space short and cannot supply 20 elites.
+Explicit target/time modes retain their partial-search behavior; do not silently
+claim full-cycle completion when interrupted. Changed growth protocol requires a
+new output. Legacy root driver/Glide/GBSA behavior is unchanged.
+
+**Confirmed elite criterion:** the user selected QED. Set elite-rank-by="qed"
+as the default, descending, with compound ID then pose ID as deterministic ties.
+Rank distinct passing molecules from the immediately preceding cycle only. QED
+is not binding affinity. Reference similarity remains an explicit alternative;
+external Glide/GBSA scores must not be fabricated or copied from reference ligands.
+
+## Per-initial-attachment growth caps, balanced selection and final log analysis (2026-10-26)
+
+**Confirmed user requirements:** configure max growth cycles per initial attachment,
+select later attachment points fairly across original branches, and append a complete
+cycle/frame/attachment analysis to the end of run.log. Show attachment positions in
+the requested CH*/c* display convention with 1-based frame atom numbers, alongside
+ordinary computational SMILES. Display notation is never used for chemistry.
+
+**Confirmed input simplification (2026-10-26):** in frame-cycles, positive dummy
+map values in the initial reference-mcs encode maximum growth cycles directly.
+For `c1nc(N[*:2])c2cc(-c3ccc([*:1])cc3)[nH]c2n1`, the N branch grows at most twice
+and the phenyl branch once. `[*:999]` and an unnumbered `[*]` mean unlimited.
+Repeated values are valid: two `[*:2]` sites remain two distinct two-cycle roots.
+Assign internal root IDs 0,1,... by initial dummy input order, independently from
+map values; persist that mapping, input values and limits in each history and log.
+Global max-iteration/time bounds still apply. This supersedes the separate limit
+setting as the recommended input for new runs.
+
+**Compatibility interpretation:** retain the previous nonempty
+`initial-attachment-max-cycles` map/string as a legacy ID-label input. A SMARTS
+containing explicit `[*:0]` also retains the legacy label interpretation, preserving
+old :0/:1 artificial/explicit projects; in that mode map numbers do not impose
+cycle caps. Reject duplicate/absent IDs in legacy mode. Do not reinterpret old
+saved histories or bypass fingerprints. Use positive dummy values and omit the
+legacy setting for the new notation. Legacy root/Glide/LibInvent dummy semantics
+are unchanged. A growth cycle counts once
+per original branch with an actual non-H addition, even for multiple simultaneous
+sites on that branch. -H no-ops and probes do not consume saved growth cycles.
+Persist original-label/branch mapping, growth counters and cumulative selected-site
+counts in pose histories, through MCS extraction and restart. Reject assembly and
+skip methyl probing/selection on exhausted roots. Preserve capped branches' existing
+chemistry. Stop explicitly with attachment_cycle_limits_reached when candidate
+roots are exhausted; this is an expected configured stop, not an unresolved search.
+
+**Balanced selection interpretation:** among eligible probe-PASS sites, prioritize
+roots with fewer slots selected in the current cycle, then fewer cumulative slots,
+then the root's best remaining shortest-bond distance, then numeric root label.
+Within a root retain descending bond distance and UID ties. This gives each active
+root one slot before assigning extras when capacity permits, rotates extras, and
+fills unused slots from other roots when a root has insufficient passing sites.
+Keep full K^m product enumeration and all existing constrained search/bump gates.
+This supersedes the former global distance/UID top-N selection; do not rewrite old
+selections or apply new caps retrospectively to old saved results.
+
+Read all final analysis data from one read-only SQLite snapshot; all SQL stays in
+database.py. Append totals and per-cycle counts/property ranges/convergence/errors,
+frame SMILES and site-marked forms, MCS subset reduction and selected elites,
+PASS/CLASH_REJECT/UNRESOLVED sites with distances, initial root, selection and
+limit-exclusion evidence. Show legacy selection policy and missing counters honestly
+when analyzing old runs. Rendering/logging does not initialize or mutate scientific
+state. Future successful executions append this block after export; old completed
+run.log may receive it on explicit user request. New policy/source/settings require
+a new output folder, retaining old results and source fingerprints.
+
+## Bounded force-field relaxation before bump checks (2026-10-26)
+
+**Confirmed user change:** the EGFR COMBICHEM 3D project now sets
+optimization-iterations=100. Stop each MMFF/UFF minimization at that iteration
+limit; incomplete convergence alone must not make a candidate UNRESOLVED.
+RDKit Minimize return code 0 records convergence; code 1 records iteration_limit
+and continues with the resulting coordinates. This applies to methyl probes and
+real products. Other return codes/exceptions, missing parameters, nonfinite
+energy/coordinates, core displacement and stereo failures remain genuine errors.
+All eligible poses still require receptor/internal bump and output-filter checks.
+No pose passes merely because minimization ended. Record convergence, return code,
+configured iteration limit and aggregate optimization status counts in attempt/probe
+reports; preserve nonconvergence explicitly rather than labelling it converged.
+This limit counts minimizer iterations, not seconds; it is separate from the
+project's 48-hour cumulative compute budget. Other explicit iteration settings and
+legacy scientific workflows are unchanged. Existing results/fingerprints remain
+immutable; a changed protocol requires a fresh output. Tests verify return-code
+handling, geometry/bump gates and durable reporting, not real-receptor quality or
+an empirically measured speed/acceptance improvement.
+
+## Bounded random sidechain pools (2026-10-25)
+
+**Confirmed user change:** restrict attached fragments to 5–10 atoms and select
+10 random candidates, with the count configurable in the input TOML.
+**Implementation interpretation:** count heavy atoms only (atomic number >1),
+excluding attachment dummies and explicit/implicit hydrogens, consistent with
+existing sidechain size controls. New defaults are sidechain-min-heavy-atoms=5,
+sidechain-max-heavy-atoms=10, sidechains-per-site=10, sidechain-selection="random",
+sidechain-include-h=false. The -H parser remains supported; explicitly enabling
+it reserves one of K slots for -H, leaving K-1 sampled heavy fragments. Explicit
+site pools must also obey size eligibility and K; too few eligible candidates
+produce a clear error rather than silent pool shrinkage. The artificial toy keeps
+explicit ordered/H-enabled controls and its original small fragments.
+
+Sampling without replacement is reproducible from seed and atom UID, independent
+of worker order and library row order (sample sorted canonical SMILES). Only
+candidate pools are sampled: still enumerate their full K^N/product(N_i) spaces,
+subject to recorded time/count termination. Save actual pools in durable plans
+and include size/sampling settings in the frozen scientific manifest.
+
+**Historical implementation interpretation (frontier/target mode only):** interpret the repeated
+"limit to 10" as a separate final-new-unique-compound cap as well. The default
+3D target-count is 10; the copyable scoped settings explicitly override legacy
+root target-count/stop-mode and any legacy sidechain-max-heavy-atoms=8. Use
+stop-mode="target" for the cap; time mode retains its existing continue-to-time
+meaning. Admission of new passing identities is capped inside the same SQLite
+transaction as result persistence, so parallel completions cannot overshoot.
+Preserve surplus valid geometry/properties/history with output_passed=false and
+target_count_limited evidence; never relabel them as clashes or discard them.
+Imported identities and alternate poses do not count as new unique compounds.
+Changed sampling/size settings require a separate output, preserving old results.
+
+## COMBICHEM 3D execution logs (2026-10-25, revised for concise structure summaries)
+
+**Confirmed user change:** default logs emphasize iteration input frames and
+result structures. INFO prints bounded FRAME previews (CMPID, pose, parent SMILES,
+core SMARTS), periodic attempted/unique counts and remaining time, then per-iteration
+PASS unique/pose totals, CLASH_REJECT/UNRESOLVED counts and RESULT SMILES previews.
+`log-structures` controls preview size (default 3, range 0–20); complete inventories
+stream to `iterationNN-structures.jsonl`, retaining parent links and output_passed
+flags. Iteration imports/baselines are labelled with their source iteration;
+valid saved geometry poses are distinct from filter-passing output structures.
+Full pose coordinates and growth histories remain in the existing SDF/JSONL files.
+
+`--debug` / `log-level="DEBUG"` adds compact per-parent plans, baseline counts and
+worker events, without per-product starts or repeated optimization-error lists.
+Only `--trace` / `log-level="TRACE"` requests verbose per-probe/product diagnostics.
+`log-interval` defaults to 10 seconds. Timestamp/PID-tagged logs flush to stdout
+and append to the dedicated output `run.log`. The legacy root debug chemistry
+setting is unchanged. Log controls are operational; calculations, failure
+classification, exhaustive enumeration and saved scientific data are unchanged.
+
+## Approximate imported history (2026-10-25, supersedes earlier no-inference rule)
+
+**Confirmed user change:** when the existing project TOML omits `history`, infer
+imported ancestry from parent structure and `reference-mcs`. Shared-project mode
+defaults `infer-history=true`; standalone mode defaults false. Explicit history
+always wins, including errors for missing/invalid explicit files. Users may set
+`infer-history=false` to retain strict explicit-history requirements.
+
+Remove terminal attachment dummies from the query while retaining their core
+anchor correspondence. Enumerate up to 4096 chirality-compatible core matches,
+choose the lexicographically smallest mapped atom-index tuple, and record match
+count, ambiguity, cap and the selected mapping. Core coordinates are the mapped
+parent pose coordinates; no alignment or minimization occurs. Infer each connected
+component of non-core heavy atoms as a fragment/branch; record its core contacts,
+including bridging/multi-contact components. These are approximate graph groups,
+not recovered chemical synthesis fragments. Default core birth is 0 and all
+non-core components are assumed born at `inferred-parent-iteration=1`; changing
+that positive integer changes the assumed imported parent iteration, not evidence
+about its real history. Downstream additions retain exact generated ancestry.
+
+Store `provenance.status=INFERRED`, method, assumptions and ambiguity in each
+history and preserve it through descendant/output histories. Missing core matches,
+invalid parents or unsupported attachment count fail without dropping records.
+Persist `input-cache/inferred-history.json` atomically; incompatible inferred
+history/source changes stop resume rather than overwriting saved results.
+
+## Shared project TOML inputs for COMBICHEM 3D (2026-10-25)
+
+**Confirmed user change:** `molnova combichem-3d` accepts the existing project
+input TOML. Reuse shared receptor/parent/library/reference inputs and append
+3D-only controls under `[combichem-3d]` and `[combichem-3d.filters]`, using the
+control names from `examples/combichem-3d/toy-inputs/grow.toml`. Explicit section
+values override shared values. Resolve every local path against that input TOML.
+Keep standalone 3D TOMLs working and reject unknown 3D section keys.
+
+**Confirmed native input change:** parent poses come from `reference-pose`
+(`.mae/.maegz` supported), and the fixed receptor comes from the unique
+`*_recep.mae` member of `dock-grid`. Explicit `[combichem-3d].parents/receptor`
+overrides remain supported. Export through the installed Schrödinger Python,
+without docking, minimization, hydrogen addition or coordinate alignment. Keep
+original files unchanged; validate parent count, atom order/identity/charge,
+bond count and coordinates, and receptor atom/element/residue/coordinate
+preservation. PDB rounding and native HID/HIE/HIP→HIS residue naming are allowed;
+record original native identities/coordinates in `atom_source_map.json`.
+Reject absent/ambiguous grid receptors and multi-structure receptor members.
+Only explicitly marked `b_glide_receptor` pose-viewer records are excluded,
+with their source indices recorded. Cache exports atomically under the separate
+3D output `input-cache/native-inputs`, freeze source/helper hashes and verify
+cached file hashes on resume. Changed inputs never overwrite saved results.
+`schrodinger` / `SCHRODINGER` selects the local suite; no docking jobs are submitted.
+
+Reuse `sidechain-library`. Explicit `reference-smiles` wins; otherwise read
+iteration-0 reference SMILES from the original project DB read-only, without
+migration/claims, or use the exported reference-pose ligands if no DB exists.
+Default output remains `<project out-dir>/combichem-3d`, with a separate DB.
+Explicit authoritative history takes precedence and must match exported atom
+indices. Without it, use the user-authorized INFERRED import protocol above.
+Native structures alone never establish the actual synthesis chronology. The existing reference-mcs may supply only a
+missing history query. Copy additional controls from
+`examples/combichem-3d/project-settings.example.toml`; paths resolve against the
+real project TOML, never the toy folder. Legacy supervision/jobs are unchanged.
+
+## Opt-in COMBICHEM 3D pose growth (2026-10-25)
+
+**Confirmed user requirements:** implement `molnova combichem-3d growth.toml` as
+an independent local workflow with prepared fixed receptor PDB/SDF, aligned 3D
+parent SDF, explicit Reference-MCS atom/coordinate mapping, authoritative atom
+UID/branch/fragment/birth history, a single-ended fragment library including -H,
+and property/similarity reference SMILES. The original no-inference requirement is superseded by the approximate-import
+protocol above; retain its uncertainty labels. Default absolute max iteration is 1. Imported
+iteration-1 parents can start growth at 2. Support 1–4 initial attachment atoms.
+
+Iteration 1 enumerates the full configured core Cartesian product K^N; core
+methyl probes there are diagnostic, not a replacement for checking each product.
+At N>=2 find H-bearing heavy atoms across every fragment added at N-1, replace
+one H per atom, and enumerate product(N_i) over all probe-PASS sites together.
+Keep old terminal atoms, internal bonds and specified stereochemistry. Retain all
+new fragments as the next frontier; no same-iteration recursive expansion, mN
+single-site shortcut, symmetry-site deletion, beam search or hidden sampling.
+-H is an explicit no-op choice; final chemical identities deduplicate by isomeric
+SMILES while separate poses/frontier histories remain available.
+
+For each site, independently try a methyl probe with parent heavy atoms fixed,
+then rescue with only the explicit Reference-MCS constrained. Use constrained
+ETKDG/torsion starts and MMFF/UFF; distinguish exact fixed points from finite
+position restraints and check final maximum core displacement and stereo. Do
+not freely rotate ring/amide bonds. PASS requires a valid clash-passing pose;
+CLASH_REJECT only describes the configured finite valid search. Embedding,
+parameter, optimization and insufficient-pose failures are UNRESOLVED, never
+clashes. Record baseline clashes separately. Assemble real products from the
+unprobed parent, and repeat joint constrained search plus receptor/internal bump
+checks; independent passing probes never imply multi-fragment compatibility.
+
+The fixed-receptor checker uses spatial indexing and radius-sum overlap, explicit
+count/tolerance controls, 1–2/1–3 exclusions and configurable 1–4 policy. Water,
+cofactor/metal and H policies are explicit. Ligand force fields contain no receptor
+repulsion. This is MCS-constrained sidechain conformational search + receptor
+clash filtering, not docking or affinity prediction. No external docking engine
+is required. The radius model does not validate H-bond/metal coordination physics.
+
+Use a separate output/SQLite DB. Independent local calculators atomically claim
+bounded parent/product batches; the supervisor only supervises and keeps iterations
+sequential. Preserve WAL, foreign keys, 30-second timeout, CMPID identity,
+per-combination commits, big-integer cursors, all poses/history and failure/deferred
+records. Never materialize the full product. Up to 16 processes, seed, search and
+filter settings, output-vs-intermediate pruning, 30-minute default compute budget,
+target/time stopping and restart behavior are configured explicitly. Save partial
+search evidence on limits/Ctrl+C; never reset live calculators. Existing legacy
+Glide/GBSA workflows, projects, results, native jobs and defaults are unchanged.
+
+**Implementation protocol and limits:** `combichem3d_v1` uses heavy-atom UID history,
+keeps supplied and optimized H coordinates in poses, and stores input/source/runtime
+fingerprints. Artifact formats, complete input history convention, configuration,
+minimal dependencies, commands and runnable artificial inputs are documented in
+`docs/COMBICHEM_3D.md` and `examples/combichem-3d/`. Artificial RDKit tests include
+individually passing probes with colliding real fragments. They do not validate
+real-receptor accuracy or 10k–100k/30-minute throughput on 16 cores/64 GB.
+
 ## Readable SMARTS lines in MCS logs (2026-10-25)
 
 **Confirmed user request:** immediately follow each `MCS SMARTS` and

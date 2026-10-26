@@ -8,6 +8,188 @@ from molnova.paths import stage_directory
 from molnova import _core
 
 
+def combichem_3d_settings(filename):
+    """Dedicated local pose-growth project; never initializes a legacy project."""
+    import os
+    import tomllib
+    path = Path(filename).expanduser().resolve()
+    with path.open('rb') as stream:
+        raw = tomllib.load(stream)
+    project_mode = 'combichem-3d' in raw or any(key in raw for key in ('dock-grid','reference-pose','amber-receptor','prime-gbsa-receptor'))
+    inherited = {}
+    if project_mode:
+        section = raw.get('combichem-3d',{})
+        if not isinstance(section,dict):
+            raise ValueError('combichem-3d must be a TOML table')
+        base_output = (path.parent/Path(raw.get('out-dir','output')).expanduser()).resolve()
+        project = str(raw.get('project',path.stem))
+        if not project or Path(project).name!=project:
+            raise ValueError('Invalid project name')
+        inherited = dict(raw)
+        aliases = {'receptor':('dock-grid','receptor','prime-gbsa-receptor','amber-receptor'),
+                   'parents':('reference-pose','parents','parent-pose','parent-poses'),
+                   'reference-smiles':('reference-smiles',), 'history':('history','parent-history')}
+        # Section values override shared keys, without invoking legacy project
+        # initialization or changing its live database/selections.
+        merged = {key:raw[key] for key in ('sidechain-library','max-iteration','target-count','reference-mcs') if key in raw}
+        for target,keys in aliases.items():
+            for key in keys:
+                if key in raw:
+                    merged[target]=raw[key]
+                    break
+        if 'receptor' not in merged:
+            merged['receptor']=str(stage_directory(base_output,0,'prime_gbsa')/'receptor.maegz')
+        if 'parents' not in merged:
+            parent_root = stage_directory(base_output,1,'glide')
+            merged['parents']=str(parent_root/('best_poses.sdf' if (parent_root/'best_poses.sdf').is_file() else 'best_poses.maegz'))
+        merged['out-dir']=str(base_output/'combichem-3d')
+        merged.update(section)
+        raw = merged
+    defaults = {
+        'max-iteration': 1, 'sidechains-per-site': 10, 'conformers': 8,
+        'sidechain-min-heavy-atoms': 5, 'sidechain-max-heavy-atoms': 10,
+        'sidechain-selection': 'random', 'sidechain-include-h': False,
+        'torsion-trials': 8, 'optimization-iterations': 250, 'minimum-valid-poses': 1,
+        'core-displacement': .05, 'overlap-tolerance': .4,
+        'maximum-receptor-clashes': 0, 'maximum-internal-clashes': 0,
+        'one-four-policy': 'exclude', 'one-four-scale': .8,
+        'include-water': False, 'include-cofactors': True, 'include-hydrogens': False,
+        'force-field': 'auto', 'core-constraint': 'fixed', 'restraint-force': 1000.,
+        'max-seconds': 1800., 'stop-mode': 'target', 'target-count': 10,
+        'processes': min(16, os.cpu_count() or 1), 'seed': 20261025,
+        'batch-size': 16, 'grace-seconds': 5., 'embed-timeout': 5,
+        'prune-intermediates': False, 'filters': {}, 'site-candidates': {}, 'reference-mcs': None,
+        'schrodinger': os.environ.get('SCHRODINGER','/home1/schrodinger/2026-3'),
+        'infer-history': project_mode, 'inferred-parent-iteration': 1,
+        'log-level': 'INFO', 'log-interval': 10.,
+        'log-structures': 3,
+        'growth-mode': 'frame-cycles', 'elite-count': 20, 'elite-rank-by': 'qed',
+        'next-attachment-count': 3, 'attachment-distance': 'bonds', 'mcs-timeout': 60,
+        'initial-attachment-max-cycles': {},
+    }
+    if project_mode:
+        for key in defaults:
+            if key in inherited and key not in raw:
+                raw[key]=inherited[key]
+    paths = ('receptor', 'parents', 'history', 'sidechain-library', 'reference-smiles', 'out-dir')
+    unknown = set(raw) - set(defaults) - set(paths)
+    if unknown:
+        raise ValueError('Unknown combichem-3d settings: ' + ', '.join(sorted(unknown)))
+    cfg = defaults | raw
+    limits=cfg['initial-attachment-max-cycles']
+    if isinstance(limits,str):
+        parsed={}
+        for entry in limits.split(','):
+            pair=entry.strip().split(':')
+            if len(pair)!=2 or not all(p.strip().isdigit() for p in pair):
+                raise ValueError('initial-attachment-max-cycles must be a table or label:count list')
+            label,value=(p.strip() for p in pair)
+            if str(int(label)) in parsed:
+                raise ValueError('Duplicate initial attachment cycle limit')
+            parsed[str(int(label))]=int(value)
+        limits=parsed
+    if not isinstance(limits,dict):
+        raise ValueError('initial-attachment-max-cycles must map initial labels to positive integers')
+    normalized={}
+    for label,value in limits.items():
+        if (not isinstance(label,str) or not label.isdigit() or isinstance(value,bool)
+                or not isinstance(value,int) or value<1 or str(int(label)) in normalized):
+            raise ValueError('initial-attachment-max-cycles needs distinct nonnegative labels and positive integer limits')
+        normalized[str(int(label))]=value
+    cfg['initial-attachment-max-cycles']=normalized
+    if normalized and cfg['growth-mode']!='frame-cycles':
+        raise ValueError('initial-attachment-max-cycles requires growth-mode="frame-cycles"')
+    if cfg['growth-mode']=='frame-cycles' and 'stop-mode' not in raw:
+        cfg['stop-mode']='cycles'
+    if 'history' not in cfg and (cfg['infer-history'] or cfg['growth-mode']=='frame-cycles'):
+        output=(path.parent/Path(cfg['out-dir']).expanduser()).resolve()
+        cfg['history']=str(output/'input-cache/inferred-history.json')
+        cfg['history-source']='inferred'
+    source_db = None
+    reference_poses = None
+    if project_mode and 'reference-smiles' not in cfg:
+        source_db = base_output/f'{project}.sqlite'
+        legacy = path.parent/f'{project}.sqlite'
+        if not source_db.is_file() and legacy.is_file():
+            source_db=legacy
+        if not source_db.is_file():
+            source_db=None
+            value=inherited.get('reference-pose')
+            if isinstance(value,str):
+                reference_poses=(path.parent/Path(value).expanduser()).resolve()
+        # Generated only in the dedicated output, after read-only source access.
+        output=(path.parent/Path(cfg['out-dir']).expanduser()).resolve()
+        cfg['reference-smiles']=str(output/'input-cache/references.smi')
+    for key in paths:
+        value = cfg.get(key)
+        if not isinstance(value, str) or not value.strip() or '://' in value:
+            extra = '; add [combichem-3d].history with explicit UID/core/fragment provenance' if key=='history' else ''
+            raise ValueError(f'{key} must be a nonempty local path{extra}')
+        cfg[key] = str((path.parent / Path(value).expanduser()).resolve())
+    positive_ints = ('max-iteration', 'sidechains-per-site', 'conformers', 'optimization-iterations',
+                     'minimum-valid-poses', 'target-count', 'processes', 'batch-size', 'embed-timeout', 'inferred-parent-iteration',
+                     'sidechain-min-heavy-atoms', 'sidechain-max-heavy-atoms','elite-count','next-attachment-count','mcs-timeout')
+    for key in (*positive_ints, 'torsion-trials', 'seed', 'maximum-receptor-clashes', 'maximum-internal-clashes', 'log-structures'):
+        value = cfg[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < (1 if key in positive_ints else 0):
+            raise ValueError(f'{key} must be an integer >= {1 if key in positive_ints else 0}')
+    if cfg['processes'] > 16 or cfg['seed'] > 2147483646:
+        raise ValueError('processes must be <=16 and seed <=2147483646')
+    for key in ('core-displacement', 'overlap-tolerance', 'one-four-scale', 'restraint-force', 'max-seconds', 'grace-seconds', 'log-interval'):
+        value = cfg[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f'{key} must be a finite nonnegative number')
+    if cfg['max-seconds'] <= 0 or cfg['restraint-force'] <= 0 or not 0 < cfg['one-four-scale'] <= 1:
+        raise ValueError('max-seconds/restraint-force must be positive and one-four-scale in (0,1]')
+    if cfg['log-interval'] <= 0 or cfg['log-level'] not in ('INFO','DEBUG','TRACE'):
+        raise ValueError('log-interval must be positive and log-level must be INFO, DEBUG or TRACE')
+    if cfg['log-structures']>20:
+        raise ValueError('log-structures must be between 0 and 20')
+    if cfg['next-attachment-count']>4:
+        raise ValueError('next-attachment-count must be <=4')
+    if cfg['elite-rank-by'] not in (None,'qed','similarity'):
+        raise ValueError('elite-rank-by must be qed or similarity; external ranking requires an explicit imported-score protocol')
+    if cfg['attachment-distance']!='bonds':
+        raise ValueError('attachment-distance must be bonds (minimum shortest-path distance to previous attachment atoms)')
+    if cfg['sidechain-min-heavy-atoms']>cfg['sidechain-max-heavy-atoms']:
+        raise ValueError('sidechain-min-heavy-atoms must not exceed sidechain-max-heavy-atoms')
+    for key in ('include-water', 'include-cofactors', 'include-hydrogens', 'prune-intermediates', 'infer-history', 'sidechain-include-h'):
+        if not isinstance(cfg[key], bool):
+            raise ValueError(f'{key} must be a boolean')
+    for key, allowed in {'one-four-policy': ('exclude', 'include', 'scaled'),
+                         'growth-mode': ('frame-cycles','frontier'),
+                         'sidechain-selection': ('random','ordered'),
+                         'force-field': ('auto', 'MMFF', 'UFF'),
+                         'core-constraint': ('fixed', 'restraint'), 'stop-mode': ('target', 'time','cycles')}.items():
+        if cfg[key] not in allowed:
+            raise ValueError(f'{key} must be one of {allowed}')
+    properties = {'mw', 'clogp', 'tpsa', 'qed', 'similarity', 'hbd', 'hba', 'rotatable_bonds', 'heavy_atoms'}
+    if not isinstance(cfg['filters'], dict) or set(cfg['filters']) - properties:
+        raise ValueError('filters must contain only supported property ranges')
+    for key, limits in cfg['filters'].items():
+        if (not isinstance(limits, list) or len(limits) != 2
+                or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in limits)
+                or limits[0] > limits[1]):
+            raise ValueError(f'filters.{key} must be [finite minimum, finite maximum]')
+    if not isinstance(cfg['site-candidates'], dict) or any(
+            not isinstance(v, list) or not v or any(not isinstance(x, str) for x in v)
+            for v in cfg['site-candidates'].values()):
+        raise ValueError('site-candidates must map atom UIDs to nonempty fragment SMILES lists')
+    cfg['config-path'] = str(path)
+    if not isinstance(cfg['schrodinger'],str) or not cfg['schrodinger'].strip():
+        raise ValueError('schrodinger must be a local installation path')
+    cfg['schrodinger']=str((path.parent/Path(cfg['schrodinger']).expanduser()).resolve())
+    if project_mode:
+        cfg['project-input-toml'] = str(path)
+        if source_db:
+            cfg['reference-source-db'] = str(source_db)
+        elif reference_poses:
+            cfg['reference-source-poses'] = str(reference_poses)
+        elif 'reference-smiles' not in raw:
+            raise ValueError('No reference SMILES source: supply reference-smiles or an existing project DB/reference-pose SDF')
+    return cfg
+
+
 def distribution_settings(config):
     enabled = config.get('distribution-report', True)
     if not isinstance(enabled, bool):
