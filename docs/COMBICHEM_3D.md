@@ -749,3 +749,10 @@ stop recovery. Progress reports show committed results, so may lag calculations.
 Per-result fsync adds filesystem work; 384-worker speedup has not been benchmarked.
 Live runs retain their existing code/settings and should not be reset. Source
 fingerprint validation still applies when restarting with changed code.
+
+Calculator SSH connections explicitly disable multiplexing (`ControlMaster=no`,
+`ControlPath=none`, `ControlPersist=no`) so hundreds of slots do not contend for
+one master's session limit. Existing shared SSH sockets and global configuration
+are preserved. `remote calculator ready` means initialization succeeded; it does
+not mean the assigned calculations have finished. Existing workers retain their
+loaded code, and source-fingerprint validation still applies on restart.

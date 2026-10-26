@@ -124,3 +124,20 @@ def test_distributed_dispatch_fingerprints_calculator_adapter(monkeypatch):
         assert all(len(value)==64 for value in cfg['remote-implementation-sha256'].values())
     finally:
         distributed.uninstall(stage)
+
+
+def test_calculator_connections_disable_inherited_ssh_multiplexing(monkeypatch, tmp_path):
+    import io
+    from molnova.stages import combichem_distributed as distributed
+    process = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO('{"ready": true}\n'))
+    popen = Mock(return_value=process)
+    monkeypatch.setattr(distributed.subprocess, 'Popen', popen)
+    monkeypatch.setattr(distributed.tempfile, 'gettempdir', lambda: str(tmp_path))
+    cfg = {'remote-env-script':'/env/amber.sh', 'worker-ssh-known-hosts':'/shared/known_hosts'}
+    distributed.RemoteSearch('cpu2', cfg).start()
+    args = popen.call_args.args[0]
+    for setting in ['ControlMaster=no', 'ControlPath=none', 'ControlPersist=no',
+                    'BatchMode=yes', 'StrictHostKeyChecking=yes',
+                    'UserKnownHostsFile=/shared/known_hosts', 'ServerAliveInterval=30']:
+        assert args[args.index(setting)-1] == '-o'
+    assert args[-2] == 'cpu2'

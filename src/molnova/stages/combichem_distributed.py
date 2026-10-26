@@ -52,6 +52,10 @@ class RemoteSearch:
                            'UserKnownHostsFile=' + self.cfg['worker-ssh-known-hosts']]
             self.process = subprocess.Popen(
                 ['ssh', *options, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+                 # Each calculator needs its own session. A shared master hits
+                 # sshd's per-connection session cap; ControlMaster=no alone
+                 # still permits reuse, so explicitly disable ControlPath too.
+                 '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ControlPersist=no',
                  '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3',
                  self.host, 'bash -c ' + shlex.quote(script)],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)

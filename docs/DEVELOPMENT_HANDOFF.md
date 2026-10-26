@@ -1,5 +1,17 @@
 # MolNova Development Handoff
 
+**SSH multiplexing repair (2026-10-26):** inherited `ControlMaster=auto`
+and a common cpu2 ControlPath caused per-connection session refusals and control
+socket warnings with many calculator slots. Force `ControlMaster=no`,
+`ControlPath=none`, and `ControlPersist=no` for pure-calculator SSH connections.
+Disabling ControlMaster alone still permits reuse of an existing master. Retain
+serialized authentication startup, host-key verification and keepalives. Do not
+remove shared sockets, change global SSH/sshd settings or interrupt existing jobs.
+The repeated `remote calculator ready` messages establish successful calculator
+initialization despite the preceding fallback warnings, not completed products.
+The change applies to newly launched workers; running workers retain their loaded
+implementation and source-fingerprint checks remain enforced on restart.
+
 ## Buffered COMBICHEM result persistence (2026-10-26)
 
 **Confirmed user request:** reduce SQLite write contention by buffering results.

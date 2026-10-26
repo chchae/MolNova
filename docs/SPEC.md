@@ -59,6 +59,18 @@ batch-state index. Separate saved `__worker_error__:PID` diagnostics from chemic
 attachment sites in final analysis, retaining the original diagnostic rows.
 These changes do not establish 384-slot production throughput or receptor accuracy.
 
+**SSH multiplexing repair (2026-10-26):** inherited `ControlMaster=auto`
+and a common cpu2 ControlPath caused per-connection session refusals and control
+socket warnings with many calculator slots. Force `ControlMaster=no`,
+`ControlPath=none`, and `ControlPersist=no` for pure-calculator SSH connections.
+Disabling ControlMaster alone still permits reuse of an existing master. Retain
+serialized authentication startup, host-key verification and keepalives. Do not
+remove shared sockets, change global SSH/sshd settings or interrupt existing jobs.
+The repeated `remote calculator ready` messages establish successful calculator
+initialization despite the preceding fallback warnings, not completed products.
+The change applies to newly launched workers; running workers retain their loaded
+implementation and source-fingerprint checks remain enforced on restart.
+
 ## Direct COMBICHEM SSH execution (2026-10-26)
 
 **Confirmed user request:** `molnova combichem-3d egfr.toml` must support direct
