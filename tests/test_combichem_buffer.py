@@ -172,3 +172,14 @@ def test_bulk_target_admission_preserves_all_completed_poses(project):
     assert len(poses) == 3 and sum(r['output_passed'] for r in poses) == 1
     assert database.growth_run_info(db)['unique_count'] == 1
     assert database.growth_run_info(db)['attempted'] == 3
+
+
+def test_idle_frame_wait_does_not_take_writer_lock(project):
+    db, job, cfg = project
+    with database.growth_connection(db) as conn:
+        conn.execute("UPDATE combichem3d_batch SET state='done',cursor=stop")
+        conn.execute("UPDATE combichem3d_pose SET plan_state='done'")
+        conn.execute("INSERT INTO combichem3d_cycle VALUES (2,'running',NULL,'{}',123)")
+    with database.growth_connection(db) as writer:
+        writer.execute('BEGIN IMMEDIATE')
+        assert database.growth_claim(db,2,16,999)==dict(kind='wait')

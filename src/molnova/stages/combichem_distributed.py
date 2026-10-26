@@ -114,8 +114,16 @@ def worker_loop(db, cfg, iteration):
     local = socket.gethostname().split('.')[0]
     remote = None
     logging.getLogger('molnova.combichem3d').info('calculator slot host=%s SQLite host=%s', host, local)
-    if host.rsplit('@', 1)[-1].split('.')[0] != local:
-        remote = RemoteSearch(host, cfg)
+    if cfg.get('execution-backend')=='slurm' or host.rsplit('@', 1)[-1].split('.')[0] != local:
+        if cfg.get('execution-backend')=='slurm':
+            from molnova.stages.combichem_slurm import SlurmSearch
+            remote = SlurmSearch(host, cfg)
+            from molnova.chemistry.combichem3d import cycles
+            stage.methyl_probe = remote.probe
+            cycles.methyl_probe = remote.probe
+            cycles.select_mcs = remote.select_mcs
+        else:
+            remote = RemoteSearch(host, cfg)
         stage.search = remote
     try:
         _ORIGINAL_WORKER(db, cfg, iteration)

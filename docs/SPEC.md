@@ -1,5 +1,55 @@
 # MolNova specification
 
+## Slurm COMBICHEM calculation pools with local coordination (2026-10-26)
+
+**Confirmed user request and correction:** replace direct cpu1/cpu2 SSH calculator
+connections with Slurm; keep task allocation, SQLite and result storage on the
+host invoking molnova. Do not move the coordinator onto a compute node. This
+supersedes the earlier two-host SSH execution choice for new Slurm runs. Glide
+submission remains unchanged; no existing jobs/results may be reset or cancelled.
+
+**Implementation choices:** optional `execution-backend="slurm"`, `slurm-host`,
+`slurm-partition`, `slurm-time-limit` (seconds), `slurm-memory-mb` (MiB, zero=all
+node memory), and `slurm-poll-seconds`. Require equal `worker-hosts` counts on one
+or two named nodes (1..192 physical cores each, total <=384); omit execution-host.
+The invoking host activates the shared remote-env-script LOCALLY so Python,
+RDKit and NumPy match the nodes; its hostname, DB and supervision never move.
+Legacy local/SSH inputs remain supported. Use a separate output for new code and
+protocol; preserve frozen-source guards, claims, poses and result journals.
+
+Submit one sbatch allocation for the whole computation, with native no-requeue,
+physical-core requests (`--hint=nomultithread`), explicit memory and time bounds.
+One native srun step starts a pure-calculator process pool on each allocated node;
+never submit a scheduler job per molecule or open SSH sessions to the nodes.
+SSH to the submission host is control-only (sbatch/squeue/sacct/scancel). Persist
+unique job-name/JobId launch journals; reconcile lost submission replies using
+both active and terminal history, and never resubmit uncertain/live allocations.
+Slurm resource settings and session IDs are operational; scientific source/input
+guards remain mandatory. Queue time precedes the cumulative max-seconds timer;
+Slurm allocation time also includes initialization/export/cleanup.
+
+Local independent workers atomically claim SQLite work, assemble candidate graphs,
+choose references, perform ranking/filter bookkeeping and persist buffered results.
+Send constrained force-field searches, bump/methyl probes and elite-MCS to native
+node pools over authenticated internal TCP sockets, retaining full-precision
+coordinates, stable seeds, atom histories and calculator versions. Relay MCS
+checkpoint/log events back to the local worker for DB/log persistence. Nodes do
+not open SQLite, claim workflow work or write scientific result files. Per-node
+private endpoint/token files and native logs are allocation-control metadata only.
+The local supervisor still performs no scientific calculations. Load a sidechain
+library only in workers that actually claim a planning job, to reduce coordinator
+initialization overhead. Original-core/sidechain protocols remain unchanged.
+
+Retain the exclusive local stage lock and inherited fork lock before any session
+recovery. Reattach a matching active native allocation after client interruption;
+rearm local abandoned work only under existing lock/session rules. Pools alone,
+zero exits or cached output never establish workflow completion: require local
+DB/export completion and verified native parent/step completion before writing a
+matching session completion record. A failed/disconnected calculator stops its
+claim owner; retain computed result journals and committed results. Stop only the
+current allocation's pure pools on normal/exception exit; a shutdown timeout may
+request cancellation of that allocation, never unrelated production jobs.
+
 ## Buffered COMBICHEM result persistence (2026-10-26)
 
 **Confirmed user request:** reduce SQLite write contention by buffering results.

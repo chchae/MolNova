@@ -756,3 +756,37 @@ one master's session limit. Existing shared SSH sockets and global configuration
 are preserved. `remote calculator ready` means initialization succeeded; it does
 not mean the assigned calculations have finished. Existing workers retain their
 loaded code, and source-fingerprint validation still applies on restart.
+
+## Slurm pools with the coordinator on the current host
+
+Use `slurm-settings.example.toml` as a replacement COMBICHEM section for a new
+project output. Keep the existing shared scientific inputs/limits. The prepared
+EGFR input is `examples/tmp/egfr-slurm.toml`:
+
+```bash
+molnova combichem-3d egfr-slurm.toml
+```
+
+The current host (for example tensor) keeps SQLite claims, graph assembly, ranking,
+buffering, result files and supervision. The shared Amber environment is activated
+locally on that same host to match the node calculator versions. Native Slurm
+pools on cpu1/cpu2 perform optimization, bump tests, methyl probes and elite-MCS;
+MCS checkpoints/logs return to the local host. Scientific results never require
+compute-node SQLite access. Native logs and private token/endpoint files are
+control metadata. Tokens authenticate internal TCP connections; the cluster
+network must allow the coordinator to reach ephemeral node ports.
+
+Slurm reserves resources once for the run; one srun step starts the node pools.
+`worker-hosts={cpu1=192,cpu2=192}` requests 192 physical cores per node, including
+cpu2's two hardware threads per core. `slurm-memory-mb=0` reserves all node memory;
+use a smaller explicit MiB value for a shared small run. Slurm wait time is outside
+the calculation timer. The allocation time limit must allow preparation, export
+and shutdown in addition to max-seconds. No job is submitted per molecule.
+
+The JobId, submission journal and native logs are under `<out-dir>/slurm/run-*/`.
+Interrupted clients reattach to matching live allocations; unknown scheduler
+history blocks duplicate submission. Existing local stage-lock and result-buffer
+recovery rules remain active. Only local workflow completion plus verified native
+termination produces a session completion marker. Calculator/native failures
+retain results and journals. `--export-only` does not allocate Slurm resources.
+Legacy direct SSH remains available; Glide settings are unchanged.

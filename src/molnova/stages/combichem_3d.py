@@ -145,10 +145,10 @@ def worker_loop(db, cfg, iteration):
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     job = None
     try:
-        logger.debug('worker initialization iteration=%s: loading receptor, references and sidechain library',iteration)
+        logger.debug('worker initialization iteration=%s: loading receptor and references',iteration)
         checker = BumpChecker(load_receptor(cfg['receptor'],cfg),cfg)
         evaluator = Evaluator(cfg['reference-smiles'],cfg['filters'])
-        library,_ = load_library(cfg['sidechain-library'],cfg)
+        library = None
         references=None
         if cfg.get('growth-mode')=='frame-cycles':
             from molnova.chemistry.combichem3d.frames import ReferencePoses
@@ -180,6 +180,8 @@ def worker_loop(db, cfg, iteration):
                 from molnova.chemistry.combichem3d.cycles import prepare_next_frame
                 prepare_next_frame(db,iteration,cfg,checker,deadline)
             elif job['kind'] == 'plan':
+                if library is None:
+                    library,_ = load_library(cfg['sidechain-library'],cfg)
                 plan_parent(db,job,cfg,library,checker,deadline)
             else:
                 evaluate_batch(db,job,cfg,checker,evaluator,deadline,references)
@@ -277,7 +279,7 @@ def prepare_project(cfg):
             raise ValueError('Input parent core coordinates exceed core-displacement; confirm the explicit coordinate frame/map')
         history['lineage_id'] = hashlib.sha256(json.dumps([root_index,history],sort_keys=True).encode()).hexdigest()
         records.append(dict(smiles=provenance.canonical_smiles(mol),molblock=Chem.MolToMolBlock(mol),history=history))
-    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script','result-buffer-size','result-buffer-seconds'}
+    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script','result-buffer-size','result-buffer-seconds','slurm-runtime-dir','slurm-poll-seconds','slurm-host','slurm-partition','slurm-time-limit','slurm-memory-mb','execution-backend','slurm-job-id','worker-hosts','worker-ssh-known-hosts'}
     frozen = {k:v for k,v in cfg.items() if k not in operational}
     frozen['input_sha256'] = {k:hashlib.sha256(Path(cfg[k]).read_bytes()).hexdigest()
                               for k in ('parents','receptor','history','reference-smiles','sidechain-library')}
@@ -434,21 +436,26 @@ def _main(argv=None):
                     cfg['conformers'],cfg['torsion-trials'],cfg['max-seconds'],cfg['target-count'],cfg['stop-mode'],Path(cfg['out-dir'])/'run.log')
         if not ns.export_only:
             db,first_iteration = prepare_project(cfg)
-            supervise(cfg,db,first_iteration)
         elif not db.is_file():
             raise ValueError('No combichem-3d DB to export')
-        logger.info('exporting committed results: %s',cfg['out-dir'])
-        info = export_results(db,cfg['out-dir'],cfg['batch-size'])
-        info['invocation_wall_seconds'] = time.monotonic()-invocation_started
-        temporary = Path(cfg['out-dir'])/'.summary.json.tmp'
-        temporary.write_text(json.dumps(info,indent=2,sort_keys=True)+'\n')
-        os.replace(temporary,Path(cfg['out-dir'])/'summary.json')
-        logger.info('%s: attempted=%s unique=%s elapsed=%.2fs partial=%s; exports ready',
-                    info['stop_reason'],info['attempted'],info['unique_count'],info['elapsed'],info['partial_search'])
-        from molnova.chemistry.combichem3d.analysis import log_final_analysis
-        log_final_analysis(db)
-        if info['stop_reason']=='worker_error':
-            raise RuntimeError('A local worker failed; results and failure records were preserved')
+        from molnova.stages.combichem_slurm import allocation
+        with allocation(cfg,ns) as session:
+            if not ns.export_only:
+                supervise(cfg,db,first_iteration)
+            logger.info('exporting committed results: %s',cfg['out-dir'])
+            info = export_results(db,cfg['out-dir'],cfg['batch-size'])
+            info['invocation_wall_seconds'] = time.monotonic()-invocation_started
+            temporary = Path(cfg['out-dir'])/'.summary.json.tmp'
+            temporary.write_text(json.dumps(info,indent=2,sort_keys=True)+'\n')
+            os.replace(temporary,Path(cfg['out-dir'])/'summary.json')
+            logger.info('%s: attempted=%s unique=%s elapsed=%.2fs partial=%s; exports ready',
+                        info['stop_reason'],info['attempted'],info['unique_count'],info['elapsed'],info['partial_search'])
+            from molnova.chemistry.combichem3d.analysis import log_final_analysis
+            log_final_analysis(db)
+            if info['stop_reason']=='worker_error':
+                raise RuntimeError('A local worker failed; results and failure records were preserved')
+            if session is not None:
+                session.result = info
     return info
 
 

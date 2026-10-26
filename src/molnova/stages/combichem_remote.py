@@ -13,13 +13,19 @@ def dispatch(cfg, ns):
     if cfg.get('worker-hosts'):
         # The main stage fingerprints chemistry and itself. Include the SSH
         # calculation adapter too, without changing legacy local manifests.
+        names = ['combichem_remote.py','combichem_distributed.py','combichem_compute.py']
+        if cfg.get('execution-backend')=='slurm':
+            names += ['combichem_slurm.py','combichem_slurm_pool.py','combichem_slurm_control.py']
         cfg['remote-implementation-sha256'] = {
             name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-            for name in ('combichem_remote.py', 'combichem_distributed.py', 'combichem_compute.py')
+            for name in names
         }
         install(stage)
     else:
         uninstall(stage)
+    if cfg.get('execution-backend')=='slurm':
+        from molnova.stages.combichem_slurm import dispatch as slurm_dispatch
+        return slurm_dispatch(cfg,ns)
     host = cfg.get('execution-host')
     if not host:
         return False

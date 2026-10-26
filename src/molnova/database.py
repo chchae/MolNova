@@ -2128,6 +2128,11 @@ def growth_claim(path, iteration, batch_size, owner):
         if not run[0] and time.time() < run[1]:
             active = conn.execute('SELECT 1 FROM combichem3d_batch WHERE iteration=? AND state=? LIMIT 1',
                                   (iteration,Growth.RUNNING)).fetchone()
+            active = active or conn.execute('SELECT 1 FROM combichem3d_cycle WHERE iteration=? AND state=? LIMIT 1',
+                                             (iteration,Growth.RUNNING)).fetchone()
+            active = active or conn.execute('SELECT 1 FROM combichem3d_pose WHERE '
+                '(iteration=? AND input_state=?) OR (iteration=? AND plan_state=?) LIMIT 1',
+                (iteration,Growth.RUNNING,iteration-1,Growth.RUNNING)).fetchone()
             if active:
                 ready = conn.execute('SELECT 1 FROM combichem3d_batch WHERE iteration=? AND state=? LIMIT 1',
                                      (iteration,Growth.PENDING)).fetchone()

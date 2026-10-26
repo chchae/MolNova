@@ -1,0 +1,18 @@
+# Replace the existing [combichem-3d] table; shared inputs stay in the project TOML.
+# Coordinator/SQLite/results stay on the invoking host, e.g. tensor.
+[combichem-3d]
+execution-backend = "slurm"
+# Do not set execution-host: no coordinator SSH dispatch to cpu1/cpu2.
+remote-env-script = "/share/opt/amber26/envs/AmberTools26/amber.sh"
+worker-hosts = { cpu1 = 192, cpu2 = 192 }
+processes = 384
+slurm-host = "slurm"             # SSH for scheduler control only
+slurm-partition = "cpu"
+slurm-time-limit = 176400         # 49h allocation, including setup/export
+slurm-memory-mb = 0              # all memory on each node; small tests use an explicit MiB limit
+slurm-poll-seconds = 5.0
+max-seconds = 172800              # 48h cumulative calculation budget, excluding queue wait
+batch-size = 32
+result-buffer-size = 16
+result-buffer-seconds = 2.0
+out-dir = "./output/combichem-3d-slurm"

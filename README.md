@@ -51,6 +51,10 @@ are enumerated alongside full extensions. Probe and product searches relax old
 and new sidechains together around the original core, and exported SDF atoms
 retain their `molnova_added_cycle` provenance tags.
 
+An optional [Slurm configuration](examples/combichem-3d/slurm-settings.example.toml)
+keeps coordination, SQLite and result storage on the invoking host while native
+cpu1/cpu2 calculation pools perform searches, methyl probes and elite-MCS.
+
 ```bash
 python examples/combichem-3d/make_cycle_inputs.py /tmp/molnova-frame-demo
 molnova combichem-3d /tmp/molnova-frame-demo/grow.toml

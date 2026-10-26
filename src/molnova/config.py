@@ -67,6 +67,8 @@ def combichem_3d_settings(filename):
         'next-attachment-count': 3, 'attachment-distance': 'bonds', 'mcs-timeout': 60,
         'initial-attachment-max-cycles': {},
         'execution-host': None, 'remote-env-script': None, 'worker-hosts': {}, 'worker-ssh-known-hosts': None,
+        'execution-backend': 'ssh', 'slurm-host': 'slurm', 'slurm-partition': 'cpu',
+        'slurm-time-limit': None, 'slurm-memory-mb': 0, 'slurm-poll-seconds': 5.,
     }
     if project_mode:
         for key in defaults:
@@ -180,9 +182,9 @@ def combichem_3d_settings(filename):
         raise ValueError('site-candidates must map atom UIDs to nonempty fragment SMILES lists')
     host = cfg['execution-host']
     script = cfg['remote-env-script']
-    if host is not None:
+    if host is not None or cfg['execution-backend']=='slurm':
         import re
-        if not isinstance(host, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*', host):
+        if host is not None and (not isinstance(host, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*', host)):
             raise ValueError('execution-host must be an SSH hostname or alias')
         if not isinstance(script, str) or not script.startswith('/') or '\n' in script:
             raise ValueError('remote-env-script must be an absolute remote environment script path')
@@ -193,7 +195,7 @@ def combichem_3d_settings(filename):
         raise ValueError('worker-hosts must map SSH hostnames to worker counts')
     if hosts:
         import re
-        if not host or not isinstance(script, str):
+        if (not host and cfg['execution-backend']!='slurm') or not isinstance(script, str):
             raise ValueError('worker-hosts requires execution-host and remote-env-script')
         for name, slots in hosts.items():
             if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name)
@@ -201,7 +203,7 @@ def combichem_3d_settings(filename):
                 raise ValueError('worker-hosts requires hostnames and 1..192 workers per host')
         if len(hosts) > 2 or sum(hosts.values()) > 384:
             raise ValueError('worker-hosts supports at most two hosts and 384 workers total')
-        if host not in hosts:
+        if host not in hosts and cfg['execution-backend']!='slurm':
             raise ValueError('execution-host must be present in worker-hosts')
         cfg['processes'] = sum(hosts.values())
     known_hosts = cfg['worker-ssh-known-hosts']
@@ -213,6 +215,32 @@ def combichem_3d_settings(filename):
         cfg.pop('worker-ssh-known-hosts')
     if not hosts:
         cfg.pop('worker-hosts')
+    backend = cfg['execution-backend']
+    slurm_keys = ('slurm-host','slurm-partition','slurm-time-limit','slurm-memory-mb','slurm-poll-seconds')
+    if backend not in ('ssh','slurm'):
+        raise ValueError('execution-backend must be ssh or slurm')
+    if backend=='slurm':
+        import re
+        if not hosts or len(set(hosts.values()))!=1:
+            raise ValueError('Slurm needs equally sized worker-hosts')
+        if host is not None:
+            raise ValueError('Slurm keeps coordination on the current host; omit execution-host')
+        for key in ('slurm-host','slurm-partition'):
+            if not isinstance(cfg[key],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*',cfg[key]):
+                raise ValueError(f'{key} must be a hostname/partition name')
+        if cfg['slurm-time-limit'] is None:
+            cfg['slurm-time-limit'] = math.ceil(cfg['max-seconds'])+3600
+        for key in ('slurm-time-limit','slurm-memory-mb'):
+            if isinstance(cfg[key],bool) or not isinstance(cfg[key],int) or cfg[key]<(1 if key=='slurm-time-limit' else 0):
+                raise ValueError(f'{key} must be a valid integer in seconds/MiB')
+        interval = cfg['slurm-poll-seconds']
+        if isinstance(interval,bool) or not isinstance(interval,(int,float)) or not math.isfinite(interval) or not 0<interval<=60:
+            raise ValueError('slurm-poll-seconds must be positive and <=60')
+    else:
+        if any(key in raw for key in slurm_keys):
+            raise ValueError('Slurm settings require execution-backend="slurm"')
+        for key in (*slurm_keys,'execution-backend'):
+            cfg.pop(key)
     cfg['config-path'] = str(path)
     if not isinstance(cfg['schrodinger'],str) or not cfg['schrodinger'].strip():
         raise ValueError('schrodinger must be a local installation path')
