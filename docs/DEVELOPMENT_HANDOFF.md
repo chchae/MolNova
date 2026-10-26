@@ -1,5 +1,62 @@
 # MolNova Development Handoff
 
+## Slurm full-product computation and bounded local claim owners (2026-10-26)
+
+**Confirmed user request:** move per-product preparation and result evaluation
+from tensor to Slurm nodes, and separate local worker concurrency from the remote
+calculation slots. This supersedes the earlier local product assembly/reference
+selection/property evaluation implementation choice below.
+
+**Implementation choices:** `worker-hosts` and `processes` still describe the
+remote calculation slots. Slurm-only `coordinator-processes` defaults to
+min(16, local CPU count, remote slot count), with explicit values from 1 through
+the remote slot count. Each independent local claim owner manages a disjoint,
+balanced set of calculator slots through bounded socket-reader threads; threads
+never access SQLite or launch/coordinate workflow workers. The driver still only
+supervises. Claims, result journals, global duplicate/target admission, cycle
+transitions and authoritative persistence remain local and SQLite-coordinated.
+
+Send each claimed batch's immutable parent, full-precision pose history, plan,
+ordinal range and deadline to a pure node calculator. On that calculator perform
+fragment assembly, compatible reference selection, constrained search, descriptors,
+filters, canonical SMILES and output pose/history serialization in the existing
+order. Stream each product back in ordinal order, then require an explicit complete
+batch reply with exactly the claimed ordinal range. Cache reference/evaluation
+objects per calculator connection. Input property/bump evaluation is remote too;
+local workers retain planning bookkeeping and final export. No node opens SQLite,
+claims workflow work or writes scientific output files.
+
+Local owners fsync received product journals and flush existing bounded buffers.
+Network readers use bounded queues; stop/error prevents further claims and drains
+already submitted batches, including after another reader fails. A failed reader
+retains its unfinished claim and committed cursor; never record a transport error
+as a scientific UNRESOLVED product. Persistence failures retain durable journals
+for existing idempotent recovery before rearming. The supervisor's existing grace
+limit still bounds draining; a forced termination can require recomputation of
+unreceived results. A target stop can receive remaining products from already
+submitted batches; preserve poses while SQLite enforces target admission.
+
+Preserve seeds, atom order/stereo, original-core constraints, Morgan radius 2 /
+2048-bit Tanimoto selection, full-precision coordinates, descriptor/failure rules,
+and journal recovery. Fingerprint the extracted product calculator and new adapter;
+new source requires a separate output, never bypass old guards or reset live jobs.
+Reduced local process/DB-writer concurrency does not eliminate per-result NFS fsync
+or establish a measured 384-slot throughput improvement.
+
+
+**Verification of this change:** full suite 1,562 passed; final affected
+regressions 242 passed (including 12 new pipeline regressions). These exercise
+real RDKit calculations over authenticated local TCP node pools while forbidding
+SQLite connections in the node processes, exact local/node report/pose/history
+and descriptor equality, two simultaneous slots from one local owner, two frame
+cycles, explicit supervisor owner counts, expired-deadline cursors, and recovery
+from disconnects, missing batch completion and persistence failures. Editable
+installation, compileall, package/CLI imports and diff whitespace checks passed.
+No new native Slurm allocation or production throughput benchmark was run. The
+separate examples/tmp/egfr-slurm-pipeline.toml uses 384 remote slots, 16 local
+owners, batch32/buffer16 and a new output directory; it was validated, not launched.
+Existing production inputs, DBs, jobs and results were not reset or moved.
+
 ## Slurm COMBICHEM calculation pools with local coordination (2026-10-26)
 
 **Confirmed user request and correction:** replace direct cpu1/cpu2 SSH calculator

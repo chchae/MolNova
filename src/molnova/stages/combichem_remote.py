@@ -15,7 +15,7 @@ def dispatch(cfg, ns):
         # calculation adapter too, without changing legacy local manifests.
         names = ['combichem_remote.py','combichem_distributed.py','combichem_compute.py']
         if cfg.get('execution-backend')=='slurm':
-            names += ['combichem_slurm.py','combichem_slurm_pool.py','combichem_slurm_control.py']
+            names += ['combichem_slurm.py','combichem_slurm_pool.py','combichem_slurm_control.py','combichem_slurm_worker.py','combichem_product.py']
         cfg['remote-implementation-sha256'] = {
             name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             for name in names

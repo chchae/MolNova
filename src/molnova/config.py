@@ -67,7 +67,7 @@ def combichem_3d_settings(filename):
         'next-attachment-count': 3, 'attachment-distance': 'bonds', 'mcs-timeout': 60,
         'initial-attachment-max-cycles': {},
         'execution-host': None, 'remote-env-script': None, 'worker-hosts': {}, 'worker-ssh-known-hosts': None,
-        'execution-backend': 'ssh', 'slurm-host': 'slurm', 'slurm-partition': 'cpu',
+        'coordinator-processes': None, 'execution-backend': 'ssh', 'slurm-host': 'slurm', 'slurm-partition': 'cpu',
         'slurm-time-limit': None, 'slurm-memory-mb': 0, 'slurm-poll-seconds': 5.,
     }
     if project_mode:
@@ -216,6 +216,16 @@ def combichem_3d_settings(filename):
     if not hosts:
         cfg.pop('worker-hosts')
     backend = cfg['execution-backend']
+    coordinators = cfg['coordinator-processes']
+    if coordinators is not None and (isinstance(coordinators,bool) or not isinstance(coordinators,int)
+                                     or not 1 <= coordinators <= cfg['processes']):
+        raise ValueError('coordinator-processes must be between 1 and the calculation slot count')
+    if backend == 'slurm':
+        cfg['coordinator-processes'] = coordinators or min(16, os.cpu_count() or 1, cfg['processes'])
+    elif coordinators is not None:
+        raise ValueError('coordinator-processes requires execution-backend="slurm"')
+    else:
+        cfg.pop('coordinator-processes')
     slurm_keys = ('slurm-host','slurm-partition','slurm-time-limit','slurm-memory-mb','slurm-poll-seconds')
     if backend not in ('ssh','slurm'):
         raise ValueError('execution-backend must be ssh or slurm')

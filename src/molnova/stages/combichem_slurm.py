@@ -204,7 +204,7 @@ class SlurmSearch(RemoteSearch):
             raise RemoteCalculationError('Slurm calculator initialization failed')
         self.connection.settimeout(None)
 
-    def exchange(self, request, checkpoint=lambda report:None):
+    def exchange(self, request, checkpoint=lambda report:None, product=lambda result:None):
         try:
             if self.process is None:self.start()
             self.process.stdin.write(json.dumps(request)+'\n');self.process.stdin.flush()
@@ -212,7 +212,8 @@ class SlurmSearch(RemoteSearch):
                 line = self.process.stdout.readline()
                 if not line:raise RemoteCalculationError('Slurm calculator disconnected; claim retained')
                 result = json.loads(line)
-                if '_checkpoint' in result:checkpoint(result['_checkpoint'])
+                if '_product' in result:product(result)
+                elif '_checkpoint' in result:checkpoint(result['_checkpoint'])
                 elif '_log' in result:logger.log(result['level'],result['_log'])
                 else:return result
         except (OSError,ValueError,KeyError,TypeError) as exc:
@@ -243,7 +244,9 @@ class SlurmSearch(RemoteSearch):
     def close(self):
         if self.process is not None:
             try:self.process.stdin.close()
-            finally:self.connection.close()
+            finally:
+                self.connection.close()
+                self.process = None
 
 
 def launch(root):

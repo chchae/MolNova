@@ -108,6 +108,11 @@ class RemoteSearch:
 
 def worker_loop(db, cfg, iteration):
     from molnova.stages import combichem_3d as stage
+    if cfg.get('execution-backend')=='slurm':
+        from molnova.stages.combichem_slurm_worker import worker_loop as slurm_worker
+        return slurm_worker(db,cfg,iteration)
+    if not cfg.get('worker-hosts'):
+        return _ORIGINAL_WORKER(db,cfg,iteration)
     hosts = [host for host, slots in cfg['worker-hosts'].items() for _ in range(slots)]
     index = multiprocessing.current_process()._identity[-1] - 1
     host = hosts[index % len(hosts)]

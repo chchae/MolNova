@@ -100,35 +100,9 @@ def evaluate_batch(db, job, cfg, checker, evaluator, deadline, references=None):
                 return
             choices = combination_at(plan['pools'],ordinal)
             trace('product start parent_pose=%s ordinal=%s choices=%s',job['parent_pose'],ordinal,choices)
-            payload = None
-            try:
-                product,birth = assemble(parent,history,plan['sites'],choices,f'c{ordinal}')
-                if references is not None:
-                    birth=references.constrain(product,birth)
-                result = search(product,birth,checker,cfg,stable_seed(cfg['seed'],history['lineage_id'],ordinal),deadline=deadline)
-                report = serial_report(result)
-                if result['status'] == PoseVerdict.PASS:
-                    pose = result['pose']
-                    pruned = False
-                    try:
-                        properties,passed,rejected = evaluator.evaluate(pose)
-                        pruned = cfg['prune-intermediates'] and not passed
-                    except (ValueError,RuntimeError) as exc:
-                        # Preserve an acquired valid 3D pose even if its output
-                        # descriptors cannot be evaluated. Unknown is not pruning.
-                        properties,passed,rejected = {},False,['evaluation_unresolved']
-                        report.update(status=PoseVerdict.UNRESOLVED,geometry_status=PoseVerdict.PASS,
-                                      reason=str(exc),failed_stage='property_evaluation')
-                    report.update(output_passed=passed,filter_rejections=rejected,properties=properties,
-                                  intermediate_pruned=pruned)
-                    payload = dict(smiles=provenance.canonical_smiles(pose),molblock=Chem.MolToMolBlock(pose),
-                                   history=provenance.snapshot(pose,birth),properties=properties,output_passed=passed,
-                                   pruned=pruned)
-            except (ValueError,RuntimeError) as exc:
-                report = dict(status=PoseVerdict.UNRESOLVED,reason=str(exc),failed_stage='assembly_or_evaluation')
-            report.update(iteration=history['iteration']+1,choices=dict(zip(plan['sites'],choices)),
-                          expanded_sites=[uid for uid,choice in zip(plan['sites'],choices) if choice!='-H'],
-                          expanded_site_count=sum(choice!='-H' for choice in choices))
+            from molnova.stages.combichem_product import evaluate_product
+            report,payload = evaluate_product(parent,history,plan,ordinal,cfg,checker,
+                                             evaluator,deadline,references,search_fn=search)
             buffer.append(ordinal,report,payload)
             trace('product parent_pose=%s ordinal=%s status=%s output_passed=%s valid_poses=%s attempts=%s reason=%s errors=%s filters=%s clashes=%s',
                          job['parent_pose'],ordinal,report['status'],report.get('output_passed',False),report.get('valid_poses'),
@@ -279,7 +253,7 @@ def prepare_project(cfg):
             raise ValueError('Input parent core coordinates exceed core-displacement; confirm the explicit coordinate frame/map')
         history['lineage_id'] = hashlib.sha256(json.dumps([root_index,history],sort_keys=True).encode()).hexdigest()
         records.append(dict(smiles=provenance.canonical_smiles(mol),molblock=Chem.MolToMolBlock(mol),history=history))
-    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script','result-buffer-size','result-buffer-seconds','slurm-runtime-dir','slurm-poll-seconds','slurm-host','slurm-partition','slurm-time-limit','slurm-memory-mb','execution-backend','slurm-job-id','worker-hosts','worker-ssh-known-hosts'}
+    operational = {'out-dir','config-path','max-seconds','target-count','processes','batch-size','grace-seconds','max-iteration','stop-mode','log-level','log-interval','log-structures','execution-host','remote-env-script','result-buffer-size','result-buffer-seconds','slurm-runtime-dir','slurm-poll-seconds','slurm-host','slurm-partition','slurm-time-limit','slurm-memory-mb','execution-backend','coordinator-processes','slurm-worker-index','slurm-job-id','worker-hosts','worker-ssh-known-hosts'}
     frozen = {k:v for k,v in cfg.items() if k not in operational}
     frozen['input_sha256'] = {k:hashlib.sha256(Path(cfg[k]).read_bytes()).hexdigest()
                               for k in ('parents','receptor','history','reference-smiles','sidechain-library')}
@@ -292,6 +266,7 @@ def prepare_project(cfg):
     frozen['implementation_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                                         for p in sorted(scientific_source.glob('*.py'))}
     frozen['implementation_sha256']['stages/combichem_3d.py'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    frozen['implementation_sha256']['stages/combichem_product.py'] = hashlib.sha256(Path(__file__).with_name('combichem_product.py').read_bytes()).hexdigest()
     frozen['library_candidates'] = len(library)
     frozen['library_selection'] = dict(method=cfg['sidechain-selection'],seed=cfg['seed'],
                                        minimum_heavy_atoms=cfg['sidechain-min-heavy-atoms'],
@@ -363,12 +338,14 @@ def supervise(cfg, db, first_iteration):
                 database.growth_request_stop(db,'interrupted')
             if database.growth_should_stop(db):
                 break
-            logger.info('iteration %s: starting %s local workers',iteration,cfg['processes'])
+            local_count = cfg.get('coordinator-processes',cfg['processes'])
+            logger.info('iteration %s: starting %s local workers (%s calculation slots)',iteration,local_count,cfg['processes'])
             source_iteration=first_iteration if iteration==first_iteration else iteration-1
             log_frames(db,source_iteration,iteration,cfg['log-structures'],cfg.get('growth-mode')=='frame-cycles')
             processes = []
-            for _ in range(cfg['processes']):
-                process = context.Process(target=worker_loop,args=(db,cfg,iteration))
+            for index in range(local_count):
+                worker_cfg = cfg | {'slurm-worker-index':index} if cfg.get('execution-backend')=='slurm' else cfg
+                process = context.Process(target=worker_loop,args=(db,worker_cfg,iteration))
                 process.start()
                 processes.append(process)
             stop_at = None

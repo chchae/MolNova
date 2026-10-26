@@ -6,6 +6,7 @@ execution-backend = "slurm"
 remote-env-script = "/share/opt/amber26/envs/AmberTools26/amber.sh"
 worker-hosts = { cpu1 = 192, cpu2 = 192 }
 processes = 384
+coordinator-processes = 16        # local DB owners; each manages multiple remote slots
 slurm-host = "slurm"             # SSH for scheduler control only
 slurm-partition = "cpu"
 slurm-time-limit = 176400         # 49h allocation, including setup/export

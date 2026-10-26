@@ -2,6 +2,7 @@
 import json
 import logging
 import sys
+import time
 from rdkit import Chem
 from molnova.chemistry.combichem3d import history as provenance
 from molnova.chemistry.combichem3d.search import search, methyl_probe
@@ -33,8 +34,40 @@ def serve(incoming, outgoing):
         raise RuntimeError('Remote calculator Python/RDKit/NumPy versions differ from coordinator')
     checker=BumpChecker(load_receptor(cfg['receptor'],cfg),cfg)
     print(json.dumps({'ready':True}),file=outgoing,flush=True)
+    evaluator = references = None
     for line in incoming:
         request=json.loads(line)
+        kind = request.get('kind')
+        if kind in ('batch', 'properties', 'baseline'):
+            if evaluator is None:
+                from molnova.chemistry.combichem3d.evaluation import Evaluator
+                evaluator = Evaluator(cfg['reference-smiles'],cfg['filters'])
+            if kind == 'batch':
+                from molnova.stages.combichem_product import evaluate_product
+                if references is None and cfg.get('growth-mode')=='frame-cycles':
+                    from molnova.chemistry.combichem3d.frames import ReferencePoses
+                    references = ReferencePoses(cfg['reference-poses'],cfg['reference-mcs'])
+                parent = Chem.MolFromMolBlock(request['molblock'],removeHs=False)
+                if parent is None:raise ValueError('Invalid batch parent')
+                parent = provenance.restore(parent,request['history'])
+                next_ordinal = request['cursor']
+                for ordinal in range(request['cursor'],request['stop']):
+                    if time.time() >= request['deadline']:break
+                    report,payload = evaluate_product(parent,request['history'],request['plan'],ordinal,
+                                                     cfg,checker,evaluator,request['deadline'],references)
+                    print(json.dumps(dict(_product=ordinal,report=report,payload=payload)),file=outgoing,flush=True)
+                    next_ordinal = ordinal+1
+                completion = ({'batch_done':True} if next_ordinal==request['stop']
+                              else {'batch_interrupted':next_ordinal})
+                print(json.dumps(completion),file=outgoing,flush=True)
+                continue
+            mol = Chem.MolFromMolBlock(request['molblock'],removeHs=False)
+            if mol is None:raise ValueError('Invalid evaluation molecule')
+            for index,xyz in enumerate(request['coordinates']):
+                mol.GetConformer().SetAtomPosition(index,xyz)
+            result = evaluator.evaluate(mol) if kind=='properties' else checker.check(mol)
+            print(json.dumps({'value':result}),file=outgoing,flush=True)
+            continue
         if request.get('kind')=='mcs':
             print(json.dumps(mcs(request,cfg,outgoing)),file=outgoing,flush=True)
             continue
