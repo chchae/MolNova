@@ -2303,6 +2303,18 @@ coordinates on verified terminal failure as well as normal parent completion.
 A merge/transfer/status failure leaves the live identity intact for recovery.
 Do not alter submitted production jobs merely to migrate scheduling.
 
+**Output-loss recovery repair (2026-10-30; implementation choice):** a failed
+native parent can leave a DONE child whose output is permanently unavailable.
+Retain pending recovery unless every native job is terminal, both parent and
+missing children explicitly report completed download and output deletion, a
+successful exact-identity `jsc list-files --json` query reports no remaining
+server files or errors, and the child's native output is absent locally.
+Only with that evidence, record the missing child metadata as
+`unavailable_subjobs` (never as imported), publish retained scored coordinates,
+and archive the failed submission before releasing only unscored claims for
+retry. Preserve scores, poses and the failed JobId audit. Failed queries,
+remaining local/server output, incomplete evidence or live jobs stay pending.
+
 
 ## 18. Confirmed fresh start after deleting iteration compounds (2026-10-20)
 

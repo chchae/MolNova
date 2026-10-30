@@ -337,6 +337,10 @@ def submit_or_poll(command, directory, compound_ids, *, wait_seconds=300, retrie
         if failed:
             _retire_failed_submission(directory, record)
             raise PrimeAtomTypingError(failed)
+        if record.get('mode') == 'native_batch_v1' and record.get('unavailable_subjobs'):
+            _retire_failed_submission(directory, record)
+            raise RuntimeError('Terminal Prime batch output was deleted; '
+                               'only unscored compounds remain retryable.')
         if not license_unavailable(diagnostics):
             _retire_failed_submission(directory, record)
             raise RuntimeError(f"Prime job {record['job_id']} ended with {status}: {diagnostics[-4000:]}")

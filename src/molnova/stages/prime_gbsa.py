@@ -119,6 +119,10 @@ def _run_stage(args, requested_iteration):
             glide_dir=stage_directory(args.output, iteration, 'glide'),
             compound_ids=pending,
         )
+    except PrimeReconciliationPending as exc:
+        # Retain the saved submission and claims until recovery can finish.
+        print(f"Iteration {iteration}: prime_gbsa pending: {exc}", flush=True)
+        return
     except Exception as exc:
         # A status/download failure does not prove that the external job failed.
         if load_job(directory) is not None:

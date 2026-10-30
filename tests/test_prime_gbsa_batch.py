@@ -173,21 +173,119 @@ def test_final_coordinate_failure_keeps_job_and_retries_without_submission(tmp_p
     assert next(root.glob('batch-*.completed.json')).is_file()
 
 
-def test_failed_parent_does_not_retire_when_completed_child_output_is_unavailable(tmp_path, monkeypatch):
-    args, root, record = project(tmp_path, monkeypatch)
+@pytest.mark.parametrize('status', ['FAILED', 'CANCELED', 'STOPPED'])
+def test_failed_parent_does_not_retire_when_completed_child_output_is_unavailable(
+        tmp_path, monkeypatch, capsys, status):
+    args, root, record = project(tmp_path, monkeypatch, 3)
+    with sqlite3.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',prime_gbsa_score=-30 WHERE id=3")
     record.update(job_id='parent', attempt=1)
     prime._save(root, record)
     monkeypatch.setattr(prime, '_job_details', lambda *a: [
-        dict(jobId='parent', status='FAILED'),
+        dict(jobId='parent', status=status),
         dict(jobId='child', parentJobId='parent', status='DONE', jobName='prime_gbsa.00001')])
     monkeypatch.setattr(prime.subprocess, 'run',
                         lambda *a, **kw: SimpleNamespace(returncode=1, stderr=b'unavailable'))
     monkeypatch.setattr(prime, '_run_attempt', lambda *a: pytest.fail('duplicate submission'))
-    with pytest.raises(prime.PrimeReconciliationPending, match='still require collection'):
-        prime_gbsa._run_stage(args, 1)
-    assert prime.load_job(root)['job_id'] == 'parent'
+    assert prime_gbsa._run_stage(args, 1) is None
+    output = capsys.readouterr().out
+    assert 'prime_gbsa pending: Terminal Prime subjob outputs still require collection: child' in output
+    assert 'failed/interrupted' not in output
+    assert prime.load_job(root) == record
     assert not list(root.glob('batch-*.failed.json'))
-    assert database.prime_gbsa_progress_counts(args.db_path, 1) == (2, 0)
+    assert database.prime_gbsa_submission_rows(args.db_path, [1, 2, 3]) == {
+        1: (1, 'prime_gbsa_running', None), 2: (1, 'prime_gbsa_running', None),
+        3: (1, 'prime_gbsa_done', -30)}
+
+    # A later poll imports the child before retiring the terminal parent.
+    def fetch(command, **kw):
+        if command[1] == 'tail-file':
+            kw['stdout'].write(b'native result')
+        return SimpleNamespace(returncode=0, stderr=b'')
+    monkeypatch.setattr(prime.subprocess, 'run', fetch)
+    monkeypatch.setattr(prime, '_current_diagnostics', lambda *a: 'insufficient licenses')
+    def extract(command, **kw):
+        Path(command[-1]).write_text('id\tprime_gbsa_score\n1\t-40\n')
+    monkeypatch.setattr(_core, 'run_command', extract)
+    monkeypatch.setattr(batch, 'publish_coordinates', lambda *a: None)
+    with pytest.raises(RuntimeError, match='only unscored'):
+        prime_gbsa._run_stage(args, 1)
+    assert prime.load_job(root) is None
+    archived = json.loads(next(root.glob('batch-*.failed.json')).read_text())
+    assert archived['job_id'] == 'parent'
+    assert archived['imported_subjobs'] == ['child']
+    assert database.prime_gbsa_submission_rows(args.db_path, [1, 2, 3]) == {
+        1: (1, 'prime_gbsa_done', -40), 2: (1, 'docked', None),
+        3: (1, 'prime_gbsa_done', -30)}
+    assert database.claim_prime_gbsa_candidates(args.db_path, 1, 3, 3) == [2]
+
+
+def test_deleted_terminal_child_output_retires_audit_and_releases_only_unscored(tmp_path, monkeypatch):
+    args, root, record = project(tmp_path, monkeypatch)
+    with sqlite3.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state='prime_gbsa_done',prime_gbsa_score=-30 WHERE id=2")
+    record.update(job_id='parent', attempt=1)
+    prime._save(root, record)
+    jobs = [dict(jobId='parent', status='FAILED'),
+            dict(jobId='child', parentJobId='parent', status='DONE', jobName='prime_gbsa.00001')]
+    for job in jobs:
+        job.update(allFilesDownloaded=True, events=[dict(outputFilesDeleted=True)])
+    monkeypatch.setattr(prime, '_job_details', lambda *a: jobs)
+    commands = []
+    def native(command, **kw):
+        commands.append(command)
+        if command[1] == 'list-files':
+            return SimpleNamespace(stdout=json.dumps([
+                dict(jobId=jid, downloadableFiles=None, errors=None) for jid in ['parent', 'child']]))
+        if command[1] == 'download':
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=1, stderr=b'output deleted')
+    monkeypatch.setattr(prime.subprocess, 'run', native)
+    monkeypatch.setattr(prime, '_current_diagnostics', lambda *a: 'insufficient licenses')
+    monkeypatch.setattr(prime, '_run_attempt', lambda *a: pytest.fail('duplicate submission'))
+    monkeypatch.setattr(batch, 'publish_coordinates', lambda *a: None)
+    with pytest.raises(RuntimeError, match='output was deleted'):
+        prime_gbsa._run_stage(args, 1)
+    assert prime.load_job(root) is None
+    archived = json.loads(next(root.glob('batch-*.failed.json')).read_text())
+    assert archived['job_id'] == 'parent'
+    assert archived['unavailable_subjobs'] == [jobs[1]]
+    assert not archived.get('imported_subjobs')
+    assert any(command[1] == 'download' for command in commands)
+    assert database.prime_gbsa_submission_rows(args.db_path, [1, 2]) == {
+        1: (1, 'docked', None), 2: (1, 'prime_gbsa_done', -30)}
+    assert database.claim_prime_gbsa_candidates(args.db_path, 1, 2, 2) == [1]
+
+
+@pytest.mark.parametrize('obstacle', ['parent_not_deleted', 'child_not_deleted', 'not_downloaded',
+                                    'local_output', 'server_files', 'server_error', 'query_failure',
+                                    'missing_identity', 'malformed'])
+def test_output_loss_requires_unambiguous_native_and_local_evidence(tmp_path, monkeypatch, obstacle):
+    parent = dict(jobId='parent', allFilesDownloaded=True, events=[dict(outputFilesDeleted=True)])
+    child = dict(jobId='child', jobName='prime_gbsa.00001',
+                 allFilesDownloaded=True, events=[dict(outputFilesDeleted=True)])
+    listing = [dict(jobId=jid, downloadableFiles=None, errors=None) for jid in ['parent', 'child']]
+    if obstacle == 'parent_not_deleted':
+        parent['events'] = []
+    elif obstacle == 'child_not_deleted':
+        child['events'] = []
+    elif obstacle == 'not_downloaded':
+        child['allFilesDownloaded'] = False
+    elif obstacle == 'local_output':
+        (tmp_path / 'prime_gbsa.00001-out.maegz').write_bytes(b'native result')
+    elif obstacle == 'server_files':
+        listing[0]['downloadableFiles'] = [dict(name='result.maegz')]
+    elif obstacle == 'server_error':
+        listing[1]['errors'] = ['unavailable']
+    elif obstacle == 'missing_identity':
+        listing.pop()
+    def query(*a, **kw):
+        if obstacle == 'query_failure':
+            raise OSError('server unavailable')
+        return SimpleNamespace(stdout='invalid json' if obstacle == 'malformed' else json.dumps(listing))
+    monkeypatch.setattr(batch.subprocess, 'run', query)
+    assert not batch.deleted_terminal_outputs(
+        tmp_path, dict(command=['/suite/prime_mmgbsa']), parent, [child])
 
 
 def test_coordinates_keep_previous_scored_pose_deduplicate_and_put_receptor_first(tmp_path, monkeypatch):

@@ -2,6 +2,7 @@
 import json
 import re
 import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -153,6 +154,33 @@ with structure.StructureWriter(sys.argv[1]) as writer:
         pending.unlink(missing_ok=True)
 
 
+def deleted_terminal_outputs(directory, record, parent, children):
+    """Prove output loss before allowing a failed batch's unscored work to retry."""
+    jobs = [parent, *children]
+    if not all(job.get('allFilesDownloaded') is True and any(
+            event.get('outputFilesDeleted') is True for event in job.get('events', []))
+            for job in jobs):
+        return False
+    # Existing local native output must be reconciled rather than discarded.
+    if any((Path(directory) / (child['jobName'] + '-out.maegz')).exists()
+           for child in children):
+        return False
+    ids = [job['jobId'] for job in jobs]
+    jsc = Path(record['command'][0]).parent / 'jsc'
+    try:
+        result = subprocess.run([str(jsc), 'list-files', '--json', *ids],
+                                cwd=directory, check=True, capture_output=True,
+                                text=True, timeout=30)
+        files = json.loads(result.stdout)
+        return (isinstance(files, list) and len(files) == len(ids)
+                and {item['jobId'] for item in files} == set(ids)
+                and all('errors' in item and item['errors'] in (None, [])
+                        and 'downloadableFiles' in item
+                        and item['downloadableFiles'] in (None, []) for item in files))
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
+        return False  # A failed/ambiguous history query never proves output loss.
+
+
 def poll_batch(iteration, args, directory, record):
     def collect(saved, jobs):
         collect_completed_subjobs(args, iteration, directory, saved, jobs)
@@ -166,8 +194,15 @@ def poll_batch(iteration, args, directory, record):
                            and re.fullmatch(re.escape(stem) + r'\.\d+', job.get('jobName', ''))
                            and job['jobId'] not in saved.get('imported_subjobs', [])]
             if outstanding:
-                raise prime.PrimeReconciliationPending(
-                    'Terminal Prime subjob outputs still require collection: ' + ', '.join(outstanding))
+                children = [job for job in jobs if job['jobId'] in outstanding]
+                if not deleted_terminal_outputs(directory, saved, parent, children):
+                    raise prime.PrimeReconciliationPending(
+                        'Terminal Prime subjob outputs still require collection: ' + ', '.join(outstanding))
+                saved['unavailable_subjobs'] = children
+                prime._save(directory, saved)
+                print('Terminal Prime outputs were deleted from JobServer and are absent locally; '
+                      'retaining audit and retrying only unscored compounds: ' + ', '.join(outstanding),
+                      flush=True)
             publish_coordinates(args, directory, saved['compound_ids'])
 
     if not prime.submit_or_poll(
