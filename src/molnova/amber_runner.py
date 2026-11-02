@@ -31,12 +31,13 @@ def save(path, value):
     pending.replace(path)
 
 
-def run(command, folder, lock_fd):
+def run(command, folder, lock_fd, timeout=None):
     with (folder / 'calculation.log').open('ab') as log:
         log.write(('\n$ ' + ' '.join(command) + '\n').encode())
         log.flush()
+        options = {} if timeout is None else {'timeout': timeout}
         subprocess.run(command, cwd=folder, stdout=log, stderr=subprocess.STDOUT,
-                       check=True, pass_fds=(lock_fd,))
+                       check=True, pass_fds=(lock_fd,), **options)
 
 
 def run_leap(script, folder, lock_fd, products):
@@ -97,20 +98,57 @@ def parse_score(path):
     return score
 
 
-def minimize_complex(folder, lock_fd):
+def minimize_complex(folder, lock_fd, timeout=None):
     """Relax the combined complex against its original pose, then validate restart."""
     import parmed
     restart = folder / 'complex.minimized.rst7'
     for name in ('complex.minimized.rst7', 'minimize.out', 'minimize.mdinfo'):
         (folder / name).unlink(missing_ok=True)
+    for path in folder.glob('complex.minimized.rst7_*'):
+        path.unlink()
+    (folder / 'minimization_status.json').unlink(missing_ok=True)
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError('Minimization timeout must be positive finite seconds')
     (folder / 'minimize.in').write_text(
         'Heavy-atom restrained complex minimization\n'
         '&cntrl\n imin=1, maxcyc=500, ncyc=250, ntb=0, cut=999.0,\n'
-        ' igb=5, saltcon=0.15, ntpr=50,\n'
+        ' igb=5, saltcon=0.15, ntpr=50,\n' +
+        (' ntwr=-10, ntxo=1,\n' if timeout is not None else '') +
         " ntr=1, restraint_wt=2.0, restraintmask='!@H=',\n/\n")
-    run(['sander', '-O', '-i', 'minimize.in', '-o', 'minimize.out',
+    command = ['sander', '-O', '-i', 'minimize.in', '-o', 'minimize.out',
          '-p', 'complex.prmtop', '-c', 'complex.inpcrd', '-ref', 'complex.inpcrd',
-         '-r', restart.name, '-inf', 'minimize.mdinfo'], folder, lock_fd)
+         '-r', restart.name, '-inf', 'minimize.mdinfo']
+    try:
+        if timeout is None:
+            run(command, folder, lock_fd)
+        else:
+            run(command, folder, lock_fd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # subprocess.run kills and waits for this serial sander process before
+        # returning. Never read a checkpoint while its writer is alive.
+        topology = parmed.load_file(str(folder / 'complex.prmtop'))
+        candidates = sorted(
+            ((int(path.name.rsplit('_', 1)[1]), path)
+             for path in folder.glob('complex.minimized.rst7_*')
+             if path.name.rsplit('_', 1)[1].isdigit()), reverse=True)
+        for step, path in candidates:
+            try:
+                frame = parmed.load_file(str(folder / 'complex.prmtop'), xyz=str(path))
+                if len(frame.atoms) != len(topology.atoms) or not all(
+                        math.isfinite(v) for atom in frame.atoms for v in (atom.xx, atom.xy, atom.xz)):
+                    continue
+            except Exception:
+                continue  # A kill during a restart write can leave one partial file.
+            restart.write_bytes(path.read_bytes())
+            save(folder / 'minimization_status.json', {
+                'status': 'time_limit_checkpoint', 'timeout_s': timeout,
+                'checkpoint': path.name, 'checkpoint_step': step,
+                'score_coordinates': restart.name, 'completed_minimization': False})
+            with (folder / 'calculation.log').open('a') as log:
+                log.write(f'\nMinimization time limit {timeout}s; scoring last valid checkpoint {path.name}\n')
+            return restart
+        raise ValueError('Minimization timed out without a valid saved checkpoint; no score fabricated')
     report = (folder / 'minimize.out').read_text()
     # Sander can stop without a usable final frame. The final section and finite
     # energy, plus a readable restart, are required even when it exits zero.
@@ -130,10 +168,14 @@ def minimize_complex(folder, lock_fd):
     with (folder / 'calculation.log').open('a') as log:
         log.write(f'\nRestrained minimization complete ({termination}): final energy={match.group(1)}, '
                   f'MM-GBSA input={restart.name}\n')
+    if timeout is not None:
+        save(folder / 'minimization_status.json', {
+            'status': 'completed', 'timeout_s': timeout, 'completed_minimization': True,
+            'score_coordinates': restart.name})
     return restart
 
 
-def calculate(root, entry, charge_method, lock_fd):
+def calculate(root, entry, charge_method, lock_fd, minimization_timeout_s=None):
     cid = entry['id']
     output = root / 'results' / f'CMPID_{cid}.json'
     if output.exists():
@@ -178,7 +220,8 @@ def calculate(root, entry, charge_method, lock_fd):
             if amber_atom.name != source[1] or any(abs(a-b) > 0.002 for a, b in
                     zip((amber_atom.xx, amber_atom.xy, amber_atom.xz), xyz)):
                 raise ValueError('LEaP changed ligand identity or docking coordinates')
-        minimized = minimize_complex(folder, lock_fd)
+        minimized = (minimize_complex(folder, lock_fd) if minimization_timeout_s is None else
+                     minimize_complex(folder, lock_fd, timeout=minimization_timeout_s))
         (folder / 'mmpbsa.in').write_text(
             '&general\n startframe=1, endframe=1, interval=1, entropy=0, keep_files=1,\n/\n'
             '&gb\n igb=5, saltcon=0.15,\n/\n')
@@ -189,6 +232,9 @@ def calculate(root, entry, charge_method, lock_fd):
     except Exception as exc:
         result = {'id': cid, 'error': f'{type(exc).__name__}: {exc}; see CMPID_{cid}/calculation.log'}
     result['elapsed_s'] = max(0.0, time.monotonic() - started)
+    provenance = folder / 'minimization_status.json'
+    if minimization_timeout_s is not None and provenance.exists():
+        result['minimization'] = json.loads(provenance.read_text())
     save(output, result)
 
 
@@ -229,7 +275,9 @@ def execute(root):
             save(root / 'status.json', {'status': 'failed', 'error': f'Receptor preparation: {exc}; see calculation.log'})
             return
         with concurrent.futures.ThreadPoolExecutor(max_workers=config['cpus']) as pool:
-            futures = [pool.submit(calculate, root, entry, config['charge_method'], lock.fileno())
+            options = ({'minimization_timeout_s': config['minimization_timeout_s']}
+                       if 'minimization_timeout_s' in config else {})
+            futures = [pool.submit(calculate, root, entry, config['charge_method'], lock.fileno(), **options)
                        for entry in config['entries']]
             for future in concurrent.futures.as_completed(futures):
                 future.result()
@@ -257,7 +305,8 @@ def collect(root):
 def archive_logs(root):
     with tarfile.open(fileobj=sys.stdout.buffer, mode='w|') as archive:
         for path in sorted(root.glob('CMPID_*/*')):
-            if path.name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat'):
+            if path.name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat',
+                             'minimization_status.json'):
                 archive.add(path, arcname=str(path.relative_to(root)))
         if (root / 'calculation.log').exists():
             archive.add(root / 'calculation.log', arcname='calculation.log')

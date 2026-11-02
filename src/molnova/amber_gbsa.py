@@ -178,6 +178,8 @@ def prepare_remote(args, iteration, directory, record):
     config = {'receptor_normalization_version': NORMALIZATION_VERSION, 'entries': entries, 'cpus': args.amber_cpus, 'charge_method': args.amber_charge_method,
               'protocol': PROTOCOL, 'minimization': MINIMIZATION,
               'identities': identities}
+    if 'minimization_timeout_s' in record:
+        config['minimization_timeout_s'] = record['minimization_timeout_s']
     slurm_files = []
     from molnova import amber_slurm
     if record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY):
@@ -255,11 +257,13 @@ def poll(args, iteration, directory, record):
     snapshot = json.loads(response.stdout)
     save(directory / 'remote_snapshot.json', snapshot)
     results = snapshot['results']
-    database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
+    database.store_amber_results(args.db_path, iteration, results, record['compound_ids'],
+                                 **({'retry_run_id': record['run_id']} if record.get('retry_failed') else {}))
     resolved = amber_slurm.resolve_timeouts(record, saved_input, native, snapshot) if native else None
     if resolved is not None:
         results, timed_out = resolved
-        database.store_amber_results(args.db_path, iteration, results, record['compound_ids'])
+        database.store_amber_results(args.db_path, iteration, results, record['compound_ids'],
+                                     **({'retry_run_id': record['run_id']} if record.get('retry_failed') else {}))
         record['timeout_compound_ids'] = timed_out
         record['slurm_terminal_state'] = native['state']
         snapshot = dict(snapshot, status='done')
@@ -300,7 +304,7 @@ def download_logs(directory, record):
         allowed = {'calculation.log'} | {
             f'CMPID_{cid}/{name}' for cid in record['compound_ids']
             for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat',
-                         'receptor_calculation.log')}
+                         'receptor_calculation.log', 'minimization_status.json')}
         with tarfile.open(archive) as stream:
             for member in stream:
                 if member.name not in allowed or not member.isfile():

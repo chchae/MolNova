@@ -39,6 +39,57 @@ def scores(project):
         [{'id': cid, 'score': -10 * cid} for cid in ids], ids)
 
 
+def test_explicit_retry_restores_failure_and_keeps_original_error_and_provenance(project):
+    ids = database.claim_amber_candidates(project.db_path, 1, 4)
+    database.store_amber_results(project.db_path, 1, [{'id':1,'error':'original TIMEOUT'}], ids)
+    with database.connect(project.db_path) as conn:
+        conn.execute("UPDATE compound SET state='prime_gbsa_running',amber_gbsa_score=-21 WHERE id=2")
+    assert database.failed_amber_retry_ids(project.db_path, 1, ids) == [1]
+    result = {'id':1, 'score':-15, 'minimization':{'status':'time_limit_checkpoint','checkpoint_step':110}}
+    assert database.store_amber_results(project.db_path,1,[result],ids,retry_run_id='run-retry') == 1
+    assert database.store_amber_results(project.db_path,1,[result],ids,retry_run_id='run-retry') == 0
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT state,failed_stage,failure_message,amber_gbsa_score FROM compound WHERE id=1').fetchone() == ('docked',None,None,-15)
+        assert conn.execute('SELECT state,amber_gbsa_score FROM compound WHERE id=2').fetchone() == ('prime_gbsa_running',-21)
+        assert not conn.execute('SELECT 1 FROM amber_failure WHERE compound_id=1').fetchone()
+        prior,payload = conn.execute('SELECT previous_failure,result_json FROM amber_retry_result WHERE compound_id=1').fetchone()
+        assert prior == 'original TIMEOUT' and json.loads(payload) == result
+
+
+def test_retry_rejects_live_or_other_stage_rows_atomically(project):
+    with database.connect(project.db_path) as conn:
+        conn.execute("UPDATE compound SET state='failed',failed_stage='amber_gbsa' WHERE id=1")
+        conn.execute("UPDATE compound SET state='prime_gbsa_running' WHERE id=2")
+    with pytest.raises(ValueError, match='live/unrelated'):
+        database.store_amber_results(project.db_path,1,[{'id':1,'score':-10},{'id':2,'score':-20}],
+                                     [1,2],retry_run_id='run-retry')
+    with database.connect(project.db_path) as conn:
+        assert conn.execute('SELECT count(*) FROM compound WHERE amber_gbsa_score IS NOT NULL').fetchone()[0] == 0
+
+
+def test_explicit_retry_refuses_active_original_and_completed_retry_never_resubmits(project, monkeypatch):
+    from molnova.stages import amber_retry
+    from molnova import amber_slurm
+    from molnova.paths import stage_directory
+    project.use_slurm = True
+    directory = stage_directory(project.output, 1, 'amber_gbsa')
+    directory.mkdir(parents=True)
+    original = {'finished':True,'iteration':1,'db_path':str(project.db_path),'mode':amber_slurm.ARRAY,
+                'run_id':'run-old','compound_ids':[1,2,3,4], 'settings':project.amber_remote,
+                'remote_dir':'/runs/run-old'}
+    source = directory/'run-old.completed.json'
+    source.write_text(json.dumps(original))
+    monkeypatch.setattr(amber_gbsa,'verify_sources',lambda *a:None)
+    monkeypatch.setattr(amber_slurm,'job_state',lambda *a:{'active':True})
+    monkeypatch.setattr(amber_gbsa,'ssh',lambda *a,**kw:SimpleNamespace(stdout='{"active":false}'))
+    monkeypatch.setattr(amber_slurm,'new_record',lambda *a:pytest.fail('Duplicate/unsafe submission'))
+    with pytest.raises(RuntimeError,match='still active'):
+        amber_retry.poll(project,1,source)
+    retry = directory/'timeout-retry'
+    (retry/'run-retry.completed.json').write_text('{}')
+    assert amber_retry.poll(project,1,source) is True
+
+
 def test_non_destructive_amber_migration(project):
     with database.connect(project.db_path) as conn:
         conn.execute("UPDATE compound SET state='prime_gbsa_running',prime_gbsa_score=-31 WHERE id=1")

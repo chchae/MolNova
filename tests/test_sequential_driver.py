@@ -88,6 +88,22 @@ def test_retry_failure_cannot_advance_stage(tmp_path, monkeypatch):
     assert calls == ['generate']
 
 
+def test_amber_pending_log_uses_persisted_iteration_stage_elapsed(tmp_path, monkeypatch, capsys):
+    args = project(tmp_path, State.DOCKED, iteration=60)
+    monkeypatch.setattr(database.time, 'time', lambda: 100.)
+    database.start_stage_timer(args.db_path, 60, 'amber-gbsa')
+    monkeypatch.setattr(database.time, 'time', lambda: 700.)
+    monkeypatch.setattr(driver, 'stream_process', lambda *a: 0)
+    monkeypatch.setattr(database, 'stage_completion_reason',
+                        lambda *a: '493 compounds still running Amber GBSA screening')
+    assert not driver.supervise_iteration(
+        args, tmp_path/'p.toml', 60, [('amber-gbsa', 'molnova.stages.amber_gbsa')],
+        30, driver.StopFlag(), once=True,
+    )
+    assert ('iteration 60: amber-gbsa pending: 493 compounds still running Amber GBSA screening; '
+            'elapsed=00:10:00.0 (including waiting, polling and restart recovery).') in capsys.readouterr().out
+
+
 def test_restart_resumes_oldest_unfinished_iteration_and_never_requires_elites(tmp_path):
     args = project(tmp_path, State.PRIME_GBSA_DONE, iteration=1)
     assert driver.choose_iteration(args) == 2

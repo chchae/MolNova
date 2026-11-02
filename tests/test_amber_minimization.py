@@ -109,3 +109,42 @@ def test_existing_result_is_preserved_without_recalculation(tmp_path, monkeypatc
     monkeypatch.setattr(amber_runner,'run',lambda *a:pytest.fail('Existing result was recalculated'))
     amber_runner.calculate(tmp_path,{'id':1,'charge':0},'bcc',1)
     assert result.read_text() == '{"id":1,"score":-20.0}\n'
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_timeout_uses_last_readable_finite_checkpoint_only(tmp_path, monkeypatch, available):
+    def run(command, folder, lock_fd, timeout):
+        assert timeout == 600
+        assert 'ntwr=-10, ntxo=1' in (folder/'minimize.in').read_text()
+        for step in (10, 20, 30):
+            (folder/f'complex.minimized.rst7_{step}').write_text(str(step))
+        raise subprocess.TimeoutExpired(command, timeout)
+    def load(path, xyz=None):
+        if xyz is None:
+            return SimpleNamespace(atoms=[object()])
+        if not available or xyz.endswith('_30'):
+            raise ValueError('Incomplete checkpoint')
+        return SimpleNamespace(atoms=[SimpleNamespace(xx=float('nan') if xyz.endswith('_20') else 1.,
+                                                     xy=2., xz=3.)])
+    monkeypatch.setattr(amber_runner, 'run', run)
+    monkeypatch.setitem(sys.modules, 'parmed', SimpleNamespace(load_file=load))
+    if not available:
+        with pytest.raises(ValueError, match='without a valid saved checkpoint'):
+            amber_runner.minimize_complex(tmp_path, 1, timeout=600)
+        return
+    restart = amber_runner.minimize_complex(tmp_path, 1, timeout=600)
+    assert restart.read_text() == '10'
+    metadata = json.loads((tmp_path/'minimization_status.json').read_text())
+    assert metadata['status'] == 'time_limit_checkpoint'
+    assert metadata['checkpoint_step'] == 10
+    assert metadata['completed_minimization'] is False
+
+
+def test_timeout_policy_does_not_rescue_native_scientific_errors(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'parmed', SimpleNamespace())
+    def fail(*a, **kw):
+        (tmp_path/'complex.minimized.rst7_10').write_text('checkpoint')
+        raise subprocess.CalledProcessError(1, ['sander'])
+    monkeypatch.setattr(amber_runner, 'run', fail)
+    with pytest.raises(subprocess.CalledProcessError):
+        amber_runner.minimize_complex(tmp_path, 1, timeout=600)

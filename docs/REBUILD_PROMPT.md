@@ -2832,3 +2832,47 @@ scaffolds. Existing symmetry matching is deterministic, not a unique chemical
 assignment. Clickable molecule structures, iteration/cohort/color filters and
 per-iteration boxplots/histograms work offline; copy HTML together with its
 `molecules/` folder. Computations and checks here do not validate target ranking.
+
+## Explicit Amber timeout retry (2026-11-02)
+
+**Confirmed user request:** recalculate iteration 60's 413 unscored Amber
+failures and score the available coordinates when the ten-minute limit is hit.
+
+**Implementation choice:** `python -m molnova.stages.amber_retry PROJECT --iteration 60
+--source FINISHED_ARRAY_MANIFEST --watch` creates one durable owned retry array
+in `07-amber_gbsa/timeout-retry`. Reverify original native termination and released
+locks, source fingerprints and exact identities; select only unscored terminal
+Amber failures from that finished array. Preserve existing successful scores and
+already submitted Prime jobs. Pin a 600-second **minimization** deadline and a
+separate one-hour Slurm allocation to allow parameterization and GBSA scoring.
+This is an explicit retry policy; ordinary new/saved arrays keep their existing
+scheduler limit and scientific protocol. It does not retroactively recover
+coordinates that older timed-out tasks never saved.
+
+The retry worker retains ff14SB/GAFF2, mbondi2, igb=5, saltcon=0.15, restrained
+500-cycle minimization, original reference coordinates and single-frame MMPBSA
+without entropy. Only retry inputs add native `ntwr=-10, ntxo=1`: a restart every
+ten minimization steps. At deadline kill and wait for serial sander, select the
+highest readable full-atom finite checkpoint, and score those exact coordinates.
+The last saved checkpoint can precede the interruption by up to ten steps.
+Incomplete checkpoints are rejected; absent valid coordinates, parameterization
+errors and scientific failures never generate invented scores. Completed runs
+continue to require native final energy and coordinate validation.
+
+Persist completed-versus-time-limit provenance in result JSON, archived
+`minimization_status.json` and the database's non-destructive `amber_retry_result`
+journal, retaining the original failure message. A successful explicit retry
+clears only its previous Amber failure marker and restores the compound's
+appropriate state. Existing results and live/unrelated states are preserved;
+conflicts roll back the batch. Collect native terminal results and logs before
+retiring the retry manifest. Reconnection reuses its JobId and immutable inputs;
+a completed retry is never implicitly submitted again. Existing production Prime
+selections are not reset or replayed by this maintenance worker.
+
+**Evidence/limits:** installed AmberTools26 on an allocated CPU node generated
+periodic minimization restarts. A separate ACE-ALA-NME interruption smoke test
+validated a readable finite checkpoint after killing sander at 0.5 seconds. This
+checks native checkpoint mechanics, not ranking accuracy or equivalent scientific
+quality of truncated versus fully minimized structures. The one-hour hard limit
+can still fail exceptionally long preparation/scoring; those failures retain
+their diagnostics and do not supply fabricated energies.

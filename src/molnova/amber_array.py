@@ -66,7 +66,8 @@ def archive_logs(root):
         for index, entry in enumerate(entries(root)):
             task = root / 'tasks' / str(index)
             prefix = f'CMPID_{entry["id"]}'
-            for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat'):
+            for name in ('calculation.log', 'minimize.in', 'minimize.out', 'FINAL_RESULTS_MMPBSA.dat',
+                         'minimization_status.json'):
                 path = task / prefix / name
                 if path.is_file():
                     archive.add(path, arcname=f'{prefix}/{name}')

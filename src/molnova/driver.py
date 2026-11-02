@@ -408,7 +408,13 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                                                         'reference prime_gbsa still running for ',
                                                         'Existing Prime claims still running')))
             report = progress if routine_prime_gbsa_poll else print
-            report(f"[driver  ] iteration {iteration}: {stage} pending: {reason}.", flush=True)
+            timing = ''
+            if stage == 'amber-gbsa':
+                elapsed = database.stage_elapsed(args.db_path, iteration, stage)
+                if elapsed is not None:
+                    timing = (f'; elapsed={format_elapsed(elapsed)} '
+                              '(including waiting, polling and restart recovery)')
+            report(f"[driver  ] iteration {iteration}: {stage} pending: {reason}{timing}.", flush=True)
             if once:
                 return False
             if (iteration > 0 and stage != 'generate'

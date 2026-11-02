@@ -93,6 +93,20 @@ def test_prime_gbsa_idle_poll_has_explicit_reason(tmp_path, monkeypatch, capsys)
     assert capsys.readouterr().out == "No completed docking iteration requires prime_gbsa.\n"
 
 
+def test_pending_stage_elapsed_preserves_original_clock_across_restart(tmp_path,monkeypatch):
+    from molnova import database
+    path=tmp_path/'clock.sqlite'
+    monkeypatch.setattr(database.time,'time',lambda:100.)
+    assert database.stage_elapsed(path,60,'amber-gbsa') is None
+    database.start_stage_timer(path,60,'amber-gbsa')
+    monkeypatch.setattr(database.time,'time',lambda:700.)
+    database.start_stage_timer(path,60,'amber-gbsa')  # Later driver/process invocation.
+    assert database.stage_elapsed(path,60,'amber-gbsa')==600.
+    assert database.finish_stage_timer(path,60,'amber-gbsa')==600.
+    monkeypatch.setattr(database.time,'time',lambda:1000.)
+    assert database.stage_elapsed(path,60,'amber-gbsa')==600.
+
+
 @pytest.fixture
 def verbosity():
     from molnova.stages import _logging

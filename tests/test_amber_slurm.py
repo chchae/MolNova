@@ -301,9 +301,10 @@ def test_other_queue_errors_never_establish_absence(monkeypatch, error):
         control.status('123', 2)
 
 
+@pytest.mark.parametrize('checkpoint_policy', [False, True])
 @pytest.mark.parametrize('mode', [slurm.SINGLE, slurm.ARRAY])
 @pytest.mark.parametrize('saved_limit', ['new', None, '00:30:00'])
-def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode, saved_limit):
+def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeypatch, mode, saved_limit, checkpoint_policy):
     import tarfile
     record = child_record(project, mode)
     if mode == slurm.ARRAY:
@@ -317,6 +318,8 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
         elif saved_limit != 'new':
             record['slurm_job_name'] = 'amber-' + record['run_id']  # Previous pinned name.
     record['prepared'] = False
+    if checkpoint_policy:
+        record['minimization_timeout_s'] = 600
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
         for name in ('receptor.pdb', 'receptor.normalized.pdb', 'receptor_bonds.in'):
@@ -331,6 +334,10 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     amber.prepare_remote(project, 1, project.output, record)
     config = json.loads((folder / 'input.json').read_text())
     assert config['cpus'] == record['cpus']
+    assert config.get('minimization_timeout_s') == (600 if checkpoint_policy else None)
+    if mode == slurm.ARRAY:
+        task_config = json.loads((folder/'tasks/0/input.json').read_text())
+        assert task_config.get('minimization_timeout_s') == (600 if checkpoint_policy else None)
     assert config['slurm']['partition'] == 'cpu'
     assert config['slurm']['job_name'] == (
         'amber-' + record['run_id'].removeprefix('run-') if mode == slurm.ARRAY and saved_limit == 'new'

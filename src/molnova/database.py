@@ -684,7 +684,17 @@ def amber_identity_rows(path, iteration, ids):
             'SELECT id,name,smiles FROM compound WHERE iteration=? ORDER BY id', (iteration,)) if r[0] in wanted]
 
 
-def store_amber_results(path, iteration, results, allowed_ids):
+def failed_amber_retry_ids(path, iteration, allowed_ids):
+    """Select only unscored, terminal Amber failures from an owned finished run."""
+    allowed = set(allowed_ids)
+    with connect(path) as conn:
+        return [r[0] for r in conn.execute(
+            'SELECT id FROM compound WHERE iteration=? AND state=? AND failed_stage=? '
+            'AND amber_gbsa_score IS NULL ORDER BY id', (iteration, State.FAILED, 'amber_gbsa'))
+                if r[0] in allowed]
+
+
+def store_amber_results(path, iteration, results, allowed_ids, *, retry_run_id=None):
     """Validate the whole batch before committing; never overwrite Prime/FEP scores."""
     allowed = set(allowed_ids)
     if len({r['id'] for r in results}) != len(results):
@@ -697,7 +707,8 @@ def store_amber_results(path, iteration, results, allowed_ids):
             if isinstance(cid, bool) or not isinstance(cid, int) or cid < 1:
                 raise ValueError(f'Invalid Amber compound ID: {cid}')
             row = conn.execute(
-                'SELECT amber_gbsa_score,state,prime_gbsa_score,fep_score FROM compound WHERE id=? AND iteration=?',
+                'SELECT amber_gbsa_score,state,prime_gbsa_score,fep_score,failed_stage,failure_message '
+                'FROM compound WHERE id=? AND iteration=?',
                 (cid, iteration),
             ).fetchone()
             if cid not in allowed or row is None:
@@ -713,6 +724,18 @@ def store_amber_results(path, iteration, results, allowed_ids):
                 raise ValueError(f'Conflicting Amber score: {cid}')
             if row[0] is not None:
                 continue
+            if retry_run_id is not None:
+                import json
+                if row[1:2] != (State.FAILED,) or row[4] != 'amber_gbsa':
+                    raise ValueError(f'Amber retry refuses to change a live/unrelated compound: {cid}')
+                conn.execute('CREATE TABLE IF NOT EXISTS amber_retry_result ('
+                             'run_id TEXT NOT NULL,compound_id INTEGER NOT NULL REFERENCES compound(id),'
+                             'previous_failure TEXT,result_json TEXT NOT NULL,'
+                             'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,'
+                             'PRIMARY KEY(run_id,compound_id))')
+                conn.execute('INSERT INTO amber_retry_result(run_id,compound_id,previous_failure,result_json) '
+                             'VALUES (?,?,?,?) ON CONFLICT(run_id,compound_id) DO NOTHING',
+                             (retry_run_id, cid, row[5], json.dumps(result, allow_nan=False)))
             state = State.FEP_DONE if row[3] is not None else State.PRIME_GBSA_DONE if row[2] is not None else State.REFERENCE if iteration == 0 else State.DOCKED
             if score is not None:
                 updated += conn.execute(
@@ -720,6 +743,11 @@ def store_amber_results(path, iteration, results, allowed_ids):
                     'modified_at=CURRENT_TIMESTAMP WHERE id=?',
                     (score, State.AMBER_RUNNING, state, cid),
                 ).rowcount
+                if retry_run_id is not None:
+                    conn.execute('UPDATE compound SET state=?,failed_stage=NULL,failure_message=NULL WHERE id=?',
+                                 (state, cid))
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='amber_failure'").fetchone():
+                        conn.execute('DELETE FROM amber_failure WHERE compound_id=?', (cid,))
             else:
                 # Terminal parameterization/calculation failures cannot supply a ranking score.
                 _remember_amber_failure(conn, cid, error)
@@ -1717,6 +1745,20 @@ def finish_stage_timer(path, iteration, stage):
         if row is None:
             raise RuntimeError(f'Iteration {iteration} stage {stage} has no start time')
         return max(0, row[1] - row[0])
+
+
+def stage_elapsed(path, iteration, stage):
+    """Read the persisted full-stage clock without resetting it on each poll."""
+    with connect(path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='stage_timing'").fetchone():
+            return None
+        row = conn.execute(
+            'SELECT started_at,finished_at FROM stage_timing WHERE iteration=? AND stage=?',
+            (iteration, stage),
+        ).fetchone()
+    if row is None:
+        return None
+    return max(0., (row[1] if row[1] is not None else time.time()) - row[0])
 
 
 def start_iteration_timer(path, iteration):
