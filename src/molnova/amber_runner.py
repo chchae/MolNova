@@ -7,8 +7,10 @@ import concurrent.futures
 import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -23,6 +25,28 @@ else:
 PROTOCOL = 'restrained_minimized_ff14SB_GAFF2_igb5_mbondi2_salt0.15_no_entropy_v2'
 MINIMIZATION = {'ntr': 1, 'restraint_wt': 2.0, 'restraintmask': '!@H=',
                 'maxcyc': 500, 'ncyc': 250, 'igb': 5, 'saltcon': 0.15}
+CHECKPOINT_PROTOCOL = PROTOCOL + '_checkpoint_v1'
+CHECKPOINT_MINIMIZATION = dict(MINIMIZATION, ntwr=-10, ntxo=1)
+
+
+def validate_protocol(config):
+    protocol = config.get('protocol', PROTOCOL)
+    expected = MINIMIZATION
+    if protocol == CHECKPOINT_PROTOCOL:
+        expected = CHECKPOINT_MINIMIZATION
+        if 'minimization_timeout_s' not in config or 'minimization' not in config:
+            raise RuntimeError('Checkpoint protocol requires pinned minimization settings and timeout')
+    elif protocol != PROTOCOL:
+        raise RuntimeError('Input protocol does not match this Amber worker; saved work retained')
+    if config.get('minimization', expected) != expected:
+        raise RuntimeError('Input minimization settings do not match this Amber worker')
+    for key in ('minimization_timeout_s', 'charge_timeout_s'):
+        if key not in config:
+            continue
+        timeout = config[key]
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or timeout <= 0):
+            raise RuntimeError(f'{key} must be positive finite seconds')
 
 
 def save(path, value):
@@ -31,10 +55,27 @@ def save(path, value):
     pending.replace(path)
 
 
-def run(command, folder, lock_fd, timeout=None):
+def run(command, folder, lock_fd, timeout=None, kill_process_group=False):
     with (folder / 'calculation.log').open('ab') as log:
         log.write(('\n$ ' + ' '.join(command) + '\n').encode())
         log.flush()
+        if kill_process_group:
+            # Antechamber launches SQM. Killing only the parent leaves the
+            # calculator (and its inherited worker lock) alive.
+            with subprocess.Popen(command, cwd=folder, stdout=log, stderr=subprocess.STDOUT,
+                                  pass_fds=(lock_fd,), start_new_session=True) as process:
+                try:
+                    code = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                    raise
+                if code:
+                    raise subprocess.CalledProcessError(code, command)
+            return
         options = {} if timeout is None else {'timeout': timeout}
         subprocess.run(command, cwd=folder, stdout=log, stderr=subprocess.STDOUT,
                        check=True, pass_fds=(lock_fd,), **options)
@@ -175,7 +216,7 @@ def minimize_complex(folder, lock_fd, timeout=None):
     return restart
 
 
-def calculate(root, entry, charge_method, lock_fd, minimization_timeout_s=None):
+def calculate(root, entry, charge_method, lock_fd, minimization_timeout_s=None, charge_timeout_s=None):
     cid = entry['id']
     output = root / 'results' / f'CMPID_{cid}.json'
     if output.exists():
@@ -188,9 +229,16 @@ def calculate(root, entry, charge_method, lock_fd, minimization_timeout_s=None):
                      'FINAL_RESULTS_MMPBSA.dat'):
             (folder / name).unlink(missing_ok=True)
         # No coordinate/bond guessing from SMILES: use the docked, protonated state.
-        run(['antechamber', '-i', 'input.mol2', '-fi', 'mol2', '-o', 'ligand.mol2',
-             '-fo', 'mol2', '-at', 'gaff2', '-c', charge_method, '-nc', str(entry['charge']),
-             '-rn', 'LIG', '-seq', 'n', '-an', 'n', '-du', 'n', '-pf', 'y'], folder, lock_fd)
+        charge_options = ({} if charge_timeout_s is None else
+                          {'timeout': charge_timeout_s, 'kill_process_group': True})
+        try:
+            run(['antechamber', '-i', 'input.mol2', '-fi', 'mol2', '-o', 'ligand.mol2',
+                 '-fo', 'mol2', '-at', 'gaff2', '-c', charge_method, '-nc', str(entry['charge']),
+                 '-rn', 'LIG', '-seq', 'n', '-an', 'n', '-du', 'n', '-pf', 'y'], folder, lock_fd,
+                **charge_options)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f'Charge generation exceeded {charge_timeout_s} seconds (TIMEOUT); '
+                               'antechamber/SQM process group terminated; no GBSA score') from exc
         restore_pose(folder / 'input.mol2', folder / 'ligand.mol2')
         run(['parmchk2', '-i', 'ligand.mol2', '-f', 'mol2', '-s', 'gaff2',
              '-o', 'ligand.frcmod'], folder, lock_fd)
@@ -251,10 +299,7 @@ def execute(root):
         save(root / 'status.json', {'status': 'running'})
         # Common receptor errors must stop the batch, not fail every ligand.
         try:
-            if config.get('protocol', PROTOCOL) != PROTOCOL:
-                raise RuntimeError('Input protocol does not match this Amber worker; saved work retained')
-            if config.get('minimization', MINIMIZATION) != MINIMIZATION:
-                raise RuntimeError('Input minimization settings do not match this Amber worker')
+            validate_protocol(config)
             version = config.get('receptor_normalization_version')
             if version is not None and version != NORMALIZATION_VERSION:
                 raise RuntimeError(f'Unsupported receptor normalization version: {version}')
@@ -277,6 +322,8 @@ def execute(root):
         with concurrent.futures.ThreadPoolExecutor(max_workers=config['cpus']) as pool:
             options = ({'minimization_timeout_s': config['minimization_timeout_s']}
                        if 'minimization_timeout_s' in config else {})
+            if 'charge_timeout_s' in config:
+                options['charge_timeout_s'] = config['charge_timeout_s']
             futures = [pool.submit(calculate, root, entry, config['charge_method'], lock.fileno(), **options)
                        for entry in config['entries']]
             for future in concurrent.futures.as_completed(futures):

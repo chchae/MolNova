@@ -174,14 +174,16 @@ def prepare_remote(args, iteration, directory, record):
         raise RuntimeError('Amber input structures changed during export')
     identities = database.amber_identity_rows(args.db_path, iteration, record['compound_ids'])
     from molnova.receptor_pdb import NORMALIZATION_VERSION
-    from molnova.amber_runner import PROTOCOL, MINIMIZATION
+    from molnova.amber_runner import PROTOCOL, MINIMIZATION, CHECKPOINT_PROTOCOL, CHECKPOINT_MINIMIZATION
     config = {'receptor_normalization_version': NORMALIZATION_VERSION, 'entries': entries, 'cpus': args.amber_cpus, 'charge_method': args.amber_charge_method,
               'protocol': PROTOCOL, 'minimization': MINIMIZATION,
               'identities': identities}
     if 'minimization_timeout_s' in record:
         config['minimization_timeout_s'] = record['minimization_timeout_s']
-        config['protocol'] = PROTOCOL + '_checkpoint_v1'
-        config['minimization'] = dict(MINIMIZATION, ntwr=-10, ntxo=1)
+        config['protocol'] = CHECKPOINT_PROTOCOL
+        config['minimization'] = CHECKPOINT_MINIMIZATION
+    if 'charge_timeout_s' in record:
+        config['charge_timeout_s'] = record['charge_timeout_s']
     slurm_files = []
     from molnova import amber_slurm
     if record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY):
@@ -349,6 +351,7 @@ def new_record(args, iteration, directory, ids):
     run_id = 'run-' + uuid.uuid4().hex
     record = {'run_id': run_id, 'compound_ids': ids, 'prepared': False,
               'minimization_timeout_s': 600,
+              'charge_timeout_s': 600,
               'iteration': iteration, 'db_path': str(args.db_path.resolve()),
               'settings': args.amber_remote, 'charge_method': args.amber_charge_method,
               'remote_dir': str(PurePosixPath(args.amber_remote['remote_work_dir']) / run_id)}

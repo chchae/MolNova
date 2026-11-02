@@ -48,9 +48,10 @@ def test_minimization_validates_final_frame_and_preserves_reference(tmp_path, mo
     assert original.read_bytes() == b'original Glide complex coordinates'
 
 
+@pytest.mark.parametrize('charge_deadline', [None, 600])
 @pytest.mark.parametrize('fail_minimization,deadline', [(False, None), (True, None),
     (False, 600), (True, 600), ('timeout', 600), ('no_checkpoint', 600)])
-def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization(tmp_path, monkeypatch, fail_minimization, deadline):
+def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization(tmp_path, monkeypatch, fail_minimization, deadline, charge_deadline):
     folder = tmp_path/'CMPID_1'
     folder.mkdir()
     (tmp_path/'results').mkdir()
@@ -58,9 +59,11 @@ def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization
     source = '@<TRIPOS>ATOM\n1 C1 1.0 2.0 3.0 C.3 1 LIG 0\n2 H2 4.0 5.0 6.0 H 1 LIG 0\n@<TRIPOS>BOND\n1 1 2 1\n'
     (folder/'input.mol2').write_text(source)
     calls = []
-    def run(command, folder, lock_fd, timeout=None):
+    def run(command, folder, lock_fd, timeout=None, kill_process_group=False):
         calls.append(command)
         if command[0] == 'antechamber':
+            assert timeout == charge_deadline
+            assert kill_process_group is (charge_deadline is not None)
             (folder/'ligand.mol2').write_text(source)
         elif command[0] == 'tleap':
             assert 'rec = loadpdb ../receptor.normalized.pdb' in (folder/'leap.in').read_text()
@@ -97,7 +100,7 @@ def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization
     monkeypatch.setitem(sys.modules,'parmed',SimpleNamespace(load_file=load_file))
     ticks = iter([10.0, 35.5])
     monkeypatch.setattr(amber_runner.time, 'monotonic', lambda: next(ticks))
-    amber_runner.calculate(tmp_path,{'id':1,'charge':0},'bcc',1, minimization_timeout_s=deadline)
+    amber_runner.calculate(tmp_path,{'id':1,'charge':0},'bcc',1, minimization_timeout_s=deadline, charge_timeout_s=charge_deadline)
     result = json.loads((tmp_path/'results/CMPID_1.json').read_text())
     assert result.pop('elapsed_s') == 25.5
     assert (folder/'input.mol2').read_text() == source

@@ -854,6 +854,11 @@ submissions are reconciled through Slurm JobIds before any retry.
 New Amber Slurm job names use `amber-<unique-id>` without `molnova-` or
 `run-` prefixes. Existing saved/submitted jobs retain their original names for recovery.
 
+New Amber runs also limit **antechamber/SQM charge generation to 600 seconds**.
+A charge timeout terminates both programs and records a compound failure without
+using incomplete charges or calculating GBSA. Saved/submitted work retains its
+original limits.
+
 New Amber runs limit **minimization to 600 seconds**, saving native coordinates
 every ten steps. On that deadline, MolNova stops minimization and scores the
 latest readable, complete, finite checkpoint with MMPBSA. Missing valid coordinates

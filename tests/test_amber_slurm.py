@@ -94,6 +94,7 @@ def test_toml_time_limit_is_pinned_only_in_new_records(project, seconds, limit):
     record = slurm.new_record(project, 1, project.output, [1, 2, 3, 4])
     assert record['slurm_time_limit'] == limit
     assert record['minimization_timeout_s'] == 600
+    assert record['charge_timeout_s'] == 600
     assert 'time_limit' not in record['settings']
     assert record['settings'] == project.amber_remote
     project.amber_slurm_time_limit = '00:05:00'
@@ -321,8 +322,10 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     record['prepared'] = False
     if checkpoint_policy:
         record['minimization_timeout_s'] = 600
+        record['charge_timeout_s'] = 600
     else:
         record.pop('minimization_timeout_s', None)  # Saved legacy work stays unchanged.
+        record.pop('charge_timeout_s', None)
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
         for name in ('receptor.pdb', 'receptor.normalized.pdb', 'receptor_bonds.in'):
@@ -341,9 +344,14 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     assert config['protocol'] == PROTOCOL + ('_checkpoint_v1' if checkpoint_policy else '')
     assert config['minimization'] == (dict(MINIMIZATION, ntwr=-10, ntxo=1) if checkpoint_policy else MINIMIZATION)
     assert config.get('minimization_timeout_s') == (600 if checkpoint_policy else None)
+    from molnova.amber_runner import validate_protocol
+    validate_protocol(config)
+    assert config.get('charge_timeout_s') == (600 if checkpoint_policy else None)
     if mode == slurm.ARRAY:
         task_config = json.loads((folder/'tasks/0/input.json').read_text())
         assert task_config.get('minimization_timeout_s') == (600 if checkpoint_policy else None)
+        validate_protocol(task_config)
+        assert task_config.get('charge_timeout_s') == (600 if checkpoint_policy else None)
     assert config['slurm']['partition'] == 'cpu'
     assert config['slurm']['job_name'] == (
         'amber-' + record['run_id'].removeprefix('run-') if mode == slurm.ARRAY and saved_limit == 'new'

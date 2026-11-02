@@ -136,3 +136,63 @@ def test_uploaded_standalone_helpers_collect_without_amber_activation(run):
                               input=Path(array.__file__).read_text(),
                               check=True, capture_output=True, text=True)
     assert len(json.loads(response.stdout)['tasks']) == 2
+
+
+@pytest.mark.parametrize('policy', ['legacy', 'legacy_retry', 'checkpoint', 'checkpoint_charge'])
+def test_actual_worker_accepts_frozen_protocol_and_reaches_calculation(run, monkeypatch, policy):
+    # Exercise execute itself: mocking execute hid the input/worker mismatch.
+    config = json.loads((run / 'input.json').read_text())
+    if policy != 'legacy':
+        config['minimization_timeout_s'] = 600
+    if policy in ('checkpoint', 'checkpoint_charge'):
+        config.update(protocol=worker.CHECKPOINT_PROTOCOL, minimization=worker.CHECKPOINT_MINIMIZATION)
+    if policy == 'checkpoint_charge':
+        config['charge_timeout_s'] = 600
+    worker.save(run / 'input.json', config)
+    array.prepare_tasks(run, config)
+    calls = []
+    monkeypatch.setattr(worker, 'normalize_receptor_pdb', lambda *a: None)
+    monkeypatch.setattr(worker, 'run_leap', lambda *a: None)
+    monkeypatch.setitem(sys.modules, 'parmed', SimpleNamespace(load_file=lambda *a, **k: object()))
+    def calculate(root, entry, method, lock_fd, **options):
+        calls.append((entry['id'], options))
+        worker.save(root / 'results' / f"CMPID_{entry['id']}.json", {'id': entry['id'], 'score': -20})
+    monkeypatch.setattr(worker, 'calculate', calculate)
+    array.execute(run, 0)
+    expected = {} if policy == 'legacy' else {'minimization_timeout_s': 600}
+    if policy == 'checkpoint_charge':
+        expected['charge_timeout_s'] = 600
+    assert calls == [(11, expected)]
+    assert worker.snapshot(run / 'tasks/0')['status'] == 'done'
+
+
+@pytest.mark.parametrize('change', [
+    {'protocol': 'unknown'},
+    {'minimization': worker.MINIMIZATION},
+    {'minimization': dict(worker.CHECKPOINT_MINIMIZATION, restraint_wt=0)},
+    {'minimization_timeout_s': None}, {'minimization_timeout_s': True},
+    {'minimization_timeout_s': -1}, {'minimization_timeout_s': float('nan')},
+    {'minimization_timeout_s': float('inf')}, {'minimization_timeout_s': '600'},
+])
+def test_invalid_checkpoint_policy_stops_before_receptor_or_ligand_calculation(run, monkeypatch, change):
+    task = run / 'tasks/0'
+    config = json.loads((task / 'input.json').read_text())
+    config.update(protocol=worker.CHECKPOINT_PROTOCOL, minimization=worker.CHECKPOINT_MINIMIZATION,
+                  minimization_timeout_s=600)
+    config.update(change)
+    worker.save(task / 'input.json', config)
+    monkeypatch.setattr(worker, 'normalize_receptor_pdb', lambda *a: pytest.fail('Invalid protocol reached receptor preparation'))
+    monkeypatch.setattr(worker, 'calculate', lambda *a, **k: pytest.fail('Invalid protocol reached scientific calculation'))
+    worker.execute(task)
+    snapshot = worker.snapshot(task)
+    assert snapshot['status'] == 'failed' and not snapshot['active']
+    assert snapshot['results'] == []
+
+
+@pytest.mark.parametrize('missing', ['minimization', 'minimization_timeout_s'])
+def test_checkpoint_protocol_requires_explicit_settings(missing):
+    config = dict(protocol=worker.CHECKPOINT_PROTOCOL, minimization=worker.CHECKPOINT_MINIMIZATION,
+                  minimization_timeout_s=600)
+    del config[missing]
+    with pytest.raises(RuntimeError, match='requires pinned'):
+        worker.validate_protocol(config)

@@ -1,5 +1,51 @@
 # MolNova specification
 
+## Amber charge-generation deadline (2026-11-02)
+
+**Confirmed user request:** limit ligand charge generation to ten minutes.
+
+New Slurm/direct-SSH manifests pin `charge_timeout_s=600` independently of the
+600-second complex-minimization deadline and the Slurm allocation. Propagate it
+unchanged to every array task and calculator. Run antechamber in a dedicated
+process session; at its deadline SIGKILL its process group (including SQM), wait
+for the parent and record a terminal per-compound charge-generation TIMEOUT.
+Do not proceed to parameterization/minimization/MMPBSA or use partial charges.
+Native nonzero exits remain scientific failures. Existing scientific options,
+pose restoration, claims, score persistence and downstream gates are unchanged.
+
+Saved records without this field and already uploaded/submitted workers retain
+their original behavior; no live process is canceled or implicitly resubmitted.
+The limit covers the complete antechamber/SQM invocation, excluding earlier
+receptor preparation and later parmchk2, minimization and GBSA. Tests use mocked
+Amber programs plus real short Python parent/child processes to verify timeout
+cleanup and inherited-lock release; no Amber accuracy validation is claimed.
+
+
+## Amber checkpoint protocol validation repair (2026-11-02)
+
+**Observed runtime bug:** new checkpoint input metadata was rejected by the
+worker's legacy-only protocol guard before receptor/scientific preparation.
+Accept the exact checkpoint protocol/settings with a pinned positive finite
+minimization deadline, while retaining legacy ordinary/retry compatibility and
+rejecting unknown protocols, changed settings and invalid deadlines. Producer and
+worker share the protocol constants. Regression tests exercise the real worker
+execute path instead of replacing it with a mock; 199 Amber regressions pass.
+
+**Scoped production recovery:** iteration 63's original Slurm array 167242 had
+500 terminal COMPLETED tasks, each with only the exact protocol-rejection log,
+released locks, no receptor LEaP input, no ligand calculation log and no results.
+Archive original manifest, native/task terminal evidence and a SQLite backup;
+retain its remote tree and original workers. Replace only its local pending
+manifest with a new owned array for the same 500 still-claimed unscored compounds,
+using the corrected worker and unchanged scientific inputs/settings. Do not edit
+submitted workers, reset database claims, or extend this repair to uncertain,
+live or scientifically executed tasks. This is a scoped repair, not an automatic
+retry policy or scientific accuracy validation.
+Replacement JobId 167742 was submitted by the existing supervisor. Read-only
+inspection confirmed identical scientific input apart from the unique job name
+and 377 tasks had reached ligand calculation, with no protocol rejection.
+
+
 ## Default Amber checkpoint scoring (2026-11-02)
 
 **Confirmed user request:** apply iteration 60's time-limited minimization and
