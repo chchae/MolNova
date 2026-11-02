@@ -5,6 +5,7 @@ this helper journals submissions and collects only verified terminal output.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -27,6 +28,8 @@ def save(path, value):
         with os.fdopen(fd, 'w') as stream:
             json.dump(value, stream, indent=2)
             stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
@@ -322,10 +325,10 @@ def collect_scores(root, protocol):
     return result
 
 
-def poll(root, suite):
+def poll(root, suite, *, frames_only=False):
     config=json.loads((root/'input.json').read_text())
     protocol=config['protocol']
-    if (root/'result.json').exists():
+    if not frames_only and (root/'result.json').exists():
         # A durable result is written only after both native parents/children
         # terminated and every frame was validated. Reverify journals on retry.
         for phase in ('md','prime'):
@@ -355,6 +358,10 @@ def poll(root, suite):
         except ValueError as exc:
             return dict(status='failed',phase='analysis',error=str(exc))
     prime=root/'prime'
+    if frames_only:
+        names = ['prime/frames.maegz', 'frames.json', 'identity.json', 'md/md.job.json']
+        return dict(status='frames', phase='prime', files={
+            name: hashlib.sha256((root/name).read_bytes()).hexdigest() for name in names})
     command=[str(suite/'prime_mmgbsa'), 'frames.maegz','-JOBNAME','prime_mmgbsa',
              '-HOST',config['cpu_host']+':'+str(config.get('prime_slots',7)),'-NJOBS',str(protocol['snapshots']),
              '-ligand','atom.'+LIGAND+' 1','-job_type','ENERGY','-frozen',
@@ -380,7 +387,7 @@ def poll(root, suite):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('action',choices=['export','poll','jobs','check'])
+    parser.add_argument('action',choices=['export','poll','frames','jobs','check'])
     parser.add_argument('root',type=Path)
     parser.add_argument('--source',type=Path)
     parser.add_argument('--ids')
@@ -404,7 +411,7 @@ def main():
     args.root=args.root.resolve()
     with (args.root/'controller.lock').open('a') as lock:
         fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-        result=poll(args.root,suite)
+        result=poll(args.root,suite,frames_only=args.action=='frames')
     print('MOLNOVA_MD='+json.dumps(result))
 
 

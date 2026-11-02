@@ -49,7 +49,7 @@ def settings_for(args, iteration):
     helper=Path(__file__).with_name('md_gbsa_native.py')
     run=uuid.uuid4().hex
     root=args.md_gbsa_remote_work_dir.rstrip('/')+'/'+run
-    return dict(ssh_host=args.md_gbsa_ssh_host,suite=args.md_gbsa_schrodinger,
+    settings = dict(ssh_host=args.md_gbsa_ssh_host,suite=args.md_gbsa_schrodinger,
                 gpu_host=args.md_gbsa_gpu_host,cpu_host=args.md_gbsa_cpu_host,
                 gpus=args.md_gbsa_gpus,prime_slots=min(7,args.md_gbsa_cpus),
                 root=root,helper=root+'/native.py',source=str(source),
@@ -58,6 +58,8 @@ def settings_for(args, iteration):
                 replicates=args.md_gbsa_replicates,
                 protocol={key:getattr(args,'md_gbsa_'+key) for key in
                           ('production_ns','equilibration_ns','snapshots','analysis_start_fraction','seed')})
+    from molnova.md_gbsa_local import add_settings
+    return add_settings(args, settings)
 
 
 def prepare(settings, ids):
@@ -115,23 +117,37 @@ def run(args, iteration):
         ssh(proposed['ssh_host'],'mkdir -p '+shlex.quote(proposed['root']))
         upload(proposed['ssh_host'],Path(__file__).with_name('md_gbsa_native.py'),proposed['helper'])
         response(remote_call(proposed,'check',proposed['root'],'--ids',json.dumps(proposed)))
+        if proposed.get('local_compute'):
+            from molnova import md_gbsa_local
+            md_gbsa_local.prepare(proposed)
         saved=database.freeze_md_gbsa_selection(args.db_path,iteration,proposed,
                     count=args.md_gbsa_input_count,ratio=args.md_gbsa_input_ratio,
                     target_count=args.target_count,prime_count=args.prime_gbsa_input_count,
                     amber_keep_count=database.amber_keep_count(args))
     settings=saved['settings']
+    directory=stage_directory(args.output,iteration,'md_gbsa')
+    if settings.get('local_compute'):
+        from molnova import md_gbsa_local
+        md_gbsa_local.cleanup_committed(args, iteration, settings, directory)
+    database.enable_md_cycle_retries(args.db_path,iteration)
     from molnova.score_recovery import recover_md
     recover_md(args,iteration,saved)
     if database.md_gbsa_completion_reason(args.db_path,iteration) is None:
         from molnova import schrodinger_guard as guard
         guard.unregister_md_remote(settings)
-        print('MD-GBSA already complete; persisted ensemble results retained.')
+        if settings.get('local_compute'):
+            md_gbsa_local.finish_cleanup(settings,saved['ids'])
+        scored=len(set(saved['ids']) & database.completed_md_ids(args.db_path,iteration))
+        print(f'MD-GBSA already resolved: selected={len(saved["ids"])}, scored={scored}, '
+              f'final_failed={len(saved["ids"])-scored}; no further automatic retries.')
         return
     directory=stage_directory(args.output,iteration,'md_gbsa')
     directory.mkdir(parents=True,exist_ok=True)
     from molnova.md_gbsa_native import save
     save(directory/'selection.json',saved)
     prepare(settings,saved['ids'])
+    if settings.get('local_compute'):
+        md_gbsa_local.prepare(settings)
     from molnova import schrodinger_guard as guard
     guard.register_md_remote(settings)
     rows=database.md_gbsa_rows(args.db_path,iteration)
@@ -148,13 +164,18 @@ def run(args, iteration):
         if prior is None and active>=settings['gpus']:
             continue
         # Local cross-project lock and registry bridge local/remote JobServers.
-        # Prime phase is serialized and reserves at most seven native slots.
+        # Native Prime parents are serialized (legacy: 7 slots; Adam: up to 16).
         try:
             with guard.submission_guard(args.schrodinger,'prime_gbsa',md_controller=True):
                 local=guard.active_jobs(args.schrodinger)
-                if any(guard.job_kind(j)=='prime_gbsa' and not j.get('molnova_md_remote') for j in local):
+                if any(guard.job_kind(j)=='prime_gbsa' and (not j.get('molnova_md_remote') or
+                       (j.get('molnova_md_local_compute') and not settings.get('local_compute'))) for j in local):
                     print('MD-GBSA waiting for other Prime work.'); return
-                result=response(remote_call(settings,'poll',root))
+                if settings.get('local_compute'):
+                    result=md_gbsa_local.poll(settings,cid,replica,root,directory/'adam-results',
+                        allow_submit=not any(guard.job_kind(j)=='prime_gbsa' for j in local))
+                else:
+                    result=response(remote_call(settings,'poll',root))
                 expected_protocol=dict(settings['protocol'],seed=1+(settings['protocol']['seed']+replica-1)%2147483647)
                 if result.get('status')=='done' and (result.get('id')!=cid or result.get('protocol')!=expected_protocol):
                     raise RuntimeError('Remote MD ensemble identity/protocol does not match the frozen task')
@@ -183,13 +204,25 @@ def run(args, iteration):
                                 ligand_rmsd_max=max(f['ligand_rmsd'] for f in frames)),
                         remote_root=settings['root'],suite=settings['suite'],
                         native=[v.get('native',{}) for v in results])
+            if settings.get('local_compute'):
+                merged['local_compute']=settings['local_compute']
             save(directory/f'CMPID_{cid}.json',merged)
             database.store_md_gbsa_result(args.db_path,iteration,cid,merged)
         elif all(v and v['status'] in ('done','failed') for v in results) and any(v['status']=='failed' for v in results):
             from molnova import _core
             _core.set_compound_state([cid],State.FAILED,failed_stage='md_gbsa',
                                      failure_message='; '.join(v.get('error','Native calculation failed') for v in results if v['status']=='failed')[:4000],db_path=args.db_path)
+    database.request_md_cycle_retries(args.db_path,iteration)
+    if settings.get('local_compute'):
+        md_gbsa_local.cleanup_committed(args, iteration, settings, directory)
     reason=database.md_gbsa_completion_reason(args.db_path,iteration)
     if reason is None:
         guard.unregister_md_remote(settings)
-    print(reason or 'MD-GBSA ensemble results complete.')
+        if settings.get('local_compute'):
+            md_gbsa_local.finish_cleanup(settings,saved['ids'])
+    if reason:
+        print(reason)
+    else:
+        scored=len(set(saved['ids']) & database.completed_md_ids(args.db_path,iteration))
+        print(f'MD-GBSA resolved: selected={len(saved["ids"])}, scored={scored}, '
+              f'final_failed={len(saved["ids"])-scored}; no further automatic retries.')

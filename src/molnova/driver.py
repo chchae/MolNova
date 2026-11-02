@@ -517,6 +517,12 @@ def main(argv=None):
         if completed:
             elapsed, estimated = database.finish_iteration_timer(args.db_path, iteration)
             qualifier = ' (estimated from first compound creation)' if estimated else ''
+            md_selection = database.md_gbsa_selection(args.db_path, iteration)
+            if md_selection is not None:
+                scored = len(set(md_selection['ids']) & database.completed_md_ids(args.db_path, iteration))
+                print(f'[driver  ] iteration {iteration}: MD-GBSA resolved; '
+                      f'selected={len(md_selection["ids"])}, scored={scored}, '
+                      f'final_failed={len(md_selection["ids"])-scored}.', flush=True)
             print(f"[driver  ] iteration {iteration}: finished; "
                   f"total elapsed={format_elapsed(elapsed)}{qualifier}.", flush=True)
         else:

@@ -70,8 +70,10 @@ def register_md_remote(settings):
         registry = _md_registry()
         registry.parent.mkdir(parents=True,exist_ok=True)
         saved = json.loads(registry.read_text()) if registry.exists() else {}
-        saved[settings['ssh_host']+'|'+settings['suite']+'|'+settings['root']] = {
-            key:settings[key] for key in ('ssh_host','suite','helper','root')}
+        for remote in (settings, settings.get('local_compute')):
+            if remote:
+                saved[remote['ssh_host']+'|'+remote['suite']+'|'+remote['root']] = {
+                    key:remote[key] for key in ('ssh_host','suite','helper','root')}
         from molnova.md_gbsa_native import save
         save(registry,saved)
 
@@ -84,7 +86,9 @@ def unregister_md_remote(settings):
         registry = _md_registry()
         if registry.exists():
             saved=json.loads(registry.read_text())
-            saved.pop(settings['ssh_host']+'|'+settings['suite']+'|'+settings['root'],None)
+            for remote in (settings, settings.get('local_compute')):
+                if remote:
+                    saved.pop(remote['ssh_host']+'|'+remote['suite']+'|'+remote['root'],None)
             from molnova.md_gbsa_native import save
             save(registry,saved)
 
@@ -95,7 +99,8 @@ def active_jobs(suite):
         from molnova.md_gbsa import remote_call, response
         for settings in json.loads(registry.read_text()).values():
             for job in response(remote_call(settings,'jobs',settings['root'])):
-                rows.append(dict(job,molnova_md_remote=True))
+                rows.append(dict(job,molnova_md_remote=True,
+                    molnova_md_local_compute=settings['helper'].endswith('/md_gbsa_local_native.py')))
     return rows
 
 def belongs_to_directory(job, directory):

@@ -1,0 +1,18 @@
+# Merge these options into a project TOML with valid Prime/MD inputs.
+# Applies only to newly frozen MD selections. Existing selections keep their backend.
+md-gbsa = true
+md-gbsa-local-compute = true
+md-gbsa-local-host = "adam"
+md-gbsa-local-work-dir = "/home1/prime_share"
+md-gbsa-local-schrodinger = "/home/schrodinger/2025-3-IL"
+md-gbsa-local-cpus = 16  # 1..16 concurrent single-core native Prime subjobs
+
+# Desmond still uses the existing md-gbsa-ssh-host / gpu-host / schrodinger settings.
+# Adam uses localhost Job Control; it needs no Slurm installation.
+# New local-mode protocol: REAL_MIN, receptor residues within 6 A, full residues
+# (including backbone), explicit ligand ASL, COMPLEX output. No -frozen flag.
+# Verify/start the user's JobServer on Adam before using this mode:
+#   /home/schrodinger/2025-3-IL/jsc local-server-start
+# Collected coordinates and journals: <iteration>/09-md_gbsa/adam-results/
+# After collection + SQLite commit + native terminal verification, the owned
+# shared CMPID directory is deleted. Failed/uncertain work stays recoverable.

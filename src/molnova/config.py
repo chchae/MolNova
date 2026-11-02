@@ -281,10 +281,14 @@ def md_gbsa_settings(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('md-gbsa must be a boolean')
     if enabled and config.get('prime-gbsa', True) is False:
         raise ValueError('md-gbsa=true requires prime-gbsa=true')
-    result = {'md_gbsa_enabled': enabled}
+    local = config.get('md-gbsa-local-compute', False)
+    if not isinstance(local, bool):
+        raise ValueError('md-gbsa-local-compute must be a boolean')
+    result = {'md_gbsa_enabled': enabled, 'md_gbsa_local_compute': local}
     for suffix, default, minimum, maximum in [
         ('snapshots', 20, 1, None), ('replicates', 1, 1, 100),
         ('gpus', 20, 1, 20), ('cpus', 384, 1, 384), ('seed', 20261021, 1, 2147483647),
+        ('local-cpus', 16, 1, 16),
     ]:
         key = 'md-gbsa-' + suffix
         value = config.get(key, default)
@@ -292,7 +296,7 @@ def md_gbsa_settings(config: dict[str, Any]) -> dict[str, Any]:
                 or (maximum is not None and value > maximum)):
             requirement = 'a positive integer' if maximum is None else f'an integer between {minimum} and {maximum}'
             raise ValueError(f'{key} must be {requirement}')
-        result['md_gbsa_' + suffix] = value
+        result['md_gbsa_' + suffix.replace('-', '_')] = value
     for suffix, default, upper in [('production-ns', 5.0, None), ('equilibration-ns', 1.0, None),
                                    ('input-ratio', .5, 1.0), ('analysis-start-fraction', .2, 1.0)]:
         key = 'md-gbsa-' + suffix
@@ -306,14 +310,17 @@ def md_gbsa_settings(config: dict[str, Any]) -> dict[str, Any]:
     if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 1):
         raise ValueError('md-gbsa-input-count must be a positive integer')
     result['md_gbsa_input_count'] = count
-    for suffix, default in [('ssh-host', 'slurm'), ('gpu-host', 'slurm-gpu'), ('cpu-host', 'slurm-cpu')]:
+    for suffix, default in [('ssh-host', 'slurm'), ('gpu-host', 'slurm-gpu'), ('cpu-host', 'slurm-cpu'),
+                            ('local-host', 'adam')]:
         value = config.get('md-gbsa-' + suffix, default)
         if (not isinstance(value, str) or not value or value.startswith('-')
                 or any(c.isspace() for c in value) or ':' in value):
             raise ValueError(f'Invalid md-gbsa-{suffix}')
         result['md_gbsa_' + suffix.replace('-', '_')] = value
     for suffix, default in [('schrodinger', '/share/opt/schrodinger/2026-3'),
-                            ('remote-work-dir', f'/homes1/{getpass.getuser()}/molnova-md-gbsa-runs')]:
+                            ('remote-work-dir', f'/homes1/{getpass.getuser()}/molnova-md-gbsa-runs'),
+                            ('local-work-dir', '/home1/prime_share'),
+                            ('local-schrodinger', '/home/schrodinger/2025-3-IL')]:
         value = config.get('md-gbsa-' + suffix, default)
         if not isinstance(value, str) or not value.startswith('/') or any(c in value for c in '\n\r'):
             raise ValueError(f'md-gbsa-{suffix} must be an absolute remote path')

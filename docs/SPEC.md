@@ -1,5 +1,100 @@
 # MolNova specification
 
+## Adam shared-folder MD snapshot Prime backend (2026-11-02)
+
+**Confirmed user request:** opt-in `md-gbsa-local-compute=true` saves selected MD
+frames under `/home1/prime_share`, shared with Adam, submits Prime through SSH to
+Adam's localhost without Slurm, collects results, and deletes that run's shared
+inputs/results only after successful collection. Adam has at most 16 CPU/license
+slots. Omission/false preserves the existing Slurm Prime backend and seven-slot
+limit. Frozen selections/jobs keep their exact original backend and protocol.
+
+**Implementation choices:** keep Desmond and validated frame extraction on the
+existing MD host; stream only checksummed frames, identity, frame metadata and MD
+journal into a UUID-owned shared directory. Optional `md-gbsa-local-host="adam"`,
+`md-gbsa-local-work-dir="/home1/prime_share"`,
+`md-gbsa-local-schrodinger="/home/schrodinger/2025-3-IL"`, and
+`md-gbsa-local-cpus=16` (strict integer 1..16) configure new work. Both machines
+must see the share at the same absolute path; verify a pinned ownership record
+through SSH before claims. Pin helper hashes and all backend/protocol settings.
+The localhost JobServer must already be configured/running; never start services
+or install Slurm implicitly.
+
+Following the preceding 6-Angstrom flexibility discussion, this new mode uses
+`-job_type REAL_MIN -rflexdist 6.0 -rflexgroup residue`, explicit ligand identity
+and `-out_type COMPLEX`, without `-frozen`. This allows backbone and sidechain
+movement within the selected residues and default ligand minimization. This is
+an implementation choice for the new protocol, not an accuracy validation or a
+change to legacy `ENERGY -frozen` scores. Record the protocol in every ensemble.
+Adam's installed 2025-3-IL help confirms these options. Use one native parent with
+`-HOST localhost:<slots> -NJOBS <snapshots>` and single-thread native environments;
+serialize parents on Adam, retain uncertain-launch reservations, extend the
+existing durable remote registry and Glide/Prime fencing to both JobServers.
+Only this explicitly requested Adam backend raises the seven-slot ceiling to 16.
+
+Workers alone transport/submit/collect; SQLite remains local and authoritative.
+Reverify MD completion on its original JobServer, journal Adam intent/JobId before
+or during submission, and recover exact native jobs after disconnects. Verify
+terminal native work and complete finite frame identities before publishing.
+Bounded in-cycle retries archive/rearm only Adam Prime when it fails, retaining
+successful MD and replicas; live/uncertain jobs never reset or resubmit.
+
+Copy final complex coordinates, frame metadata, inputs' hashes, result JSON and
+native journals into `09-md_gbsa/adam-results/CMPID_<id>/replicaNN/` before score
+commit. In the same scientific transaction insert a pending cleanup record in
+`md_gbsa_local_cleanup`; keep MD/FEP/next-cycle completion closed until it is
+acknowledged. After commit reverify Adam's native terminal success and collected
+output digest/result, save a local cleanup receipt, atomically rename only the
+owned shared CMPID tree and remove it. Resume interrupted deletion from the
+receipt without recomputation. Remove run helpers/ownership only after remote
+registry retirement and no remaining compound tree. Failed/uncertain/uncommitted
+work and other projects' directories remain untouched. Original MD trajectories
+and inputs on the MD host are retained.
+
+**Evidence/limits:** read-only Adam SSH/help inspection succeeded; its local
+JobServer was not running, so real Prime calculation/energy/throughput and
+cross-version structure compatibility have not been validated. Regression tests
+use mocked native calculation/status/transport and real temporary SQLite/files.
+The full suite passed 1,635 tests; after final cleanup/lost-active-list hardening,
+the affected suites passed 276 tests. Editable installation, compileall, package
+and CLI imports, and diff whitespace checks passed.
+See `examples/md-gbsa-local.example.toml`; production TOMLs, jobs and DBs were not
+changed by development.
+
+## MD-GBSA cycle completion and bounded retry (2026-11-02)
+
+**Confirmed user request:** resolve selected MD failures within their cycle,
+either by a further calculation or a final failure, before declaring completion.
+**Implementation choice:** one automatic retry per selected compound for the
+entire cycle, not one per supervisor restart. Register the retry durably in
+SQLite as soon as the first complete ensemble attempt fails. Keep the MD/FEP
+completion gate closed until recovery is consumed and every selected compound
+has a finite complete ensemble or a second terminal failure. A consumed retry
+is never reopened automatically on later driver invocations. Existing consumed
+restart-retry records count as the single retry; preserve active/uncertain native
+jobs and frozen selections, inputs, settings, successes and native journals.
+Workers alone verify native termination and archive/rearm the failed phase;
+completed MD/replicas remain reusable. Missing/ambiguous identity stays pending,
+not final failure. No new remote helper or scientific protocol is required.
+
+Adopt the policy for newly entered MD work and the latest saved MD cycle on
+restart; do not reopen all historical cycles. For an adopted incomplete cycle,
+audit prematurely saved MD/iteration finish timestamps in
+`score_completion_history`, unset their authoritative finishes, and retain their
+original starts. Finish again only after the bounded retries resolve; display
+selected/scored/final_failed counts. This supersedes preserving an early finish
+that incorrectly preceded MD retry resolution.
+
+Defer FEP selection until MD resolves. For an adopted cycle whose FEP selection
+was already frozen early, refresh its MD-ranked candidates once after recovery,
+archiving the old selection in `iteration_fep_selection_history` and the old TSV
+as a content-addressed `.previous.tsv`. Imported FEP scores or a non-MD frozen
+selection require explicit reconciliation and are never overwritten. FEP imports
+continue to use the existing frozen selection until the refresh. Other frozen
+selections retain their existing semantics. Final MD failures supply no score;
+the existing finite-elite minimum still governs next-cycle generation.
+
+
 ## Slurm full-product computation and bounded local claim owners (2026-10-26)
 
 **Confirmed user request:** move per-product preparation and result evaluation

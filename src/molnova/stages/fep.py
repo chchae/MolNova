@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import hashlib
 import math
 import os
 import tempfile
+import shutil
 from pathlib import Path
 from molnova.paths import iteration_directory, stage_directory, stage_in_iteration
 from molnova import _core as c
@@ -37,6 +39,11 @@ def export_candidates(args, iteration):
             writer = csv.DictWriter(stream, fieldnames=fields, delimiter='\t', lineterminator='\n')
             writer.writeheader()
             writer.writerows(rows)
+        if outfile.exists() and outfile.read_bytes() != Path(temporary).read_bytes():
+            digest = hashlib.sha256(outfile.read_bytes()).hexdigest()[:16]
+            previous = outdir / f'fep_candidates.{digest}.previous.tsv'
+            if not previous.exists():
+                shutil.copy2(outfile, previous)
         os.replace(temporary, outfile)
     finally:
         Path(temporary).unlink(missing_ok=True)

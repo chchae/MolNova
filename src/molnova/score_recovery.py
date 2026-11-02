@@ -32,11 +32,22 @@ def recover_md(args, iteration, saved):
             if progress.get(key,{}).get('status')=='done':
                 continue
             root = settings['root']+f'/CMPID_{cid}/replica{r+1:02d}'
+            phase = progress.get(key,{}).get('phase','')
+            if settings.get('local_compute') and phase in ('prime','validation'):
+                phase = ''  # MD JobServer verifies only the upstream MD phase.
             command = shlex.join(['python3','-c',script,root,settings['suite'],token,
-                                  progress.get(key,{}).get('phase','')])
+                                  phase])
             result = json.loads(md_gbsa.ssh(settings['ssh_host'],command))
             if result['status'] not in ('ready','recover'):
                 raise RuntimeError('Unexpected MD retry response')
+            if settings.get('local_compute'):
+                from molnova.md_gbsa_local import task_root
+                local_root = task_root(settings, cid, r)
+                if local_root.exists():
+                    result = md_gbsa.response(md_gbsa.remote_call(settings['local_compute'],
+                        'retry', str(local_root), '--ids', token))
+                    if result['status'] not in ('ready','recover'):
+                        raise RuntimeError('Unexpected Adam retry response')
             progress.pop(key,None)
         save(status_file,progress)
         database.finish_score_retry(args.db_path,iteration,'md_gbsa',cid,token)

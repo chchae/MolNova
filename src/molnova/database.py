@@ -34,6 +34,94 @@ def score_retry_requests(path, iteration, stage):
                             (iteration, stage)).fetchall()
 
 
+def _ensure_score_retry_schema(conn):
+    conn.execute('CREATE TABLE IF NOT EXISTS score_restart_retry ('
+                 'iteration INTEGER NOT NULL,stage TEXT NOT NULL,'
+                 'compound_id INTEGER NOT NULL REFERENCES compound(id) ON DELETE CASCADE,'
+                 'token TEXT NOT NULL,pending INTEGER NOT NULL,'
+                 'previous_state TEXT,previous_failure TEXT,'
+                 'PRIMARY KEY(iteration,stage,compound_id))')
+
+
+def _md_retry_policy(conn, iteration):
+    return (conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_md_retry_policy'").fetchone()
+            and conn.execute('SELECT 1 FROM iteration_md_retry_policy WHERE iteration=?',
+                             (iteration,)).fetchone())
+
+
+def _request_md_retries(conn, iteration):
+    """One durable retry per selected compound, independent of driver restarts."""
+    import json
+    import uuid
+    _ensure_score_retry_schema(conn)
+    saved = conn.execute('SELECT candidates FROM iteration_md_gbsa_selection WHERE iteration=?',
+                         (iteration,)).fetchone()
+    if saved is None:
+        return
+    for cid in json.loads(saved[0]):
+        row = conn.execute('SELECT state,failed_stage,failure_message,md_gbsa_score FROM compound '
+                           'WHERE id=? AND iteration=?', (cid, iteration)).fetchone()
+        if row and row[3] is None and row[:2] == (State.FAILED, 'md_gbsa'):
+            conn.execute('INSERT OR IGNORE INTO score_restart_retry VALUES (?,?,?,?,1,?,?)',
+                         (iteration, 'md_gbsa', cid, uuid.uuid4().hex, row[0], row[2]))
+
+
+def enable_md_cycle_retries(path, iteration):
+    """Adopt one in-cycle retry without changing frozen science or native jobs."""
+    import json
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        saved = conn.execute('SELECT candidates FROM iteration_md_gbsa_selection WHERE iteration=?',
+                             (iteration,)).fetchone()
+        if saved is None:
+            return
+        conn.execute('CREATE TABLE IF NOT EXISTS iteration_md_retry_policy ('
+                     'iteration INTEGER PRIMARY KEY, refresh_fep INTEGER NOT NULL DEFAULT 0)')
+        first = conn.execute('INSERT OR IGNORE INTO iteration_md_retry_policy(iteration) VALUES (?)',
+                             (iteration,)).rowcount
+        _request_md_retries(conn, iteration)
+        if not first:
+            return
+        # Existing consumed retry rows count as the single retry, including live
+        # work started by the former restart policy. Never grant a third attempt.
+        unfinished = False
+        for cid in json.loads(saved[0]):
+            row = conn.execute('SELECT md_gbsa_score,state,failed_stage FROM compound '
+                               'WHERE id=? AND iteration=?', (cid, iteration)).fetchone()
+            retry = conn.execute("SELECT pending FROM score_restart_retry WHERE iteration=? "
+                                 "AND stage='md_gbsa' AND compound_id=?", (iteration, cid)).fetchone()
+            if row is None or (row[0] is None and
+                    (row[1:] != (State.FAILED, 'md_gbsa') or not retry or retry[0])):
+                unfinished = True
+        if not unfinished:
+            return
+        # Keep falsely early completions as audit, while the authoritative finish
+        # remains unset until the in-cycle retry has resolved.
+        conn.execute('CREATE TABLE IF NOT EXISTS score_completion_history ('
+                     'iteration INTEGER NOT NULL,stage TEXT NOT NULL,started_at REAL NOT NULL,'
+                     'finished_at REAL NOT NULL,PRIMARY KEY(iteration,stage,finished_at))')
+        for table, condition, params, stage in (
+                ('stage_timing', 'iteration=? AND stage=?', (iteration, 'md-gbsa'), 'md-gbsa'),
+                ('iteration_timing', 'iteration=?', (iteration,), 'iteration')):
+            if conn.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone():
+                for start, finish in conn.execute(
+                        f'SELECT started_at,finished_at FROM {table} WHERE {condition} AND finished_at IS NOT NULL', params):
+                    conn.execute('INSERT OR IGNORE INTO score_completion_history VALUES (?,?,?,?)',
+                                 (iteration, stage, start, finish))
+                conn.execute(f'UPDATE {table} SET finished_at=NULL WHERE {condition}', params)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iteration_fep_selection'").fetchone():
+            conn.execute('UPDATE iteration_md_retry_policy SET refresh_fep=1 WHERE iteration=? '
+                         'AND EXISTS (SELECT 1 FROM iteration_fep_selection WHERE iteration=?)',
+                         (iteration, iteration))
+
+
+def request_md_cycle_retries(path, iteration):
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if _md_retry_policy(conn, iteration):
+            _request_md_retries(conn, iteration)
+
+
 def _completed_md_ids(conn, iteration):
     if 'md_gbsa_score' not in {r[1] for r in conn.execute('PRAGMA table_info(compound)')}:
         return set()
@@ -76,9 +164,16 @@ def running_calculation_stages(path, iteration):
 
 
 def request_latest_score_retries(args, requested=None):
-    """One retry per supervisor restart, limited to the final selected population."""
+    """Prime retries on restart; MD has one retry for the entire cycle."""
     import json
     import uuid
+    with connect(args.db_path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='compound'").fetchone():
+            return None
+        latest = conn.execute('SELECT MAX(iteration) FROM compound').fetchone()[0]
+    if (latest is not None and (requested is None or requested == latest)
+            and md_gbsa_selection(args.db_path, latest) is not None):
+        enable_md_cycle_retries(args.db_path, latest)
     with connect(args.db_path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='compound'").fetchone():
@@ -86,12 +181,7 @@ def request_latest_score_retries(args, requested=None):
         latest = conn.execute('SELECT MAX(iteration) FROM compound').fetchone()[0]
         if latest is None or (requested is not None and requested != latest):
             return None
-        conn.execute('CREATE TABLE IF NOT EXISTS score_restart_retry ('
-                     'iteration INTEGER NOT NULL,stage TEXT NOT NULL,'
-                     'compound_id INTEGER NOT NULL REFERENCES compound(id) ON DELETE CASCADE,'
-                     'token TEXT NOT NULL,pending INTEGER NOT NULL,'
-                     'previous_state TEXT,previous_failure TEXT,'
-                     'PRIMARY KEY(iteration,stage,compound_id))')
+        _ensure_score_retry_schema(conn)
         rows = {r[0]:r for r in conn.execute('SELECT id,state,failed_stage,failure_message,'
                         'prime_gbsa_score,md_gbsa_score FROM compound WHERE iteration=?',(latest,))}
         selected = {}
@@ -118,6 +208,10 @@ def request_latest_score_retries(args, requested=None):
                     continue
                 # Upstream failures and live/uncertain claims retain ownership.
                 if row[1] != State.FAILED or row[2] != stage:
+                    continue
+                if stage == 'md_gbsa' and conn.execute(
+                        'SELECT 1 FROM score_restart_retry WHERE iteration=? AND stage=? AND compound_id=?',
+                        (latest, stage, cid)).fetchone():
                     continue
                 conn.execute('INSERT INTO score_restart_retry VALUES (?,?,?,?,1,?,?) '
                              'ON CONFLICT(iteration,stage,compound_id) DO UPDATE SET '
@@ -1699,6 +1793,20 @@ def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
                              (iteration,)).fetchone()
         rows = conn.execute('SELECT id,name,smiles,docking_score,amber_gbsa_score,prime_gbsa_score,fep_score,state,md_gbsa_score '
                             'FROM compound WHERE iteration=? ORDER BY id', (iteration,)).fetchall()
+        refresh = (_md_retry_policy(conn, iteration) and conn.execute(
+            'SELECT refresh_fep FROM iteration_md_retry_policy WHERE iteration=?', (iteration,)).fetchone()[0]
+                   and not for_import and md is not None)
+        if saved and refresh:
+            if saved[0] != 'md' or any(row[6] is not None for row in rows):
+                raise RuntimeError('Existing FEP selection has imported scores or predates MD; '
+                                   'explicit reconciliation required')
+            conn.execute('CREATE TABLE IF NOT EXISTS iteration_fep_selection_history ('
+                         'iteration INTEGER NOT NULL,archived_at INTEGER NOT NULL,'
+                         'ranking_source TEXT NOT NULL,candidates TEXT NOT NULL,'
+                         'PRIMARY KEY(iteration,archived_at))')
+            conn.execute('INSERT INTO iteration_fep_selection_history VALUES (?,?,?,?)',
+                         (iteration, time.time_ns(), saved[0], saved[1]))
+            saved = None
         if saved:
             source, selected = saved[0], json.loads(saved[1])
             if md is not None and source != 'md' and not for_import and not docking_only:
@@ -1738,8 +1846,13 @@ def fep_candidates(path, iteration, count, *, target_count=1, prime_count=None,
                     source = name
                     selected = [dict(id=row[0], ranking_score=row[column]) for row in eligible[:count]]
                     break
-            conn.execute('INSERT INTO iteration_fep_selection VALUES (?,?,?)',
+            conn.execute('INSERT INTO iteration_fep_selection VALUES (?,?,?) '
+                         'ON CONFLICT(iteration) DO UPDATE SET '
+                         'ranking_source=excluded.ranking_source,candidates=excluded.candidates',
                          (iteration, source, json.dumps(selected)))
+            if refresh:
+                conn.execute('UPDATE iteration_md_retry_policy SET refresh_fep=0 WHERE iteration=?',
+                             (iteration,))
         by_id = {row[0]: row for row in rows}
         fields = ['id', 'name', 'smiles', 'docking_score', 'amber_gbsa_score', 'prime_gbsa_score', 'fep_score', 'state', 'md_gbsa_score']
         result = []
@@ -1782,6 +1895,9 @@ def ensure_md_gbsa_schema(conn):
                  'iteration INTEGER PRIMARY KEY, candidates TEXT NOT NULL, settings TEXT NOT NULL)')
     conn.execute('CREATE TABLE IF NOT EXISTS compound_md_gbsa_result ('
                  'compound_id INTEGER PRIMARY KEY REFERENCES compound(id), result TEXT NOT NULL)')
+    conn.execute('CREATE TABLE IF NOT EXISTS md_gbsa_local_cleanup ('
+                 'compound_id INTEGER PRIMARY KEY REFERENCES compound(id), '
+                 'iteration INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0)')
 
 
 def md_gbsa_selection(path, iteration):
@@ -1869,6 +1985,13 @@ def md_gbsa_completion_reason(path, iteration, minimum=0):
         return 'MD-GBSA candidates have not been selected'
     with connect(path) as conn:
         rows = {r[0]:r for r in conn.execute('SELECT id,md_gbsa_score,state,failed_stage FROM compound WHERE iteration=?', (iteration,))}
+        if selection['settings'].get('local_compute') and conn.execute(
+                'SELECT 1 FROM md_gbsa_local_cleanup WHERE iteration=? AND completed=0', (iteration,)).fetchone():
+            return 'MD-GBSA Adam result collection/cleanup pending'
+        policy = _md_retry_policy(conn, iteration)
+        retried = ({r[0] for r in conn.execute("SELECT compound_id FROM score_restart_retry "
+                    "WHERE iteration=? AND stage='md_gbsa' AND pending=0", (iteration,))}
+                   if policy else set())
     scored = 0
     for cid in selection['ids']:
         row = rows.get(cid)
@@ -1878,6 +2001,8 @@ def md_gbsa_completion_reason(path, iteration, minimum=0):
             scored += 1
         elif row[2:] != (State.FAILED,'md_gbsa'):
             return f'MD-GBSA still pending for compound {cid}'
+        elif policy and cid not in retried:
+            return f'MD-GBSA in-cycle retry required for compound {cid}'
     return f'MD-GBSA has {scored} finite results; need {minimum}' if scored < minimum else None
 
 
@@ -1912,10 +2037,27 @@ def store_md_gbsa_result(path, iteration, cid, result):
         if old and old[0] != encoded:
             raise ValueError('Conflicting saved MD-GBSA result')
         conn.execute('INSERT OR IGNORE INTO compound_md_gbsa_result VALUES (?,?)',(cid,encoded))
+        if settings['settings'].get('local_compute'):
+            conn.execute('INSERT OR IGNORE INTO md_gbsa_local_cleanup(compound_id,iteration) VALUES (?,?)',
+                         (cid,iteration))
         conn.execute('UPDATE compound SET md_gbsa_score=?,md_gbsa_std=?,md_gbsa_snapshots=?,state=CASE WHEN fep_score IS NOT NULL THEN ? ELSE ? END, '
                      'failed_stage=NULL,failure_message=NULL,modified_at=CURRENT_TIMESTAMP WHERE id=? AND iteration=? '
                      'AND md_gbsa_score IS NULL',
                      (result['mean'],result['std'],len(frames),State.FEP_DONE,State.MD_GBSA_DONE,cid,iteration))
+
+
+def finish_md_local_cleanup(path, iteration, cid):
+    """Acknowledge worker-verified collection/deletion after scientific commit."""
+    with connect(path) as conn:
+        conn.execute('UPDATE md_gbsa_local_cleanup SET completed=1 WHERE compound_id=? AND iteration=? '
+                     'AND EXISTS (SELECT 1 FROM compound WHERE id=? AND md_gbsa_score IS NOT NULL)',
+                     (cid,iteration,cid))
+
+
+def pending_md_local_cleanup_ids(path, iteration):
+    with connect(path) as conn:
+        return {row[0] for row in conn.execute(
+            'SELECT compound_id FROM md_gbsa_local_cleanup WHERE iteration=? AND completed=0', (iteration,))}
 
 
 def md_gbsa_rows(path, iteration):
