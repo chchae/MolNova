@@ -88,19 +88,24 @@ def test_retry_failure_cannot_advance_stage(tmp_path, monkeypatch):
     assert calls == ['generate']
 
 
-def test_amber_pending_log_uses_persisted_iteration_stage_elapsed(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('stage,reason', [
+    ('amber-gbsa', '493 compounds still running Amber GBSA screening'),
+    ('md-gbsa', 'MD-GBSA still pending for compound 624598'),
+])
+def test_pending_log_uses_persisted_iteration_stage_elapsed(tmp_path, monkeypatch, capsys, stage, reason):
     args = project(tmp_path, State.DOCKED, iteration=60)
+    args.md_gbsa_enabled = True
     monkeypatch.setattr(database.time, 'time', lambda: 100.)
-    database.start_stage_timer(args.db_path, 60, 'amber-gbsa')
+    database.start_stage_timer(args.db_path, 60, stage)
     monkeypatch.setattr(database.time, 'time', lambda: 700.)
     monkeypatch.setattr(driver, 'stream_process', lambda *a: 0)
     monkeypatch.setattr(database, 'stage_completion_reason',
-                        lambda *a: '493 compounds still running Amber GBSA screening')
+                        lambda *a: reason)
     assert not driver.supervise_iteration(
-        args, tmp_path/'p.toml', 60, [('amber-gbsa', 'molnova.stages.amber_gbsa')],
+        args, tmp_path/'p.toml', 60, [(stage, f'molnova.stages.{stage.replace("-", "_")}')],
         30, driver.StopFlag(), once=True,
     )
-    assert ('iteration 60: amber-gbsa pending: 493 compounds still running Amber GBSA screening; '
+    assert (f'iteration 60: {stage} pending: {reason}; '
             'elapsed=00:10:00.0 (including waiting, polling and restart recovery).') in capsys.readouterr().out
 
 

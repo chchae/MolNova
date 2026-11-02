@@ -1389,6 +1389,10 @@ DB and external-submission completion checks must both pass. Failed, paused or
 interrupted attempts retain the first start without a finish. Preserve the first
 verified finish on reruns, and never modify scientific state/results for timing.
 Prime recovery starts the Prime timer but cannot finish the final Prime stage.
+**Confirmed pending timing display (2026-11-02):** MD-GBSA pending driver
+lines also show `elapsed=HH:MM:SS.s` from the persisted iteration/stage
+start, including waiting, polling and restart recovery, as Amber pending
+lines already do. Reading elapsed time never finishes or resets the timer.
 The start is the first supervised pass recorded by this implementation; work
 before timing was introduced cannot be reconstructed from compound timestamps.
 Per-worker invocation and per-native-job timings remain distinct from this total. One completion line also reports original-compound

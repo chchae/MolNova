@@ -409,7 +409,7 @@ def supervise_iteration(args, project_toml, iteration, stages, poll_interval, st
                                                         'Existing Prime claims still running')))
             report = progress if routine_prime_gbsa_poll else print
             timing = ''
-            if stage == 'amber-gbsa':
+            if stage in {'amber-gbsa', 'md-gbsa'}:
                 elapsed = database.stage_elapsed(args.db_path, iteration, stage)
                 if elapsed is not None:
                     timing = (f'; elapsed={format_elapsed(elapsed)} '
