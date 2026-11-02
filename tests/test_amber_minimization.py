@@ -48,8 +48,9 @@ def test_minimization_validates_final_frame_and_preserves_reference(tmp_path, mo
     assert original.read_bytes() == b'original Glide complex coordinates'
 
 
-@pytest.mark.parametrize('fail_minimization', [False, True])
-def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization(tmp_path, monkeypatch, fail_minimization):
+@pytest.mark.parametrize('fail_minimization,deadline', [(False, None), (True, None),
+    (False, 600), (True, 600), ('timeout', 600), ('no_checkpoint', 600)])
+def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization(tmp_path, monkeypatch, fail_minimization, deadline):
     folder = tmp_path/'CMPID_1'
     folder.mkdir()
     (tmp_path/'results').mkdir()
@@ -57,7 +58,7 @@ def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization
     source = '@<TRIPOS>ATOM\n1 C1 1.0 2.0 3.0 C.3 1 LIG 0\n2 H2 4.0 5.0 6.0 H 1 LIG 0\n@<TRIPOS>BOND\n1 1 2 1\n'
     (folder/'input.mol2').write_text(source)
     calls = []
-    def run(command, folder, lock_fd):
+    def run(command, folder, lock_fd, timeout=None):
         calls.append(command)
         if command[0] == 'antechamber':
             (folder/'ligand.mol2').write_text(source)
@@ -68,15 +69,24 @@ def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization
                 (folder/f'{name}.prmtop').write_text('topology')
                 (folder/f'{name}.inpcrd').write_text('original coordinates')
         elif command[0] == 'sander':
+            assert timeout == deadline
+            if deadline is not None:
+                assert 'ntwr=-10, ntxo=1' in (folder/'minimize.in').read_text()
+            if fail_minimization in ('timeout', 'no_checkpoint'):
+                if fail_minimization == 'timeout':
+                    (folder/'complex.minimized.rst7_120').write_text('relaxed checkpoint')
+                raise subprocess.TimeoutExpired(command, timeout)
             (folder/'minimize.out').write_text('partial output' if fail_minimization else FINAL)
             (folder/'complex.minimized.rst7').write_text('relaxed coordinates')
         elif command[0] == 'MMPBSA.py':
             assert command[command.index('-y')+1] == 'complex.minimized.rst7'
+            if fail_minimization == 'timeout':
+                assert (folder/'complex.minimized.rst7').read_text() == 'relaxed checkpoint'
             assert 'restraint' not in (folder/'mmpbsa.in').read_text()
             (folder/'FINAL_RESULTS_MMPBSA.dat').write_text('DELTA TOTAL -10.25\n')
     c = SimpleNamespace(name='C1',xx=1,xy=2,xz=3)
     h = SimpleNamespace(name='H2',xx=4,xy=5,xz=6)
-    def load_file(path, xyz):
+    def load_file(path, xyz=None):
         if str(path).endswith('ligand.prmtop'):
             return SimpleNamespace(atoms=[c,h])
         if str(xyz).endswith('complex.minimized.rst7'):
@@ -87,17 +97,21 @@ def test_calculate_scores_minimized_complex_and_never_scores_failed_minimization
     monkeypatch.setitem(sys.modules,'parmed',SimpleNamespace(load_file=load_file))
     ticks = iter([10.0, 35.5])
     monkeypatch.setattr(amber_runner.time, 'monotonic', lambda: next(ticks))
-    amber_runner.calculate(tmp_path,{'id':1,'charge':0},'bcc',1)
+    amber_runner.calculate(tmp_path,{'id':1,'charge':0},'bcc',1, minimization_timeout_s=deadline)
     result = json.loads((tmp_path/'results/CMPID_1.json').read_text())
     assert result.pop('elapsed_s') == 25.5
     assert (folder/'input.mol2').read_text() == source
     assert (folder/'complex.inpcrd').read_text() == 'original coordinates'
     programs = [c[0] for c in calls]
     assert programs[:4] == ['antechamber','parmchk2','tleap','sander']
-    if fail_minimization:
+    if fail_minimization in (True, 'no_checkpoint'):
         assert 'error' in result and 'score' not in result
         assert 'MMPBSA.py' not in programs
     else:
+        if deadline is not None:
+            metadata = result.pop('minimization')
+            assert metadata['status'] == ('time_limit_checkpoint' if fail_minimization == 'timeout' else 'completed')
+            assert metadata['completed_minimization'] is (fail_minimization != 'timeout')
         assert result == {'id':1,'score':-10.25}
         assert programs[-1] == 'MMPBSA.py'
 

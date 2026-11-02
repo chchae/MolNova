@@ -427,10 +427,12 @@ def amber_settings(config: dict[str, Any], base: Path) -> dict[str, Any]:
     settings = {'amber_gbsa_enabled': enabled, 'prime_gbsa_enabled': config.get('prime-gbsa', True),
                 'prime_gbsa_input_count': prime_count,
                 'use_slurm': use_slurm}
-    time_limit = config.get('amber-slurm-time-limit', 600)
+    time_limit = config.get('amber-slurm-time-limit', 3600)
     if isinstance(time_limit, bool) or not isinstance(time_limit, int) or time_limit < 1:
         raise ValueError('amber-slurm-time-limit must be a positive integer in seconds')
-    hours, remainder = divmod(time_limit, 3600)
+    # Preparation and GBSA need time beyond the separate 600s minimization
+    # deadline. Older TOMLs often specify 600s for the entire allocation.
+    hours, remainder = divmod(max(time_limit, 3600), 3600)
     minutes, seconds = divmod(remainder, 60)
     settings['amber_slurm_time_limit'] = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
     for key, default in [('amber-cpus', 128)]:

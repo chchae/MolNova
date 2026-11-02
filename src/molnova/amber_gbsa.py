@@ -180,6 +180,8 @@ def prepare_remote(args, iteration, directory, record):
               'identities': identities}
     if 'minimization_timeout_s' in record:
         config['minimization_timeout_s'] = record['minimization_timeout_s']
+        config['protocol'] = PROTOCOL + '_checkpoint_v1'
+        config['minimization'] = dict(MINIMIZATION, ntwr=-10, ntxo=1)
     slurm_files = []
     from molnova import amber_slurm
     if record.get('mode') in (amber_slurm.SINGLE, amber_slurm.ARRAY):
@@ -346,6 +348,7 @@ def new_record(args, iteration, directory, ids):
         return amber_slurm.new_record(args, iteration, directory, ids)
     run_id = 'run-' + uuid.uuid4().hex
     record = {'run_id': run_id, 'compound_ids': ids, 'prepared': False,
+              'minimization_timeout_s': 600,
               'iteration': iteration, 'db_path': str(args.db_path.resolve()),
               'settings': args.amber_remote, 'charge_method': args.amber_charge_method,
               'remote_dir': str(PurePosixPath(args.amber_remote['remote_work_dir']) / run_id)}

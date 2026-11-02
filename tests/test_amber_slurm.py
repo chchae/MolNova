@@ -82,8 +82,8 @@ def test_slurm_time_limit_validation(tmp_path, value):
         amber_settings({'out-dir': 'output', 'amber-slurm-time-limit': value}, tmp_path)
 
 
-@pytest.mark.parametrize('seconds,limit', [(1, '00:00:01'), (61, '00:01:01'),
-                                        (600, '00:10:00'), (900, '00:15:00'),
+@pytest.mark.parametrize('seconds,limit', [(1, '01:00:00'), (61, '01:00:00'),
+                                        (600, '01:00:00'), (900, '01:00:00'),
                                         (3600, '01:00:00'), (90061, '25:01:01')])
 def test_toml_time_limit_is_pinned_only_in_new_records(project, seconds, limit):
     toml = project.output / 'project.toml'
@@ -93,6 +93,7 @@ def test_toml_time_limit_is_pinned_only_in_new_records(project, seconds, limit):
     project.amber_slurm_time_limit = loaded['amber_slurm_time_limit']
     record = slurm.new_record(project, 1, project.output, [1, 2, 3, 4])
     assert record['slurm_time_limit'] == limit
+    assert record['minimization_timeout_s'] == 600
     assert 'time_limit' not in record['settings']
     assert record['settings'] == project.amber_remote
     project.amber_slurm_time_limit = '00:05:00'
@@ -103,7 +104,7 @@ def test_slurm_configuration_and_shared_environment(tmp_path):
     settings = amber_settings({'out-dir': 'output', 'use-slurm': True,
                                'amber-ssh-host': 't41', 'amber-cpus': 124}, tmp_path)
     assert settings['amber_cpus'] == 384
-    assert settings['amber_slurm_time_limit'] == '00:10:00'
+    assert settings['amber_slurm_time_limit'] == '01:00:00'
     remote = settings['amber_remote']
     assert remote['host'] == 'slurm' and remote['partition'] == 'cpu'
     assert remote['remote_work_dir'].startswith('/homes1/')
@@ -308,7 +309,7 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     import tarfile
     record = child_record(project, mode)
     if mode == slurm.ARRAY:
-        assert record['slurm_time_limit'] == '00:10:00'
+        assert record['slurm_time_limit'] == '01:00:00'
         if saved_limit is None:
             del record['slurm_time_limit']
         elif saved_limit != 'new':
@@ -320,6 +321,8 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     record['prepared'] = False
     if checkpoint_policy:
         record['minimization_timeout_s'] = 600
+    else:
+        record.pop('minimization_timeout_s', None)  # Saved legacy work stays unchanged.
     folder = project.output / record['run_id']
     def export(args, iteration, root, ids):
         for name in ('receptor.pdb', 'receptor.normalized.pdb', 'receptor_bonds.in'):
@@ -334,6 +337,9 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
     amber.prepare_remote(project, 1, project.output, record)
     config = json.loads((folder / 'input.json').read_text())
     assert config['cpus'] == record['cpus']
+    from molnova.amber_runner import PROTOCOL, MINIMIZATION
+    assert config['protocol'] == PROTOCOL + ('_checkpoint_v1' if checkpoint_policy else '')
+    assert config['minimization'] == (dict(MINIMIZATION, ntwr=-10, ntxo=1) if checkpoint_policy else MINIMIZATION)
     assert config.get('minimization_timeout_s') == (600 if checkpoint_policy else None)
     if mode == slurm.ARRAY:
         task_config = json.loads((folder/'tasks/0/input.json').read_text())
@@ -344,7 +350,7 @@ def test_preparation_uploads_slurm_script_and_pins_worker_count(project, monkeyp
         else 'amber-' + record['run_id'] if mode == slurm.ARRAY and saved_limit is not None
         else 'molnova-amber-' + record['run_id'])
     if mode == slurm.ARRAY and saved_limit is not None:
-        assert config['slurm']['time_limit'] == ('00:10:00' if saved_limit == 'new' else saved_limit)
+        assert config['slurm']['time_limit'] == ('01:00:00' if saved_limit == 'new' else saved_limit)
     else:
         assert 'time_limit' not in config['slurm']
     script = (folder / 'amber.sbatch').read_text()

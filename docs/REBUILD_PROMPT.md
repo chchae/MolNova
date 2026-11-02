@@ -1,5 +1,44 @@
 # Independent MolNova reconstruction prompt
 
+## Default Amber checkpoint scoring (2026-11-02)
+
+**Confirmed user request:** apply iteration 60's time-limited minimization and
+saved-coordinate scoring to ordinary Amber calculations.
+
+**Implementation choice:** newly created Slurm arrays and direct-SSH runs pin
+`minimization_timeout_s=600`. Reuse the verified retry worker: save ASCII native
+restarts every ten minimization steps (`ntwr=-10, ntxo=1`); after the minimization
+deadline kill and wait for serial sander, validate the highest readable full-atom
+finite checkpoint and run single-frame MMPBSA on those exact saved coordinates.
+Normal native completion still requires valid final energy and coordinates.
+Missing/invalid checkpoints and native scientific errors produce failures, not
+scores. Existing ff14SB/GAFF2, restraints, 500 cycles, solvent and entropy settings
+are retained. New input metadata distinguishes the checkpoint-capable protocol;
+result JSON and archived `minimization_status.json` distinguish completed from
+truncated minimization and retain the checkpoint step.
+
+New Slurm allocations default to one hour, separately from the 600-second
+minimization deadline. `amber-slurm-time-limit` remains a positive integer number
+of allocation seconds; values below 3600 (including older TOMLs' 600) are raised
+to 3600 for newly created records, and larger limits are honored. The one-hour
+hard limit can still terminate unusually long preparation/scoring. Direct SSH
+uses the minimization deadline without a Slurm allocation.
+
+This supersedes the ordinary-new-work exception in the earlier explicit timeout
+retry section and the ten-minute allocation default for new records. All saved
+records, including unprepared records without the checkpoint policy, retain their
+pinned settings, workers, inputs and native JobIds. No submitted jobs, old scores,
+failed compounds or frozen downstream selections are reset or retried by this
+change. Production iter61 failures require a separate explicit retry request.
+Truncated structures are not claimed to be converged or equivalent in ranking
+quality to fully minimized structures. Regression tests mock scientific programs;
+this change does not add a new real-target scientific validation.
+
+**Verification:** 178 dedicated Amber regressions and the full 1,721-test suite
+passed. Editable installation, compileall, package/CLI imports and diff whitespace
+checks passed. No production jobs or databases were changed.
+
+
 ## Optional Adam backend for ordinary Prime GBSA (2026-11-02)
 
 **Confirmed user request:** add `prime-gbsa-local-compute=true` with the same

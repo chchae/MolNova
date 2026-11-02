@@ -854,14 +854,22 @@ submissions are reconciled through Slurm JobIds before any retry.
 New Amber Slurm job names use `amber-<unique-id>` without `molnova-` or
 `run-` prefixes. Existing saved/submitted jobs retain their original names for recovery.
 
-Set `amber-slurm-time-limit = 600` in TOML to specify the per-compound
-Amber Slurm runtime limit in seconds (positive integer; default 600 = 10 minutes).
-MolNova converts seconds to Slurm `HH:MM:SS` when saving a new submission.
-New Amber Slurm array tasks have a **10-minute default runtime limit per compound**
-(`sbatch --time=00:10:00`), including preparation and calculation, excluding queue
-waiting. Existing saved/submitted work retains its original limit. Verified
-TIMEOUTs use the existing per-compound failure/recovery path, preserving scores
-and allowing later stages to proceed through their normal gates.
+New Amber runs limit **minimization to 600 seconds**, saving native coordinates
+every ten steps. On that deadline, MolNova stops minimization and scores the
+latest readable, complete, finite checkpoint with MMPBSA. Missing valid coordinates
+or scientific errors produce failures. Results and `minimization_status.json`
+distinguish completed minimization from checkpoint scoring; a truncated structure
+is not evidence of convergence.
+
+Set `amber-slurm-time-limit = 3600` to specify the per-compound Slurm allocation
+in seconds (positive integer; default and minimum effective allocation one hour).
+Values below 3600, including older TOMLs' 600, become 3600 for new records.
+This includes preparation, minimization and GBSA, excluding queue waiting, and is
+separate from the 600-second minimization deadline. Larger allocations are honored.
+Direct SSH also uses the minimization deadline. Saved work retains its original
+policy and allocation, including saved but unprepared runs. Verified hard Slurm
+TIMEOUTs retain the existing failure/recovery path; historical failures are not
+automatically retried.
 
 Set `debug = true` to divide generation target, generation batch size, Amber
 input count, Prime input/elite counts and FEP candidate count by ten (integer

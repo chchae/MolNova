@@ -190,6 +190,16 @@ def make_record(project):
     return directory,record
 
 
+def test_new_direct_run_pins_checkpoint_policy_without_rewriting_saved_run(project):
+    directory, record = make_record(project)
+    assert record['minimization_timeout_s'] == 600
+    # A pre-upgrade record (including an unprepared record) keeps the old policy.
+    record.pop('minimization_timeout_s')
+    record['prepared'] = False
+    amber_gbsa.save(directory / 'amber_job.json', record)
+    assert 'minimization_timeout_s' not in amber_gbsa.load_job(directory)
+
+
 def test_postcommit_recovery_requires_remote_terminal_and_lock_release(project, monkeypatch):
     directory,record=make_record(project)
     snapshot={'status':'done','active':True,'results':[{'id':i,'score':-i} for i in range(1,5)]}
