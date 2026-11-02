@@ -142,6 +142,9 @@ def reconcile_saved_job(directory, db_path, iteration):
         raise PrimeReconciliationPending(
             f"Iteration {iteration}: saved Prime job mixes current and obsolete compound IDs; "
             "files retained for reconciliation.")
+    if record.get('mode')=='adam_prime_batch_v1':
+        raise PrimeReconciliationPending('Saved Adam Prime job has obsolete compound IDs; '
+                                         'shared work retained for reconciliation')
     if record.get("mode") == "compound_queue_v1":
         for cid in record['compound_ids']:
             folder = Path(directory) / record['run_dir'] / f'CMPID_{cid}'

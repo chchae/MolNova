@@ -348,6 +348,25 @@ def distribution_project(path):
                            prime_gbsa_elite_count=int(config.get('prime-gbsa-elite-count', 10)))
 
 
+def prime_gbsa_local_settings(config: dict[str, Any]) -> dict[str, Any]:
+    enabled=config.get('prime-gbsa-local-compute',False)
+    if not isinstance(enabled,bool):
+        raise ValueError('prime-gbsa-local-compute must be a boolean')
+    cpus=config.get('prime-gbsa-local-cpus',16)
+    if isinstance(cpus,bool) or not isinstance(cpus,int) or not 1<=cpus<=16:
+        raise ValueError('prime-gbsa-local-cpus must be an integer between 1 and 16')
+    host=config.get('prime-gbsa-local-host','adam')
+    if not isinstance(host,str) or not host or host.startswith('-') or ':' in host or any(c.isspace() for c in host):
+        raise ValueError('Invalid prime-gbsa-local-host')
+    result=dict(prime_gbsa_local_compute=enabled,prime_gbsa_local_cpus=cpus,prime_gbsa_local_host=host)
+    for suffix,default in [('work-dir','/home1/prime_share'),('schrodinger','/home/schrodinger/2025-3-IL')]:
+        value=config.get('prime-gbsa-local-'+suffix,default)
+        if not isinstance(value,str) or not value.startswith('/') or any(c in value for c in '\n\r'):
+            raise ValueError('prime-gbsa-local-'+suffix+' must be an absolute path')
+        result['prime_gbsa_local_'+suffix.replace('-','_')]=value
+    return result
+
+
 def prime_gbsa_flexdist(config: dict[str, Any]) -> float:
     """Zero preserves the frozen-receptor default; positive values are Angstroms."""
     value = config.get('prime-gbsa-flexdist', 0.0)

@@ -80,6 +80,12 @@ amber-ssh-config = "/home1/chchae/.ssh/config"
 # 6. Prime GBSA: 유효 Amber 결과 best 50; 유효 Amber 결과가 0개이면 Glide best 50
 # 진행 중·복구 대기·재시도 가능 작업은 기다립니다. 서로 다른 score를 섞어 순위를 만들지 않습니다.
 # 유효 결과가 일부만 있으면 그 집합에서 최대 50개만 선택하며 다른 tier로 보충하지 않습니다.
+prime-gbsa-local-compute = true
+prime-gbsa-local-host = "adam"
+prime-gbsa-local-work-dir = "/home1/prime_share"
+prime-gbsa-local-schrodinger = "/home/schrodinger/2025-3-IL"
+prime-gbsa-local-cpus = 16
+
 prime-gbsa-input-count = 100
 prime-gbsa-flexdist = 6.0
 prime-gbsa-license-retry-seconds = 300

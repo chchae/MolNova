@@ -242,6 +242,24 @@ def test_missing_shared_inputs_without_cleanup_receipt_stays_pending(project):
     assert database.md_gbsa_completion_reason(args.db_path,1)
 
 
+@pytest.mark.parametrize('has_uncollected_member',[False,True])
+def test_pooled_inputs_wait_for_every_member_before_cleanup(project,has_uncollected_member):
+    args,settings,directory,data,root=project
+    batch=root.parents[1]/'pools'/('batch-'+'a'*32)
+    members=[dict(id=1,path='CMPID_1/replica01')]
+    if has_uncollected_member:
+        members.append(dict(id=999,path='CMPID_999/replica01'))
+    write(batch/'request.json',dict(members=members))
+    write(batch/'published.json',dict(members=members))
+    write(batch/'prime/prime_mmgbsa-out.maegz',b'pooled coordinates')
+    database.store_md_gbsa_result(args.db_path,1,1,data)
+    local.cleanup_committed(args,1,settings,directory)
+    assert batch.exists()==has_uncollected_member
+    assert (directory/'adam-results/CMPID_1/replica01/prime/prime_mmgbsa-out.maegz').exists()
+    if not has_uncollected_member:
+        assert (directory/'adam-results/pools'/batch.name/'cleanup.json').exists()
+
+
 def test_registry_includes_adam_and_slurm_and_unregisters_both(tmp_path,monkeypatch):
     registry = tmp_path/'registry.json'
     monkeypatch.setattr(guard,'_md_registry',lambda:registry)

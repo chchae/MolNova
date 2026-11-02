@@ -39,7 +39,11 @@ def response(text):
 
 
 def remote_call(settings, action, root, *extra):
-    return ssh(settings['ssh_host'],shlex.join([settings['suite']+'/run',settings['helper'],action,root,*extra]))
+    helper = settings['helper']
+    if Path(helper).name == 'md_gbsa_local_native.py':
+        from molnova.md_gbsa_local import control_helper
+        helper = str(control_helper(settings))
+    return ssh(settings['ssh_host'],shlex.join([settings['suite']+'/run',helper,action,root,*extra]))
 
 
 def settings_for(args, iteration):
@@ -158,6 +162,14 @@ def run(args, iteration):
            for cid in saved['ids'] for r in range(settings['replicates'])
            if rows[cid][1] is None and rows[cid][2:]!=(State.FAILED,'md_gbsa')]
     tasks.sort(key=lambda t: str((t[0],t[1])) not in progress)
+    if settings.get('local_compute'):
+        # Make every ready molecule available before admitting a new native
+        # batch. Existing parent commands/jobs are never repartitioned.
+        for cid,replica,root in tasks:
+            if not (md_gbsa_local.task_root(settings,cid,replica)/'input.json').exists():
+                prior=progress.get(str((cid,replica)),{})
+                if prior.get('phase')=='prime':
+                    md_gbsa_local.poll(settings,cid,replica,root,directory/'adam-results',prepare_only=True)
     active=sum(v.get('phase')=='md' and v.get('status') in ('running','pending') for v in progress.values())
     for cid,replica,root in tasks:
         key=str((cid,replica)); prior=progress.get(key)
@@ -169,11 +181,13 @@ def run(args, iteration):
             with guard.submission_guard(args.schrodinger,'prime_gbsa',md_controller=True):
                 local=guard.active_jobs(args.schrodinger)
                 if any(guard.job_kind(j)=='prime_gbsa' and (not j.get('molnova_md_remote') or
-                       (j.get('molnova_md_local_compute') and not settings.get('local_compute'))) for j in local):
+                       ((j.get('molnova_md_local_compute') or j.get('molnova_prime_local_compute'))
+                        and not settings.get('local_compute'))) for j in local):
                     print('MD-GBSA waiting for other Prime work.'); return
                 if settings.get('local_compute'):
                     result=md_gbsa_local.poll(settings,cid,replica,root,directory/'adam-results',
-                        allow_submit=not any(guard.job_kind(j)=='prime_gbsa' for j in local))
+                        allow_submit=not any(guard.job_kind(j)=='prime_gbsa' and
+                            not j.get('molnova_md_local_compute') for j in local))
                 else:
                     result=response(remote_call(settings,'poll',root))
                 expected_protocol=dict(settings['protocol'],seed=1+(settings['protocol']['seed']+replica-1)%2147483647)

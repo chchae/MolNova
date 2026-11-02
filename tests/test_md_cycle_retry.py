@@ -37,6 +37,28 @@ def ensemble(cid, score=-70):
     return dict(id=cid, mean=score, std=0, snapshots=[dict(frame=0, score=score, ligand_rmsd=.2)])
 
 
+def test_explicit_retry_archives_consumed_token_and_preserves_success(project):
+    args,_=project
+    database.enable_md_cycle_retries(args.db_path,1)
+    database.store_md_gbsa_result(args.db_path,1,2,ensemble(2))
+    with database.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state='failed',failed_stage='md_gbsa' WHERE id=1")
+    database.request_md_cycle_retries(args.db_path,1)
+    old=database.score_retry_requests(args.db_path,1,'md_gbsa')[0][1]
+    database.finish_score_retry(args.db_path,1,'md_gbsa',1,old)
+    with database.connect(args.db_path) as conn:
+        conn.execute("UPDATE compound SET state='failed',failed_stage='md_gbsa' WHERE id=1")
+    tokens=database.request_authorized_md_retries(args.db_path,1,[1])
+    assert tokens[1]!=old
+    assert database.request_authorized_md_retries(args.db_path,1,[1])==tokens
+    assert database.md_gbsa_rows(args.db_path,1)[2][1]==-70
+    with pytest.raises(ValueError,match='only unscored failed'):
+        database.request_authorized_md_retries(args.db_path,1,[1,2])
+    with database.connect(args.db_path) as conn:
+        saved=conn.execute('SELECT previous_record FROM md_manual_retry_history').fetchone()[0]
+        assert json.loads(saved)[3]==old
+
+
 @pytest.mark.parametrize('retry_success', [False, True])
 def test_retry_resolves_inside_cycle_and_never_reopens_on_restart(project, monkeypatch, retry_success):
     args, settings = project

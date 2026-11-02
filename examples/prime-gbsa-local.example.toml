@@ -1,0 +1,17 @@
+# Merge into a project TOML. Existing submitted jobs retain their saved backend.
+prime-gbsa = true
+prime-gbsa-local-compute = true
+prime-gbsa-local-host = "adam"
+prime-gbsa-local-work-dir = "/home1/prime_share"
+prime-gbsa-local-schrodinger = "/home/schrodinger/2025-3-IL"
+prime-gbsa-local-cpus = 16
+
+# All selected original compounds share one native Prime/JobDJ queue.
+# Selection/readiness/score ranking are unchanged, including iteration 0.
+# Preserve the project's prime-gbsa-flexdist (default 0 A). Positive distances
+# use sidechain flexibility (-rflexgroup side), with independent complex inputs.
+# This flag does not enable MD; md-gbsa-local-compute is a separate setting.
+# Adam needs its configured localhost JobServer, not Slurm.
+# Successful subjob scores/poses are collected while the batch runs. After
+# final native verification, score commit and prime_gbsa_final.maegz publication,
+# the owned shared input/output tree is removed. Failed/uncertain work is retained.

@@ -79,7 +79,17 @@ def recover_prime(args, iteration, directory):
                 continue
             if not record.get('job_id'):
                 raise RuntimeError('Prime launch has no durable JobId; no automatic reset')
-            jobs = prime._job_details(record,path.parent)
+            if record.get('mode')=='adam_prime_batch_v1':
+                from molnova import md_gbsa
+                backend=record['backend']
+                if not (Path(backend['root'])/'prime/prime.job.json').exists():
+                    raise RuntimeError('Missing saved Adam native journal; reconcile before retry')
+                result=md_gbsa.response(md_gbsa.remote_call(backend,'poll',backend['root']))
+                if result.get('status') not in ('done','failed') or result.get('native',{}).get('job_id')!=record['job_id']:
+                    raise RuntimeError('Adam Prime is active/uncertain; no automatic reset')
+                jobs=result['jobs']
+            else:
+                jobs = prime._job_details(record,path.parent)
             if not any(j.get('jobId')==record['job_id'] for j in jobs) or any(
                     j.get('status') not in {'DONE','FAILED','CANCELED','STOPPED'} for j in jobs):
                 raise RuntimeError('Prime parent/children active or uncertain; no automatic reset')

@@ -173,7 +173,9 @@ def load_project_toml(filename):
 
     output = resolve_path(config["out-dir"])
     from molnova.config import prime_gbsa_license_retry_settings, schrodinger_cpu_settings, glide_job_timeout, amber_settings, log_level, prime_gbsa_flexdist, fep_settings, debug_settings, distribution_settings, md_gbsa_settings
+    from molnova.config import prime_gbsa_local_settings
     return debug_settings(config, {
+        **prime_gbsa_local_settings(config),
         **distribution_settings(config),
         **md_gbsa_settings(config),
         **generation,
@@ -4295,6 +4297,9 @@ def run_iteration_prime_gbsa(
     from molnova.prime_gbsa_async import load_job, submit_or_poll, job_file, persist_atomtyping_failures
     prime_gbsa_dir = stage_in_iteration(iteration_dir, 'prime_gbsa')
     active = load_job(prime_gbsa_dir)
+    if active is not None and active.get('mode')=='adam_prime_batch_v1':
+        from molnova.prime_gbsa_local import poll_batch
+        return poll_batch(iteration,args,prime_gbsa_dir,active)
     if active is not None and active.get("mode") == "compound_queue_v1":
         from molnova.prime_gbsa_queue import poll_queue
         return poll_queue(iteration, args, prime_gbsa_dir, active)
@@ -4493,7 +4498,10 @@ def run_iteration_prime_gbsa(
         f"Docking top input   : {len(top_rows)}"
     )
 
-    from molnova.prime_gbsa_batch import create_batch, poll_batch
+    if getattr(args,'prime_gbsa_local_compute',False):
+        from molnova.prime_gbsa_local import create_batch, poll_batch
+    else:
+        from molnova.prime_gbsa_batch import create_batch, poll_batch
     record = create_batch(args, prime_gbsa_dir, [row[0] for row in top_rows])
     return poll_batch(iteration, args, prime_gbsa_dir, record)
 

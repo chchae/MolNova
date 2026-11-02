@@ -122,6 +122,43 @@ def request_md_cycle_retries(path, iteration):
             _request_md_retries(conn, iteration)
 
 
+def request_authorized_md_retries(path, iteration, compound_ids):
+    """Queue explicit operator retries; workers still prove native termination."""
+    import json
+    import uuid
+    ids = list(dict.fromkeys(compound_ids))
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        saved = conn.execute('SELECT candidates FROM iteration_md_gbsa_selection WHERE iteration=?',
+                             (iteration,)).fetchone()
+        if not saved or not set(ids) <= set(json.loads(saved[0])):
+            raise ValueError('Manual MD retry must belong to the frozen selection')
+        _ensure_score_retry_schema(conn)
+        conn.execute('CREATE TABLE IF NOT EXISTS md_manual_retry_history ('
+                     'iteration INTEGER NOT NULL,compound_id INTEGER NOT NULL,token TEXT NOT NULL,'
+                     'previous_record TEXT,requested_at REAL NOT NULL,PRIMARY KEY(iteration,compound_id,token))')
+        tokens = {}
+        for cid in ids:
+            row = conn.execute('SELECT state,failed_stage,failure_message,md_gbsa_score FROM compound '
+                               'WHERE iteration=? AND id=?', (iteration,cid)).fetchone()
+            if not row or row[3] is not None or row[:2] != (State.FAILED,'md_gbsa'):
+                raise ValueError(f'CMPID_{cid}: only unscored failed MD compounds can be retried')
+            previous = conn.execute('SELECT * FROM score_restart_retry WHERE iteration=? '
+                                    "AND stage='md_gbsa' AND compound_id=?", (iteration,cid)).fetchone()
+            if previous and previous[4]:
+                tokens[cid] = previous[3]
+                continue
+            token = uuid.uuid4().hex
+            conn.execute('INSERT INTO md_manual_retry_history VALUES (?,?,?,?,?)',
+                         (iteration,cid,token,json.dumps(previous),time.time()))
+            conn.execute("INSERT INTO score_restart_retry VALUES (?,'md_gbsa',?,?,1,?,?) "
+                         'ON CONFLICT(iteration,stage,compound_id) DO UPDATE SET token=excluded.token,'
+                         'pending=1,previous_state=excluded.previous_state,previous_failure=excluded.previous_failure',
+                         (iteration,cid,token,row[0],row[2]))
+            tokens[cid] = token
+        return tokens
+
+
 def _completed_md_ids(conn, iteration):
     if 'md_gbsa_score' not in {r[1] for r in conn.execute('PRAGMA table_info(compound)')}:
         return set()

@@ -302,6 +302,38 @@ def test_jobserver_version_preflight(client,ok,monkeypatch):
             native.preflight(Path('/suite'),'slurm-gpu','slurm-cpu')
 
 
+def test_jobserver_preflight_reports_native_stderr_without_starting_services(monkeypatch):
+    import subprocess
+    commands = []
+    def execute(command, **kw):
+        commands.append(command)
+        raise subprocess.CalledProcessError(1, command,
+            stderr="No remote job servers configured. Run '$SCHRODINGER/jsc local-server-start'.")
+    monkeypatch.setattr(native.subprocess, 'run', execute)
+    with pytest.raises(RuntimeError, match='local-server-start'):
+        native.preflight(Path('/suite'), 'localhost', 'localhost')
+    assert commands == [['/suite/jsc', 'hosts', 'list', '--verbose']]
+
+
+@pytest.mark.parametrize('host_line', ['      localhost', '      Name: localhost'])
+def test_jobserver_preflight_supports_bare_and_named_host_entries(monkeypatch, host_line):
+    def execute(command, **kw):
+        if 'hosts' in command:
+            return SimpleNamespace(stdout='Configured hosts:\n  localhost:41975\n'
+                '    Hosts for /home/schrodinger/default (Source: launch-time SCHRODINGER):\n'+host_line+'\n')
+        assert command[-1] == 'localhost:41975'
+        return SimpleNamespace(stdout='Server API version:    v1.17.6\nClient API version:    v1.17.6\n')
+    monkeypatch.setattr(native.subprocess, 'run', execute)
+    assert native.preflight(Path('/suite'), 'localhost', 'localhost')['status'] == 'ready'
+
+
+def test_jobserver_address_does_not_count_as_a_host_entry(monkeypatch):
+    monkeypatch.setattr(native.subprocess, 'run', lambda *a, **kw:SimpleNamespace(
+        stdout='Configured hosts:\n  localhost:41975\n    Hosts for /localhost:\n      other-host\n'))
+    with pytest.raises(RuntimeError, match='Native host entry is missing: localhost'):
+        native.preflight(Path('/suite'), 'localhost', 'localhost')
+
+
 def test_duplicate_frame_identity_cannot_publish_mean(db):
     freeze(db)
     invalid=result(1,-50)

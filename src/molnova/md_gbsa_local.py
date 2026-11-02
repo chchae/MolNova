@@ -33,6 +33,23 @@ def owner(settings):
     return dict(mode='adam_prime_v1', source_root=settings['root'], local=settings['local_compute'])
 
 
+def control_helper(settings):
+    """Versioned operational adapter; frozen scientific helpers stay untouched."""
+    root = Path(settings['root'])
+    marker = json.loads((root/'owner.json').read_text())
+    local = marker.get('local', {})
+    if any(local.get(key) != settings.get(key) for key in ('root','helper','suite','ssh_host')):
+        raise RuntimeError('Adam control adapter ownership mismatch')
+    source = Path(__file__).with_name('md_gbsa_jobcontrol.py')
+    expected = digest(source)
+    target = root/'control'/('jobcontrol-'+expected+'.py')
+    if not target.exists():
+        atomic_copy(source, target)
+    if digest(target) != expected:
+        raise RuntimeError('Adam operational adapter checksum differs')
+    return target
+
+
 def prepare(settings):
     local = settings['local_compute']
     root = Path(local['root'])
@@ -100,7 +117,7 @@ def task_root(settings, cid, replica):
     return Path(settings['local_compute']['root'])/f'CMPID_{cid}'/f'replica{replica+1:02d}'
 
 
-def poll(settings, cid, replica, remote_root, archive, *, allow_submit=True):
+def poll(settings, cid, replica, remote_root, archive, *, allow_submit=True, prepare_only=False):
     # Reverify upstream native completion on its own JobServer before using frames.
     result = md_gbsa.response(md_gbsa.remote_call(settings, 'frames', remote_root))
     if result['status'] != 'frames':
@@ -122,6 +139,8 @@ def poll(settings, cid, replica, remote_root, archive, *, allow_submit=True):
         download(settings['ssh_host'], remote_root+'/'+name, root/name, expected)
     if not marker.exists():
         save(marker, config)  # Publish only once every checksummed input exists.
+    if prepare_only:
+        return dict(status='pending', phase='prime', reason='Frames prepared for pooled Prime batch')
     result = md_gbsa.response(md_gbsa.remote_call(local, 'poll', str(root)))
     if result['status'] == 'done':
         if result['id'] != cid or result['protocol'] != protocol:
@@ -178,6 +197,42 @@ def cleanup_committed(args, iteration, settings, directory):
             database.finish_md_local_cleanup(args.db_path, iteration, cid)
         else:
             raise RuntimeError('Missing Adam cleanup receipt; shared inputs retained')
+    cleanup_pools(args, iteration, settings, directory)
+
+
+def cleanup_pools(args, iteration, settings, directory):
+    """Retire pooled inputs only after EVERY member has been committed/collected."""
+    base=Path(settings['local_compute']['root'])
+    scored=database.completed_md_ids(args.db_path,iteration)
+    pending=database.pending_md_local_cleanup_ids(args.db_path,iteration)
+    for request in base.glob('pools/batch-*/request.json'):
+        batch=request.parent
+        data=json.loads(request.read_text())
+        if not (batch/'published.json').exists():
+            continue
+        ready=True
+        for member in data['members']:
+            cid=member['id']
+            receipt=Path(directory)/'adam-results'/f'CMPID_{cid}'/'cleanup.json'
+            if (cid not in scored or cid in pending or (base/f'CMPID_{cid}').exists()
+                    or not receipt.exists() or json.loads(receipt.read_text())['owner']!=owner(settings)):
+                ready=False
+                break
+        if not ready:
+            continue
+        archive=Path(directory)/'adam-results/pools'/batch.name
+        for name in ('request.json','input.json','published.json','prime/prime.job.json',
+                     'prime/prime.launch.log','prime/prime_mmgbsa.log'):
+            if (batch/name).is_file():
+                atomic_copy(batch/name,archive/name)
+        save(archive/'cleanup.json',dict(owner=owner(settings),batch=batch.name,members=data['members']))
+        batch.rename(base/('.collected-pool-'+batch.name))
+    for tombstone in base.glob('.collected-pool-batch-*'):
+        name=tombstone.name.removeprefix('.collected-pool-')
+        receipt=Path(directory)/'adam-results/pools'/name/'cleanup.json'
+        if not receipt.exists() or json.loads(receipt.read_text())['owner']!=owner(settings):
+            raise RuntimeError('Missing pooled cleanup receipt; inputs retained')
+        shutil.rmtree(tombstone)
 
 
 def finish_cleanup(settings, ids):

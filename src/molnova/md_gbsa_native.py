@@ -133,10 +133,16 @@ simulate {
 
 
 def preflight(suite, gpu_host, cpu_host):
-    hosts = subprocess.run([str(suite/'jsc'),'hosts','list','--verbose'],
-                           check=True,capture_output=True,text=True,timeout=30).stdout
+    try:
+        hosts = subprocess.run([str(suite/'jsc'),'hosts','list','--verbose'],
+                               check=True,capture_output=True,text=True,timeout=30).stdout
+    except subprocess.CalledProcessError as exc:
+        detail = '\n'.join(value.strip() for value in (exc.stderr, exc.stdout) if value and value.strip())
+        raise RuntimeError('JobServer preflight failed: jsc hosts list --verbose\n'+
+                           (detail or f'Command exited with status {exc.returncode}')) from None
     for host in (gpu_host,cpu_host):
-        if not re.search(r'^\s+Name: '+re.escape(host)+r'$',hosts,re.M):
+        # 2025-3 lists bare indented names; newer verbose output uses Name:.
+        if not re.search(r'^[ \t]+(?:Name:[ \t]+)?'+re.escape(host)+r'[ \t]*$',hosts,re.M):
             raise RuntimeError(f'Native host entry is missing: {host}')
     servers = re.findall(r'^\s{2}([^\s]+:\d+)\s*$',hosts,re.M)
     if not servers:

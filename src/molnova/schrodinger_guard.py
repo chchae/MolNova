@@ -100,7 +100,8 @@ def active_jobs(suite):
         for settings in json.loads(registry.read_text()).values():
             for job in response(remote_call(settings,'jobs',settings['root'])):
                 rows.append(dict(job,molnova_md_remote=True,
-                    molnova_md_local_compute=settings['helper'].endswith('/md_gbsa_local_native.py')))
+                    molnova_md_local_compute=settings['helper'].endswith('/md_gbsa_local_native.py'),
+                    molnova_prime_local_compute=settings['helper'].endswith('/prime_gbsa_local_native.py')))
     return rows
 
 def belongs_to_directory(job, directory):

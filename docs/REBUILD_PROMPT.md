@@ -1,5 +1,146 @@
 # Independent MolNova reconstruction prompt
 
+## Optional Adam backend for ordinary Prime GBSA (2026-11-02)
+
+**Confirmed user request:** add `prime-gbsa-local-compute=true` with the same
+shared-folder/SSH/localhost calculation and result-collection behavior as local
+MD-GBSA. Slurm is not required on Adam. Omission/false retains ordinary native
+Prime scheduling and its seven-slot limit. Saved submissions retain the original
+backend even when flags change or Prime is disabled.
+
+**Implementation choices:** strict optional `prime-gbsa-local-host="adam"`,
+`prime-gbsa-local-work-dir="/home1/prime_share"`,
+`prime-gbsa-local-schrodinger="/home/schrodinger/2025-3-IL"`, and
+`prime-gbsa-local-cpus=16` (integer 1..16). These are independent of MD settings.
+Use the existing readiness/atomic candidate claims, iteration-0 reference handling,
+final top-N ranking and lowest-Glide pose input preparation. Preserve ordinary
+Prime `prime-gbsa-flexdist` (default zero), default ligand minimization and positive
+distance sidechain-only flexibility (`-rflexgroup side`), including independent
+complex inputs and COMPLEX output. Do not substitute the MD residue protocol.
+
+Freeze mode `adam_prime_batch_v1`, ownership, IDs, input/helper hashes, exact
+native command, Adam paths, slot budget and license retry policy before launch.
+All compounds share a single Prime/JobDJ batch, one subjob per original compound,
+`-HOST localhost:<slots> -NJOBS <compound count>`. Keep the global Adam sixteen-slot
+reservation and Glide/Prime exclusion shared with MD and other projects. Legacy
+JobControl IDs and modern UUIDs use the verified API adapter; parent/child status,
+command/directory identity, lost submission responses, immutable completed child
+outputs and finite compound identities remain mandatory. Missing shared folders
+or unjournaled artifacts never trigger duplicate submission. No implicit service
+startup or migration of saved native/individual queues is added.
+
+Import completed immutable subjob scores/poses while the parent runs, commit
+before recording imported IDs, and retain them if the parent later fails. Collect
+final native complexes/logs/journals locally, validate native output checksum,
+import final scores and publish prime_gbsa_final.maegz before cleanup. Confirmed
+per-compound atomtyping failures use existing failure records; unexplained missing
+results and uncertain/failed native work retain inputs and submission identity.
+License-only terminal failures use pinned bounded retries and archive the prior
+attempt after terminal verification. No generic failure is silently resubmitted.
+After successful commit and coordinate publication, reverify native completion,
+write a durable collection receipt and remove only the owned shared tree through
+an atomic tombstone rename; resume interrupted cleanup without recomputation.
+Mixed batches with confirmed scientific failures keep their shared inputs for
+recovery. The saved local manifest blocks stage advancement until retirement.
+
+See examples/prime-gbsa-local.example.toml. Production TOMLs/jobs/DBs are not
+changed to enable this new option automatically. Regression tests mock external
+calculations; no ordinary-Prime scientific accuracy or throughput validation is
+claimed for this newly added backend.
+
+**Verification:** the workspace full suite passed 1,697 tests. After final
+streaming/diagnostic refinements, the 32 dedicated local-Prime regressions passed;
+the broader affected suites passed 363 tests before the last dedicated regression.
+Compileall, package/CLI imports and diff whitespace checks passed. Tests cover
+strict config, pinned scientific commands, legacy/native recovery, shared-folder
+loss, database-before-cleanup ordering, interrupted deletion, bounded license
+recovery, streamed-score persistence after parent failure, immutable completed
+child collection, and transient diagnostics with successful final scores. External
+ordinary Prime calculations were mocked; production local-Prime work was not
+submitted or enabled by development.
+
+## Cross-molecule Adam Prime frame batching (2026-11-02)
+
+**Confirmed user request:** remove per-molecule GBSA serialization that leaves
+Adam cores idle at each molecule's batch tail, keeping the total CPU/license
+budget at sixteen. Slurm installation is not required for this single-host mode.
+
+**Implementation choice:** prepare ready molecule inputs before admission, then
+freeze their frames into one native Prime/JobDJ queue with
+`-HOST localhost:<budget> -NJOBS <total frames>`. Multiple molecules share that
+queue, so free slots can process the next molecule's frames immediately. At
+most one unresolved parent reserves the host budget across projects; active or
+uncertain old single-molecule batches keep their exact command and finish first.
+The operational adapter groups only unsubmitted requests and preserves frozen
+helpers, individual MD inputs, explicit ligand ASL, 6 A/residue REAL_MIN settings,
+compound/frame titles and per-molecule ensemble statistics. Replicas of the same
+original compound use different batches to preserve unique native title keys.
+
+Persist group intent and molecule bindings before launch; retain native JobId
+and recover incomplete bindings/launches without duplicate submission. Checksummed
+combined frames are immutable. Require verified native parent/child completion,
+validate every compound/frame identity and finite score, and publish exact native
+complexes back to their original molecule directories under an exclusive
+publication lock. Native results are not replaced with recomputed coordinates.
+Compound score publication waits for the pooled parent's completion; partial
+ensembles never satisfy MD/FEP/TL gates. Original per-compound retries and cleanup
+still apply; archive/remove pooled inputs and output only after every member's
+complete ensemble has been committed and collected, retaining journals/receipts
+locally. Failed/uncertain groups and unrelated directories are retained.
+
+This supersedes per-molecule native parent serialization for newly submitted
+Adam work, including unsubmitted work in an existing frozen run, as explicitly
+requested by the user. Existing calculations/scores are preserved. Native batch
+initialization, I/O and the final queue tail can still leave some cores idle;
+this change does not promise continuous 100 percent CPU utilization or validated
+scientific ranking accuracy.
+
+**Verification:** 308 affected regression tests pass for multi-molecule batching,
+identity/count/nonfinite rejection, old-job recovery, immutable input checks,
+interrupted binding/launch recovery, replica separation and all-member cleanup.
+Compileall, package/CLI imports and diff checks pass. In the existing iteration-59
+run, the supervisor submitted one 14-molecule / 280-frame native parent and native
+JobControl inspection confirmed sixteen simultaneous frame subjobs, with completed
+frames refilling from the common queue. This is execution/concurrency evidence,
+not validation of energy accuracy or an end-to-end throughput benchmark.
+
+## Adam legacy JobControl recovery and explicit MD retries (2026-11-02)
+
+**Observed runtime evidence:** Adam's installed Prime launches legacy IDs such as
+`adam-0-6ae80757`, even with a local JobServer running. `jsc info` rejects those
+IDs. Installed `schrodinger.job.jobcontrol.Job` records verified the parent and
+20 child jobs as completed/finished; `isDownloaded()` documents legacy completed
+output transfer, and `download()` is explicitly a no-op for legacy jobs.
+
+**Implementation correction:** route Adam operations through a versioned,
+checksummed `control/jobcontrol-<sha256>.py` adapter in the owned shared run.
+Import the exact frozen scientific helpers and adapt status, launch recovery and
+collection APIs only. Never replace their pinned bytes, commands, inputs or
+protocols. Native UUIDs retain jsc handling; legacy IDs use the installed Job API,
+recursive parent/child identity and completion, successful parent exit, exact
+launch directory/command and downloaded status. Legacy active jobs supplement
+native listings and retain slot/submission reservations. Unknown/missing records,
+live children, mismatched identity and ambiguous lost replies block collection
+or resubmission. No cached file/log/zero exit alone establishes completion.
+
+**Confirmed additional user request:** recalculate only failed iteration-59
+CMPID_618046, CMPID_619885 and CMPID_619897 after gpu81 time synchronization.
+Queue explicitly authorized retries in SQLite, archive consumed retry tokens and
+previous records in `md_manual_retry_history`, and retain the normal bounded
+automatic policy. Workers still verify terminal native jobs before archiving and
+rearming, preserving successes and scientific settings. Back up the production DB
+and retain native terminal evidence before this scoped operator request. Do not
+reset live/uncertain jobs, change scheduler/service settings, or grant indefinite
+automatic retries.
+
+**Verification:** 170 affected tests passed with mocked JobControl/native APIs
+and real temporary SQLite/files. Compileall, package/CLI imports and diff checks
+passed. Read-only native inspection verified the installed legacy Job API. The
+running supervisor recovered CMPID_618812's existing 20-frame legacy Prime result
+and committed its finite MD-GBSA score without resubmission. The three explicit
+MD retries were queued only after native terminal verification and a SQLite
+backup with committed WAL; the original failed attempts remain archived.
+
 ## Adam shared-folder MD snapshot Prime backend (2026-11-02)
 
 **Confirmed user request:** opt-in `md-gbsa-local-compute=true` saves selected MD
