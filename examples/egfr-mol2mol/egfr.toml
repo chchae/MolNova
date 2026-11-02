@@ -95,6 +95,12 @@ md-gbsa-snapshots = 20
 md-gbsa-production-ns = 5.0
 md-gbsa-schrodinger = "/share/opt/schrodinger/2026-1"
 
+md-gbsa-local-compute = true
+md-gbsa-local-host = "adam"
+md-gbsa-local-work-dir = "/home1/prime_share"
+md-gbsa-local-schrodinger = "/home/schrodinger/2025-3-IL"
+md-gbsa-local-cpus = 16
+
 
 # 7. FEP 후보 export / 결과 import; 실제 FEP 계산은 외부 protocol로 별도 수행
 # Prime 결과가 있으면 Prime best 20, 없으면 Amber best 20, 둘 다 없으면 Glide best 20
