@@ -30,7 +30,8 @@ prime-gbsa-elite-count = 10
 libinvent-prior = "/home1/astrazeneca/REINVENT/priors/libinvent.prior"
 reinvent-ssh-host = "tensor"
 reinvent-remote-env = "/home1/astrazeneca/REINVENT/env"
-reinvent-remote-work-dir = "/home1/astrazeneca/REINVENT/molnova-runs"
+# Shared runtime/prior are read-only; write run artifacts under the SSH user's directory.
+reinvent-remote-work-dir = "/home1/chchae/molnova-reinvent-runs"
 elite-tl-epochs = 5
 
 # 3. Drug likeness: 생성된 iteration 전체를 DB에서 평가하고 탈락 이유도 보존
